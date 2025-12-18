@@ -8,22 +8,57 @@
 
 static CShcemaOffset g_CShcemaOffset{};
 
+namespace
+{
+	inline bool IsReadable( const void* ptr , size_t size = 1 )
+	{
+		if ( !ptr )
+			return false;
+
+		MEMORY_BASIC_INFORMATION mbi{};
+
+		if ( !VirtualQuery( ptr , &mbi , sizeof( mbi ) ) )
+			return false;
+
+		const DWORD protect = mbi.Protect & ~( PAGE_GUARD | PAGE_NOACCESS );
+
+		const bool committed = mbi.State == MEM_COMMIT;
+		const bool canRead =
+			protect == PAGE_READONLY ||
+			protect == PAGE_READWRITE ||
+			protect == PAGE_WRITECOPY ||
+			protect == PAGE_EXECUTE_READ ||
+			protect == PAGE_EXECUTE_READWRITE ||
+			protect == PAGE_EXECUTE_WRITECOPY;
+
+		const auto regionEnd = reinterpret_cast<uintptr_t>( mbi.BaseAddress ) + mbi.RegionSize;
+		const auto ptrEnd = reinterpret_cast<uintptr_t>( ptr ) + size;
+
+		return committed && canRead && ptrEnd <= regionEnd;
+	}
+}
+
 auto CShcemaOffset::Init() -> void
 {
 	std::vector<CSchemaSystemTypeScope*> m_ScopeList;
 
-	m_ScopeList.push_back( SDK::Interfaces::SchemaSystem()->GlobalTypeScope() );
+	auto* pSchemaSystem = SDK::Interfaces::SchemaSystem();
 
-	CSchemaSystemTypeScope* m_pCurrentScope = SDK::Interfaces::SchemaSystem()->GetAllTypeScope()[0];
+	if ( !pSchemaSystem )
+		return;
 
-	for ( auto idx = 0; idx < SDK::Interfaces::SchemaSystem()->GetAllTypeScopeSize(); idx++ )
+	if ( auto* pGlobal = pSchemaSystem->GlobalTypeScope() )
+		m_ScopeList.push_back( pGlobal );
+
+	auto ppAllScopes = pSchemaSystem->GetAllTypeScope();
+	const auto scopeCount = pSchemaSystem->GetAllTypeScopeSize();
+
+	for ( auto idx = 0; idx < scopeCount; idx++ )
 	{
-		m_pCurrentScope = SDK::Interfaces::SchemaSystem()->GetAllTypeScope()[idx];
+		auto* pScope = ppAllScopes[idx];
 
-		if ( m_pCurrentScope )
-		{
-			m_ScopeList.push_back( m_pCurrentScope );
-		}
+		if ( pScope )
+			m_ScopeList.push_back( pScope );
 	}
 
 #if DUMP_SCHEMA_SCOPE_LIST == 1
@@ -43,9 +78,12 @@ auto CShcemaOffset::Init() -> void
 
 	for ( auto& Scope : m_ScopeList )
 	{
+		if ( !Scope )
+			continue;
+
 		auto pClassContainer = Scope->GetClassContainer();
 
-		if ( pClassContainer )
+		if ( pClassContainer && IsReadable( pClassContainer ) )
 		{
 			int BlockIndex = 0;
 
@@ -53,9 +91,12 @@ auto CShcemaOffset::Init() -> void
 			{
 				for ( auto Block = SchemaBlock.GetFirstBlock(); Block && BlockIndex < pClassContainer->GetNumSchema(); Block = Block->Next() , BlockIndex++ )
 				{
+					if ( !IsReadable( Block , sizeof( *Block ) ) )
+						break;
+
 					auto pBinding = Block->GetBinding();
 
-					if ( !pBinding )
+					if ( !pBinding || !IsReadable( pBinding , sizeof( *pBinding ) ) )
 						continue;
 
 #if DUMP_SCHEMA_ALL_OFFSET == 1
@@ -78,9 +119,15 @@ auto CShcemaOffset::Init() -> void
 
 #endif
 
-					for ( auto idx = 0; idx < pBinding->m_DataArraySize(); idx++ )
+					const auto dataSize = pBinding->m_DataArraySize();
+					auto pDataArray = pBinding->m_DataArray();
+
+					if ( !pDataArray || dataSize <= 0 || dataSize > 4096 || !IsReadable( pDataArray , sizeof( SchemaClassFieldDataArray_t ) * dataSize ) )
+						continue;
+
+					for ( auto idx = 0; idx < dataSize; idx++ )
 					{
-						auto pClassData = pBinding->m_DataArray()[idx];
+						auto pClassData = pDataArray[idx];
 
 						if ( pClassData.FieldName && pClassData.FieldType )
 						{
@@ -153,13 +200,26 @@ auto CShcemaOffset::Init() -> void
 			}
 		}
 #endif
-
 	}
 }
 
 auto CShcemaOffset::GetOffset( std::string ClassName , std::string PropertyName ) -> uint32_t
 {
 	return m_SchemaData[ClassName][PropertyName].m_Offset;
+}
+
+auto CShcemaOffset::TryGetOffset( const std::string& ClassName , const std::string& PropertyName , uint32_t& outOffset ) const -> bool
+{
+	const auto classIt = m_SchemaData.find( ClassName );
+	if ( classIt == m_SchemaData.end() )
+		return false;
+
+	const auto propIt = classIt->second.find( PropertyName );
+	if ( propIt == classIt->second.end() )
+		return false;
+
+	outOffset = propIt->second.m_Offset;
+	return true;
 }
 
 auto GetSchemaOffset() -> CShcemaOffset*

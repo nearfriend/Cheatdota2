@@ -19,6 +19,8 @@ public:
 
 public:
 	auto GetOffset( std::string ClassName , std::string PropertyName ) -> uint32_t;
+	// Безопасная проверка наличия свойства в схеме без неявного создания записи.
+	auto TryGetOffset( const std::string& ClassName , const std::string& PropertyName , uint32_t& outOffset ) const -> bool;
 
 private:
 	std::unordered_map<std::string , std::unordered_map<std::string , SchemaOffset_t>> m_SchemaData;

@@ -12,6 +12,9 @@
     <ClCompile Include="Andromeda-Injector\CInjector.cpp">
       <Filter>Andromeda-Injector</Filter>
     </ClCompile>
+    <ClCompile Include="Andromeda-Injector\AtlStub.cpp">
+      <Filter>Andromeda-Injector</Filter>
+    </ClCompile>
     <ClCompile Include="Andromeda-Injector\Main.cpp">
       <Filter>Andromeda-Injector</Filter>
     </ClCompile>

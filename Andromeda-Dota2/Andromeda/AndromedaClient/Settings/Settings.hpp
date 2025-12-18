@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Common/Common.hpp>
+#include <AndromedaClient/Settings/Heroes/Invoker.hpp>
 
 namespace Settings
 {

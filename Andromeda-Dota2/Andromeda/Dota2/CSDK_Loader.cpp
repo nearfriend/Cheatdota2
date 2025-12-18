@@ -50,7 +50,8 @@ auto CSDK_Loader::LoadSDK() -> bool
 	RETURN_FALSE_IF_INTERFACE_ERROR( pSchemaSystem );
 
 	// Return if error #2
-	RETURN_FALSE_IF_POINTER_ERROR( ppCUserCmdArray );
+	if ( !ppCUserCmdArray )
+		DEV_LOG( "[warn] Pointer::ppCUserCmdArray (using tick fallback)\n" );
 
 	// Log:
 #if LOG_SDK == 1

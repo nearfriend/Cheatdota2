@@ -141,6 +141,7 @@
     <ClCompile Include="Andromeda\AndromedaClient\Fonts\CFont.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Fonts\CFontManager.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.cpp" />
+    <ClCompile Include="Andromeda\AndromedaClient\Heroes\Invoker\CInvokerController.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Scripting\LuaManager.cpp" />
     <ClCompile Include="Andromeda\Common\CrashLog.cpp" />
     <ClCompile Include="Andromeda\Common\DevLog.cpp" />
@@ -262,6 +263,7 @@
     <ClInclude Include="Andromeda\AndromedaClient\Fonts\CFont.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Fonts\CFontManager.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.hpp" />
+    <ClInclude Include="Andromeda\AndromedaClient\Heroes\Invoker\CInvokerController.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Scripting\LuaManager.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Settings\Settings.hpp" />
     <ClInclude Include="Andromeda\Common\Common.hpp" />

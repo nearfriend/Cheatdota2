@@ -11,6 +11,7 @@
 #include <AndromedaClient/Scripting/LuaManager.hpp>
 #include <DllLauncher.hpp>
 #include <Common/Helpers/StringHelper.hpp>
+#include <filesystem>
 
 static CAndromedaClient g_CAndromedaClient{};
 static CHeroDataLoader g_HeroDataLoader{};
@@ -26,24 +27,35 @@ auto CAndromedaClient::OnInit() -> void
 	if ( dota_camera_farplane.Search() )
 		DEV_LOG( "[dota_camera_farplane] Found !\n" );
 
-	// Подгрузка hero data из кеша: Assets\data\npc_heroes.json
+	// Hero data: load from cache only if file exists and looks valid; otherwise skip to avoid noisy errors.
 	const std::string baseDir = GetDllDir();
 	const std::string heroJsonPath = baseDir + "Assets\\data\\npc_heroes.json";
-	const std::string heroJsonUrl = "https://raw.githubusercontent.com/odota/dotaconstants/master/build/npc_heroes.json";
-
-	// Если файла нет, попробуем скачать; если есть — просто загружаем. forceDownload=false.
-	if ( g_HeroDataLoader.EnsureCacheAndLoad( heroJsonUrl , heroJsonPath , false ) )
+	const bool heroFileOk = std::filesystem::exists( heroJsonPath ) && std::filesystem::file_size( heroJsonPath ) > 128;
+	if ( heroFileOk && g_HeroDataLoader.LoadFromFile( heroJsonPath ) )
 	{
 		const char* src = g_HeroDataLoader.GetSourcePath().c_str();
 		DEV_LOG( "[heroes] loaded %zu heroes from %s\n" , g_HeroDataLoader.GetAll().size() , src );
 	}
 	else
 	{
-		DEV_LOG( "[heroes] failed to load hero data (url: %s, path: %s)\n" , heroJsonUrl.c_str() , heroJsonPath.c_str() );
+		DEV_LOG( "[heroes] skip hero data load (missing/invalid file: %s)\n" , heroJsonPath.c_str() );
 	}
 
-	// Initialize Lua runtime (scripts live in Assets\\Lua\\<hero>\\main.lua)
-	GetLuaManager()->Init( baseDir + "Assets\\Lua\\" );
+	// Initialize Lua runtime (scripts live in Assets\\Lua\\<hero>\\main.lua) only if lua*.dll is present.
+	const std::string scriptsRoot = baseDir + "Assets\\Lua\\";
+	const bool hasLuaDll =
+		std::filesystem::exists( scriptsRoot + "lua54.dll" ) ||
+		std::filesystem::exists( scriptsRoot + "lua53.dll" ) ||
+		std::filesystem::exists( scriptsRoot + "lua.dll" );
+
+	if ( hasLuaDll )
+	{
+		GetLuaManager()->Init( scriptsRoot );
+	}
+	else
+	{
+		DEV_LOG( "[lua] skip init: lua*.dll not found in %s\n" , scriptsRoot.c_str() );
+	}
 }
 
 auto CAndromedaClient::SetCameraDistance( float Distance ) -> void
@@ -73,22 +85,8 @@ auto CAndromedaClient::OnRender() -> void
 
 auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserCmd ) -> void
 {
-	// TODO: bind to the actual local hero; for now drive the Meepo script tick and combo.
-	auto* lua = GetLuaManager();
-	if ( lua )
-	{
-		lua->TickHero( "meepo" , 1.f / 60.f );
-
-		if ( Settings::Heroes::Meepo::ComboKey > 0 && ( GetAsyncKeyState( Settings::Heroes::Meepo::ComboKey ) & 0x8000 ) )
-			lua->TriggerHeroCombo( "meepo" );
-
-		// Placeholder: here we would translate pending combo to actual orders (need IssueOrder + ability offsets).
-		// For now just clear the pending flag to avoid spamming.
-		if ( lua->GetComboTarget( "meepo" ) >= 0 )
-		{
-			// Future: use target ent index to execute ability sequence.
-		}
-	}
+	// Lua scripting for Invoker (on_tick/on_combo).
+	m_InvokerController.OnCreateMove( pCDOTAInput , pCUserCmd );
 }
 
 auto CAndromedaClient::GetHeroData() -> CHeroDataLoader*

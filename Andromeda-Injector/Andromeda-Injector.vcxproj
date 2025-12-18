@@ -51,10 +51,14 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <IgnoreSpecificDefaultLibraries>atls.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Andromeda-Injector\CInjector.cpp" />
+    <ClCompile Include="Andromeda-Injector\AtlStub.cpp">
+      <AdditionalOptions>/GL- %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="Andromeda-Injector\Main.cpp" />
   </ItemGroup>
   <ItemGroup>

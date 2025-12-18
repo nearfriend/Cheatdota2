@@ -4,23 +4,27 @@ static CFunctionList g_CFunctionList{};
 
 auto CFunctionList::OnInit() -> bool
 {
-	std::vector<CBasePattern*> vPatterns =
+	const bool hasLocalPlayerPattern = CGameEntitySystem_GetLocalPlayerController.Search( true );
+
+	if ( !hasLocalPlayerPattern )
+		DEV_LOG( "[warn] CBasePattern: CGameEntitySystem::GetLocalPlayerController (using schema fallback)\n" );
+
+	std::vector<CBasePattern*> requiredPatterns =
 	{
-		&CGameEntitySystem_GetLocalPlayerController,
 		&GetCUserCmdTick,
 		&GetCUserCmdArray,
 		&GetCUserCmdBySequenceNumber,
 	};
 
-	auto Searched = true;
+	auto searched = true;
 
-	for ( auto& Pattern : vPatterns )
+	for ( auto& Pattern : requiredPatterns )
 	{
 		if ( !Pattern->Search() )
-			Searched = false;
+			searched = false;
 	}
 
-	return Searched;
+	return searched;
 }
 
 auto GetFunctionList() -> CFunctionList*

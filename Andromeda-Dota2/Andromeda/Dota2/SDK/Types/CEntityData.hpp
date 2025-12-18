@@ -73,6 +73,12 @@ class C_DOTA_BaseNPC : public C_BaseModelEntity
 public:
 };
 
+class C_DOTABaseAbility : public C_BaseEntity
+{
+public:
+	// Поля будут доставаться через schema offsets, оставляем как заглушку-контейнер.
+};
+
 class C_DOTA_BaseNPC_Hero : public C_DOTA_BaseNPC
 {
 public:
@@ -87,6 +93,7 @@ public:
 class C_DOTAPlayerController : public CBasePlayerController
 {
 public:
+	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_iPlayerID" , m_iPlayerID , int32_t );
 	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_hAssignedHero" , m_hAssignedHero , CHandle ); // C_DOTA_BaseNPC_Hero
 };
 
