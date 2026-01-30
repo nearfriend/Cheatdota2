@@ -21,6 +21,18 @@ public:
 	auto GetOffset( std::string ClassName , std::string PropertyName ) -> uint32_t;
 	// Безопасная проверка наличия свойства в схеме без неявного создания записи.
 	auto TryGetOffset( const std::string& ClassName , const std::string& PropertyName , uint32_t& outOffset ) const -> bool;
+	
+	/**
+	 * Verify that critical offsets are discovered.
+	 * @return True if all critical offsets are found
+	 */
+	auto VerifyCriticalOffsets() const -> bool;
+	
+	/**
+	 * Get count of discovered classes.
+	 * @return Number of classes in schema
+	 */
+	auto GetClassCount() const -> size_t { return m_SchemaData.size(); }
 
 private:
 	std::unordered_map<std::string , std::unordered_map<std::string , SchemaOffset_t>> m_SchemaData;

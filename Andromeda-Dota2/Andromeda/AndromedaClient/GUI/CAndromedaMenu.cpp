@@ -7,6 +7,7 @@
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <AndromedaClient/Data/HeroData.hpp>
 #include <AndromedaClient/Scripting/LuaManager.hpp>
+#include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
 #include <Dota2/Hook/Hook_GetProtoCDOTAGameAccountPlus.hpp>
 #include <DllLauncher.hpp>
 #include <Common/Helpers/StringHelper.hpp>
@@ -627,7 +628,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 
 				ImGui::Columns( 1 );
 
-				if ( ImGui::BeginChild( "##spellCard" , ImVec2( 0 , 150.f ) , true ) )
+				if ( ImGui::BeginChild( "##spellCard" , ImVec2( 0 , 0 ) , true ) )
 				{
 					ImGui::Text( "Spell icons" );
 					ImGui::BeginGroup();
@@ -655,6 +656,72 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 					{
 						ImGui::TextColored( warnCol , "Status: Missing (%d/4)", 4 - spellsLoadedCount );
 						ImGui::TextDisabled( "Add icons: Assets\\Icons\\Spells\\meepo_*.png or game\\dota\\panorama\\images\\spellicons\\meepo_*.png" );
+					}
+
+					ImGui::Separator();
+					ImGui::Text( "Ability Information" );
+					
+					// Get Meepo controller and display ability data
+					auto* pClient = GetAndromedaClient();
+					if ( pClient )
+					{
+						const auto& meepoController = pClient->GetMeepoController();
+						
+						if ( meepoController.IsHeroResolved() )
+						{
+							const auto& abilities = meepoController.GetAbilities();
+							
+							if ( abilities.empty() )
+							{
+								ImGui::TextColored( warnCol , "No abilities found" );
+								ImGui::TextDisabled( "Make sure you're playing as Meepo in-game" );
+							}
+							else
+							{
+								ImGui::TextColored( okCol , "Found %zu abilities:", abilities.size() );
+								ImGui::Spacing();
+								
+								for ( const auto& ability : abilities )
+								{
+									ImGui::PushID( ability.name.c_str() );
+									
+									ImGui::Text( "Name: %s" , ability.name.c_str() );
+									
+									if ( ability.level > 0 )
+										ImGui::Text( "  Level: %d" , ability.level );
+									else
+										ImGui::TextDisabled( "  Level: Unknown" );
+									
+									if ( ability.cooldownLength > 0.0f )
+									{
+										if ( ability.cooldown > 0.0f )
+											ImGui::TextColored( warnCol , "  Cooldown: %.1f / %.1f" , ability.cooldown , ability.cooldownLength );
+										else
+											ImGui::TextColored( okCol , "  Cooldown: Ready (%.1f)" , ability.cooldownLength );
+									}
+									else
+										ImGui::TextDisabled( "  Cooldown: Unknown" );
+									
+									if ( ability.manaCost > 0 )
+										ImGui::Text( "  Mana Cost: %d" , ability.manaCost );
+									else
+										ImGui::TextDisabled( "  Mana Cost: Unknown" );
+									
+									if ( ability.castRange > 0.0f )
+										ImGui::Text( "  Cast Range: %.0f" , ability.castRange );
+									
+									ImGui::Text( "  Activated: %s" , ability.isActivated ? "Yes" : "No" );
+									
+									ImGui::Spacing();
+									ImGui::PopID();
+								}
+							}
+						}
+						else
+						{
+							ImGui::TextColored( warnCol , "Hero not resolved" );
+							ImGui::TextDisabled( "Start a game as Meepo to see ability information" );
+						}
 					}
 				}
 				ImGui::EndChild();

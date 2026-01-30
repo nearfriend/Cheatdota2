@@ -16,6 +16,9 @@
 # Mono auto generated files
 mono_crash.*
 
+guides
+dll
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
@@ -264,6 +267,7 @@ ServiceFabricBackup/
 *.mdf
 *.ldf
 *.ndf
+*.lib
 
 # Business Intelligence projects
 *.rdl.data

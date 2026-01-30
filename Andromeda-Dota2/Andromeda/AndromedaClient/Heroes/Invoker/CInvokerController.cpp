@@ -8,6 +8,8 @@
 #include <Dota2/SDK/Types/CHandle.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
 #include <Dota2/SDK/SDK.hpp>
+#include <Dota2/SDK/Update/CDOTAInput.hpp>
+#include <Dota2/SDK/Update/CUserCmd.hpp>
 
 #include <algorithm>
 #include <array>
@@ -46,6 +48,11 @@ bool CInvokerController::ResolveLocalHero()
 	}
 
 	m_pHero = static_cast<C_DOTA_BaseNPC_Hero*>( SDK::Interfaces::GameEntitySystem()->GetBaseEntityFromHandle( heroHandle ) );
+	
+	// Log hero address for Cheat Engine (to find m_hAbilities offset)
+	if ( m_pHero )
+		DEV_LOG( "[CHEAT_ENGINE] Hero address: %p\n" , m_pHero );
+	
 	return m_pHero != nullptr;
 }
 
@@ -53,7 +60,7 @@ bool CInvokerController::EnsureAbilityOffsets()
 {
 	if ( m_OffsetsReady )
 		return true;
-
+	
 	uint32_t offset = 0;
 	if ( !GetSchemaOffset()->TryGetOffset( "C_DOTA_BaseNPC" , "m_hAbilities" , offset ) )
 	{
@@ -61,13 +68,15 @@ bool CInvokerController::EnsureAbilityOffsets()
 		if ( !warned )
 		{
 			DEV_LOG( "[invoker] m_hAbilities offset not found in schema\n" );
+			DEV_LOG( "[invoker] Available classes: %zu\n" , GetSchemaOffset()->GetClassCount() );
 			warned = true;
 		}
 		return false;
 	}
-
+	
 	m_AbilityArrayOffset = offset;
 	m_OffsetsReady = true;
+	DEV_LOG( "[invoker] m_hAbilities offset found: 0x%04X\n" , offset );
 	return true;
 }
 

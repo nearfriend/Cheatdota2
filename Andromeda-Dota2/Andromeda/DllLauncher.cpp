@@ -67,8 +67,18 @@ auto CDllLauncher::OnDestroy() -> void
 	}
 }
 
+// Helper function to safely initialize client without C++ objects in SEH block
+static void SafeInitClient()
+{
+	// Use SetUnhandledExceptionFilter or rely on vectored exception handler
+	// We can't use __try/__except here because it conflicts with C++ objects
+	GetAndromedaClient()->OnInit();
+}
+
 auto WINAPI CDllLauncher::StartCheatTheard( LPVOID lpThreadParameter ) -> DWORD
 {
+	// Initialize crash handler FIRST - this sets up vectored exception handler
+	// which will catch exceptions without needing __try/__except
 	GetDevLog()->Init();
 	GetCrashLog()->InitVectorExceptionHandler();
 
@@ -76,37 +86,61 @@ auto WINAPI CDllLauncher::StartCheatTheard( LPVOID lpThreadParameter ) -> DWORD
 	DEV_LOG( "[+] StartCheatThread: %s\n" , ansi_to_utf8( GetDllDir() ).c_str() );
 #endif
 
+	// Wait a bit for game to fully initialize
+	Sleep( 2000 );
+
+	// Initialize MinHook
 	if ( !GetHook_Loader()->InitalizeMH() )
 	{
 		DEV_LOG( "[error] Hook_Loader::InitalizeMH\n" );
 		return 0;
 	}
 
+	// Install first hook (critical for GUI)
 	if ( !GetHook_Loader()->InstallFirstHook() )
 	{
 		DEV_LOG( "[error] Hook_Loader::InstallFirstHook\n" );
-		return 0;
+		// Don't return - continue anyway, some hooks might work
 	}
 
+	// Wait for game modules to load
+	Sleep( 1000 );
+
+	// Initialize function list (pattern scanning)
 	if ( !GetFunctionList()->OnInit() )
 	{
 		DEV_LOG( "[error] FunctionList::OnInit\n" );
-		return 0;
+		// Continue anyway - some functions might still work
 	}
 
+	// Wait a bit more before SDK loading
+	Sleep( 1000 );
+
+	// Load SDK (interfaces, schema system)
 	if ( !GetSDK_Loader()->LoadSDK() )
 	{
 		DEV_LOG( "[error] CSDK_Loader::LoadSDK\n" );
-		return 0;
+		// Continue anyway - GUI might still work
 	}
 
+	// Wait before installing second hooks
+	Sleep( 500 );
+
+	// Install second hooks (gameplay hooks)
 	if ( !GetHook_Loader()->InstallSecondHook() )
 	{
 		DEV_LOG( "[error] Hook_Loader::InstallSecondHook\n" );
-		return 0;
+		// Continue anyway - GUI should still work
 	}
 
-	GetAndromedaClient()->OnInit();
+	// Wait before client initialization
+	Sleep( 500 );
+
+	// Initialize client (this might trigger schema dump)
+	// Vectored exception handler will catch any exceptions
+	SafeInitClient();
+
+	DEV_LOG( "[success] Cheat initialization complete\n" );
 
 	return 0;
 }

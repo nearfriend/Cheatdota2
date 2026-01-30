@@ -13,8 +13,8 @@ struct HookData_t
 	CBasePattern m_Pattern;
 	LPVOID m_pDetour = nullptr;
 	LPVOID* m_pOriginal = nullptr;
-	bool m_bSkipIfNotFound = false;
-	bool m_bSkipError = false;
+	bool m_bSkipIfNotFound = false;  // Continue if hook not found (non-critical hooks)
+	bool m_bSkipError = false;      // Don't log error if pattern not found
 };
 
 class CHook_Loader final

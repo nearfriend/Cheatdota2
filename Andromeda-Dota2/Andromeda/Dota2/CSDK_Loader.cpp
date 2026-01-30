@@ -67,7 +67,18 @@ auto CSDK_Loader::LoadSDK() -> bool
 	DEV_LOG( "[+] ppCUserCmdArray: %p\n" , ppCUserCmdArray );
 #endif
 
+	// Initialize schema system
+	// Schema dump can be very heavy and might cause issues if game isn't ready
+	// Vectored exception handler will catch any exceptions
 	GetSchemaOffset()->Init();
+	
+	// Verify critical offsets are discovered
+#if LOG_SDK == 1
+	if ( !GetSchemaOffset()->VerifyCriticalOffsets() )
+	{
+		DEV_LOG( "[warn] Some critical offsets not found - ability system may not work correctly\n" );
+	}
+#endif
 
 	return true;
 }

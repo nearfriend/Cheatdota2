@@ -30,7 +30,7 @@ auto CAndromedaClient::OnInit() -> void
 	// Hero data: load from cache only if file exists and looks valid; otherwise skip to avoid noisy errors.
 	const std::string baseDir = GetDllDir();
 	const std::string heroJsonPath = baseDir + "Assets\\data\\npc_heroes.json";
-	const bool heroFileOk = std::filesystem::exists( heroJsonPath ) && std::filesystem::file_size( heroJsonPath ) > 128;
+	const bool heroFileOk = std::filesystem::exists( heroJsonPath ) && std::filesystem::file_size( heroJsonPath ) > 128u;
 	if ( heroFileOk && g_HeroDataLoader.LoadFromFile( heroJsonPath ) )
 	{
 		const char* src = g_HeroDataLoader.GetSourcePath().c_str();
@@ -85,8 +85,20 @@ auto CAndromedaClient::OnRender() -> void
 
 auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserCmd ) -> void
 {
+	static int s_nCallCount = 0;
+	s_nCallCount++;
+	
+	// Log first few calls to verify function is being called
+	if ( s_nCallCount <= 3 )
+	{
+		DEV_LOG( "[andromeda] OnCreateMove called (call #%d, pCUserCmd=%p)\n" , s_nCallCount , pCUserCmd );
+	}
+	
 	// Lua scripting for Invoker (on_tick/on_combo).
 	m_InvokerController.OnCreateMove( pCDOTAInput , pCUserCmd );
+	
+	// Meepo ability information display
+	m_MeepoController.OnCreateMove( pCDOTAInput , pCUserCmd );
 }
 
 auto CAndromedaClient::GetHeroData() -> CHeroDataLoader*

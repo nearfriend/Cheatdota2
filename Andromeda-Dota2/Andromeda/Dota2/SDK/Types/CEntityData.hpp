@@ -82,6 +82,8 @@ public:
 class C_DOTA_BaseNPC_Hero : public C_DOTA_BaseNPC
 {
 public:
+	SCHEMA_OFFSET("C_DOTA_BaseNPC_Hero", "m_hAbilities", m_hAbilities, CUtlVector<CHandle>);
+
 };
 
 class CBasePlayerController : public C_BaseEntity

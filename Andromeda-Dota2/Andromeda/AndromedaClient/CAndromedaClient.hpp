@@ -6,6 +6,7 @@
 #include <Dota2/CHook_Loader.hpp>
 
 #include <AndromedaClient/Heroes/Invoker/CInvokerController.hpp>
+#include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
 
 class CDOTAInput;
 class CUserCmd;
@@ -32,6 +33,8 @@ public:
 
 public:
 	auto GetHeroData() -> CHeroDataLoader*;
+	CMeepoController& GetMeepoController() { return m_MeepoController; }
+	const CMeepoController& GetMeepoController() const { return m_MeepoController; }
 
 private:
 	CBasePattern dota_camera_distance = { XorStr( "dota_camera_distance" ) , XorStr( "F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA ? ? ? ? F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA ? ? ? ? F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA ? ? ? ? F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA" ) , XorStr( CLIENT_DLL ) , 0 , eBasePatternSearchType::SEARCH_TYPE_MOV_PTR };
@@ -40,6 +43,7 @@ private:
 
 private:
 	CInvokerController m_InvokerController;
+	CMeepoController m_MeepoController;
 };
 
 auto GetAndromedaClient() -> CAndromedaClient*;

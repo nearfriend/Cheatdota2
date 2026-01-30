@@ -49,12 +49,6 @@
     <Filter Include="Andromeda\AndromedaClient\Settings">
       <UniqueIdentifier>{8310cc7a-28f9-4062-81fe-50ef2f6908d8}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Andromeda\AndromedaClient\Heroes">
-      <UniqueIdentifier>{5f8fcb18-7df9-4f86-8bba-337bcf1e9a2b}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Andromeda\AndromedaClient\Heroes\Invoker">
-      <UniqueIdentifier>{f4af2a14-660b-4ad0-9ea8-44c07f684f19}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Andromeda\Dota2\SDK">
       <UniqueIdentifier>{f3a2422b-65ce-4a97-8f6a-f8d7573298ef}</UniqueIdentifier>
     </Filter>
@@ -149,9 +143,6 @@
     </ClCompile>
     <ClCompile Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.cpp">
       <Filter>Andromeda\AndromedaClient\GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="Andromeda\AndromedaClient\Heroes\Invoker\CInvokerController.cpp">
-      <Filter>Andromeda\AndromedaClient\Heroes\Invoker</Filter>
     </ClCompile>
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_GetProtoCDOTAGameAccountPlus.cpp">
       <Filter>Andromeda\Dota2\Hook</Filter>
@@ -529,9 +520,6 @@
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.hpp">
       <Filter>Andromeda\AndromedaClient\GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="Andromeda\AndromedaClient\Heroes\Invoker\CInvokerController.hpp">
-      <Filter>Andromeda\AndromedaClient\Heroes\Invoker</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\Settings\Settings.hpp">
       <Filter>Andromeda\AndromedaClient\Settings</Filter>
