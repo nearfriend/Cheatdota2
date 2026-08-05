@@ -34,6 +34,8 @@ public:
 	 */
 	auto GetClassCount() const -> size_t { return m_SchemaData.size(); }
 
+	void StoreOffset( const char* className , const char* propertyName , uint32_t offset );
+
 private:
 	std::unordered_map<std::string , std::unordered_map<std::string , SchemaOffset_t>> m_SchemaData;
 };

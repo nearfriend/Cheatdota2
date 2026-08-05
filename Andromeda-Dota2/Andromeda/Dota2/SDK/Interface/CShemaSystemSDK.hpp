@@ -3,179 +3,173 @@
 #include <Common/Common.hpp>
 #include <Common/MemoryEngine.hpp>
 
+#include <array>
+#include <cstdint>
+#include <unordered_set>
+#include <vector>
+
 #include <Dota2/CBasePattern.hpp>
 #include <Dota2/SDK/SDK.hpp>
 #include <Dota2/SDK/Update/VMT_Index.hpp>
 
 #define SCHEMA_SYSTEM_INTERFACE_VERSION "SchemaSystem_001"
 
-#pragma region CSchemaSystemIndex
-
-#pragma endregion
-
-#pragma region GeneratorOffset
-
 namespace GeneratorOffset
 {
-	constexpr auto GetNumSchema = 0x74;
-	constexpr auto GetClassContainer = 0x580; // 49 8D 9F ? ? ? ? 48 8B CB E8 ? ? ? ? 48 8B 43 ? 48 8B CB 48 89 43 ? E8 ? ? ? ? 48 83 C3 ? 48 83 EF
-	constexpr auto GetEnumContainer = 0x1E10;
+	// CSchemaSystemTypeScope::class_bindings (UtlTsHash)
+	constexpr auto ClassBindings = 0x560;
+	// CSchemaSystemTypeScope::enum_bindings (UtlTsHash)
+	constexpr auto EnumBindings = 0x1DD0;
 }
-
-#pragma endregion
-
-#pragma region CSchemaSystemClasses
 
 class CSchemaClassBinding;
 class CSchemaType;
 class CSchemaSystemTypeScope;
 
-#pragma endregion
-
-#pragma region CSchemaSystemImpl
-
-class SchemaClassFieldDataArray_t
+struct SchemaClassFieldData_t
 {
-public:
-	char* FieldName;
-	CSchemaType* FieldType;
-	int FieldOffset;
-private:
-	PAD( 0xC );
+	const char* m_pName;
+	CSchemaType* m_pType;
+	int32_t m_nOffset;
+	int32_t m_nMetadataCount;
+	void* m_pMetadata;
 };
 
-class SchemaEnumFieldDataArray_t
+struct SchemaEnumeratorInfoData_t
 {
-public:
-	char* FieldName;
-	uint64_t FieldData;
-private:
-	PAD( 0x10 );
-};
-
-class CSchemaClassBinding
-{
-public:
-	class CBaseClass_t
+	const char* m_pName;
+	union
 	{
-	public:
-		CUSTOM_OFFSET_FIELD( CSchemaClassBinding* , m_classInfo , 0x8 );
+		uint8_t m_nValueChar;
+		uint16_t m_nValueShort;
+		uint32_t m_nValueInt;
+		uint64_t m_nValue;
 	};
-
-	CUSTOM_OFFSET_FIELD( const char* , m_bindingName , 0x8 );
-	CUSTOM_OFFSET_FIELD( const char* , m_dllName , 0x10 );
-	CUSTOM_OFFSET_FIELD( int , m_SizeOf , 0x18 );
-	CUSTOM_OFFSET_FIELD( int16_t , m_DataArraySize , 0x1C );
-	CUSTOM_OFFSET_FIELD( SchemaClassFieldDataArray_t* , m_DataArray , 0x28 );
-	CUSTOM_OFFSET_FIELD( CBaseClass_t* , m_baseClass , 0x30 );
-	CUSTOM_OFFSET_FIELD( CSchemaSystemTypeScope* , m_TypeScope , 0x48 );
-	CUSTOM_OFFSET_FIELD( CSchemaType* , m_Type , 0x50 );
-};
-
-class CSchemaEnumBinding
-{
-public:
-	CUSTOM_OFFSET_FIELD( const char* , m_bindingName , 0x8 );
-	CUSTOM_OFFSET_FIELD( const char* , m_dllName , 0x10 );
-	CUSTOM_OFFSET_FIELD( int8_t , m_TypeSize , 0x18 );
-	CUSTOM_OFFSET_FIELD( int16_t , m_DataArraySize , 0x1C );
-	CUSTOM_OFFSET_FIELD( SchemaEnumFieldDataArray_t* , m_DataArray , 0x20 );
-
-public:
-	const char* GenerateTypeStorage()
-	{
-		const char* TypeStorage = nullptr;
-
-		switch ( m_TypeSize() )
-		{
-			case 1:
-				TypeStorage = "uint8_t";
-				break;
-			case 2:
-				TypeStorage = "uint16_t";
-				break;
-			case 4:
-				TypeStorage = "uint32_t";
-				break;
-			case 8:
-				TypeStorage = "uint64_t";
-				break;
-			default:
-				TypeStorage = "INVALID_TYPE";;
-				break;
-		}
-
-		return TypeStorage;
-	}
 };
 
 class CSchemaType
 {
 public:
-	void* ptable;
-	char* szTypeName;
+	void* m_pVtable;
+	const char* m_szTypeName;
 };
 
-template <class T = CSchemaClassBinding>
-class CSchemaList
+class CSchemaClassBinding
 {
 public:
-	class SchemaBlock
-	{
-	public:
-		SchemaBlock* Next() const
-		{
-			return m_nextBlock;
-		}
-		T* GetBinding() const
-		{
-			return m_classBinding;
-		}
-	private:
-		void* unkn0;
-		SchemaBlock* m_nextBlock;
-		T* m_classBinding;
-	};
+	CUSTOM_OFFSET_FIELD( void* , m_pBase , 0x0 );
+	CUSTOM_OFFSET_FIELD( const char* , m_bindingName , 0x8 );
+	CUSTOM_OFFSET_FIELD( const char* , m_binaryName , 0x10 );
+	CUSTOM_OFFSET_FIELD( const char* , m_dllName , 0x18 );
+	CUSTOM_OFFSET_FIELD( int32_t , m_SizeOf , 0x20 );
+	CUSTOM_OFFSET_FIELD( int16_t , m_fieldCount , 0x24 );
+	CUSTOM_OFFSET_FIELD( int16_t , m_staticMetadataCount , 0x26 );
+	CUSTOM_OFFSET_FIELD( SchemaClassFieldData_t* , m_fields , 0x30 );
+	CUSTOM_OFFSET_FIELD( void* , m_baseClasses , 0x40 );
+	CUSTOM_OFFSET_FIELD( void* , m_staticMetadata , 0x48 );
+	CUSTOM_OFFSET_FIELD( CSchemaSystemTypeScope* , m_TypeScope , 0x58 );
+	CUSTOM_OFFSET_FIELD( CSchemaType* , m_Type , 0x60 );
 
-	class BlockContainer
-	{
-	public:
-		SchemaBlock* GetFirstBlock() const
-		{
-			return m_firstBlock;
-		}
-	private:
-		void* unkn[2];
-		SchemaBlock* m_firstBlock;
-	};
-
-	typedef std::array<BlockContainer , 256> BlockContainers;
-
-	int GetNumSchema()
-	{
-		return CUSTOM_OFFSET( int , -GeneratorOffset::GetNumSchema );
-	}
-
-	const BlockContainers& GetBlockContainers()
-	{
-		return CUSTOM_OFFSET( const BlockContainers , 0x0 );
-	}
+	auto m_DataArray() -> SchemaClassFieldData_t* { return m_fields(); }
+	auto m_DataArraySize() -> int16_t { return m_fieldCount(); }
 };
 
-#pragma endregion
+class CSchemaEnumBinding
+{
+public:
+	CUSTOM_OFFSET_FIELD( void* , m_pBase , 0x0 );
+	CUSTOM_OFFSET_FIELD( const char* , m_bindingName , 0x8 );
+	CUSTOM_OFFSET_FIELD( const char* , m_dllName , 0x10 );
+	CUSTOM_OFFSET_FIELD( uint8_t , m_size , 0x18 );
+	CUSTOM_OFFSET_FIELD( uint8_t , m_alignment , 0x19 );
+	CUSTOM_OFFSET_FIELD( uint16_t , m_enumeratorCount , 0x1C );
+	CUSTOM_OFFSET_FIELD( SchemaEnumeratorInfoData_t* , m_enumerators , 0x20 );
+
+	auto m_DataArray() -> SchemaEnumeratorInfoData_t* { return m_enumerators(); }
+	auto m_DataArraySize() -> uint16_t { return m_enumeratorCount(); }
+	auto m_TypeSize() -> int8_t { return static_cast<int8_t>( m_size() ); }
+};
+
+struct TsListHead
+{
+	void* m_pNext;
+};
+
+struct TsListBase
+{
+	TsListHead m_head;
+};
+
+struct UtlMemoryPool
+{
+	int32_t m_blockSize;
+	int32_t m_blocksPerBlob;
+	uint32_t m_growMode;
+	int32_t m_blocksAllocated;
+	int32_t m_peakAllocated;
+	uint16_t m_alignment;
+	uint16_t m_blobCount;
+	PAD( 0x2 );
+	TsListBase m_freeBlocks;
+	PAD( 0x20 );
+	void* m_blobHead;
+	int32_t m_totalSize;
+	PAD( 0xC );
+};
+
+template<typename T>
+struct UtlTsHashFixedData
+{
+	uint64_t m_uiKey;
+	UtlTsHashFixedData<T>* m_pNext;
+	T* m_pData;
+};
+
+template<typename T>
+struct UtlTsHashBucket
+{
+	uintptr_t m_addLock;
+	UtlTsHashFixedData<T>* m_pFirst;
+	UtlTsHashFixedData<T>* m_pFirstUncommitted;
+};
+
+template<typename T, size_t BucketCount = 256>
+struct UtlTsHash
+{
+	UtlMemoryPool m_entryMem;
+	std::array<UtlTsHashBucket<T> , BucketCount> m_buckets;
+	bool m_needsCommit;
+	PAD( 0x3 );
+	int32_t m_contentionCheck;
+	PAD( 0x8 );
+};
+
+template<typename T, size_t BucketCount = 256>
+struct UtlTsHashAllocatedBlob
+{
+	UtlTsHashAllocatedBlob<T>* m_pNext;
+	PAD( 0x8 );
+	T* m_pData;
+	PAD( 0x18 );
+};
 
 class CSchemaSystemTypeScope
 {
 public:
-	CSchemaList<CSchemaClassBinding>* GetClassContainer()
+	auto FindRawClassBinding( const char* className ) -> CSchemaClassBinding*
 	{
-		return CUSTOM_OFFSET_RAW( CSchemaList<CSchemaClassBinding> , GeneratorOffset::GetClassContainer );
+		VirtualFn( CSchemaClassBinding* )( CSchemaSystemTypeScope* , const char* );
+		return vget<Fn>( this , SDK::VMT_Index::CSchemaSystemTypeScope::FindRawClassBinding )( this , className );
 	}
 
-public:
-	CSchemaList<CSchemaEnumBinding>* GetEnumContainer()
+	auto GetClassBindingsHash() -> UtlTsHash<CSchemaClassBinding>*
 	{
-		return CUSTOM_OFFSET_RAW( CSchemaList<CSchemaEnumBinding> , GeneratorOffset::GetEnumContainer );
+		return CUSTOM_OFFSET_RAW( UtlTsHash<CSchemaClassBinding> , GeneratorOffset::ClassBindings );
+	}
+
+	auto GetEnumBindingsHash() -> UtlTsHash<CSchemaEnumBinding>*
+	{
+		return CUSTOM_OFFSET_RAW( UtlTsHash<CSchemaEnumBinding> , GeneratorOffset::EnumBindings );
 	}
 };
 
@@ -190,7 +184,7 @@ public:
 	auto GlobalTypeScope() -> CSchemaSystemTypeScope*
 	{
 		VirtualFn( CSchemaSystemTypeScope* )( CSchemaSystem* );
-		return vget< Fn >( this , SDK::VMT_Index::CSchemaSystem::GlobalTypeScope )( this );
+		return vget<Fn>( this , SDK::VMT_Index::CSchemaSystem::GlobalTypeScope )( this );
 	}
 
 	auto GetAllTypeScope() -> CSchemaSystemTypeScope**
@@ -200,6 +194,6 @@ public:
 
 	auto GetAllTypeScopeSize() -> uint16_t
 	{
-		return *reinterpret_cast<uint16_t*>( (uintptr_t)CSchemaSystem_Search::GetAllTypeScopeFn.GetFunction() - 0x8 );
+		return *reinterpret_cast<uint16_t*>( reinterpret_cast<uintptr_t>( CSchemaSystem_Search::GetAllTypeScopeFn.GetFunction() ) - 0x8 );
 	}
 };

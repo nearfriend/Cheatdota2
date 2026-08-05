@@ -2,6 +2,7 @@
 
 #include <Common/Common.hpp>
 #include <vector>
+#include <dxgi.h>
 
 #include <Dota2/CBasePattern.hpp>
 
@@ -31,6 +32,8 @@ private:
 
 public:
 	auto DestroyHooks() -> void;
+
+	auto InstallSwapChainHooks( IDXGISwapChain* pSwapChain ) -> bool;
 
 private:
 	std::vector<HookData_t> m_Hooks = {};

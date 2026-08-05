@@ -8,16 +8,18 @@
 
 auto Hook_OnCreateMove( CDOTAInput* pCDOTAInput , uint32_t split_screen_index , bool a3 ) -> void
 {
+	if ( !OnCreateMove_o )
+		return;
+
 	OnCreateMove_o( pCDOTAInput , split_screen_index , a3 );
 
-	// Try to get CUserCmd, but always call OnCreateMove even if it's null
-	CUserCmd* pCUserCmd = nullptr;
-	
-	if ( auto pLocalPlayerController = GetCL_DOTAPlayerController()->GetLocal(); pLocalPlayerController )
-	{
-		pCUserCmd = pCDOTAInput->GetUserCmd( pLocalPlayerController );
-	}
+	if ( !pCDOTAInput )
+		return;
 
-	// Always call OnCreateMove (even if pCUserCmd is null - the function handles it)
+	CUserCmd* pCUserCmd = nullptr;
+
+	if ( auto* pLocalPlayerController = GetCL_DOTAPlayerController()->GetLocal(); pLocalPlayerController )
+		pCUserCmd = pCDOTAInput->GetUserCmd( pLocalPlayerController );
+
 	GetAndromedaClient()->OnCreateMove( pCDOTAInput , pCUserCmd );
 }

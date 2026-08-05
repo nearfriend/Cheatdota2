@@ -81,7 +81,23 @@ GetGameEntitySystemPointer:;
 	{
 		if ( !g_ppCUserCmd )
 		{
-			auto ppCUserCmd = reinterpret_cast<uintptr_t>( FindPattern( CLIENT_DLL , XorStr( "48 8B 0D ? ? ? ? E8 ? ? ? ? 49 8B CF" ) ) );
+			static const char* patterns[] =
+			{
+				"48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CF 4C 8B F8",
+				"48 8B 0D ? ? ? ? E8 ? ? ? ? 49 8B CF",
+				"48 8B 0D ? ? ? ? E8 ? ? ? ? 4C 8B F0",
+				nullptr
+			};
+
+			uintptr_t ppCUserCmd = 0;
+
+			for ( int i = 0; patterns[i]; ++i )
+			{
+				ppCUserCmd = reinterpret_cast<uintptr_t>( FindPattern( CLIENT_DLL , patterns[i] ) );
+
+				if ( ppCUserCmd )
+					break;
+			}
 
 			if ( !ppCUserCmd )
 				return nullptr;

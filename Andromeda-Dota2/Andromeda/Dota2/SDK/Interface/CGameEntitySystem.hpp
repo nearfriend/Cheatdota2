@@ -9,7 +9,6 @@
 #include <Dota2/SDK/Update/Offsets.hpp>
 #include <Dota2/SDK/Types/CHandle.hpp>
 #include <Dota2/SDK/Types/CEntityData.hpp>
-#include <Dota2/SDK/FunctionListSDK.hpp>
 
 #define MAX_ENTITIES_IN_LIST 512
 #define MAX_ENTITY_LISTS 64
@@ -68,14 +67,7 @@ public:
 
 inline auto CGameEntitySystem::GetLocalPlayerController() -> C_DOTAPlayerController*
 {
-	if ( auto pFn = GetFunctionList()->CGameEntitySystem_GetLocalPlayerController.GetFunction() )
-	{
-		using Fn = C_DOTAPlayerController* ( __fastcall* )( int );
-
-		if ( auto* pController = reinterpret_cast<Fn>( pFn )( 0 ) )
-			return pController;
-	}
-
+	// The pattern-scanned game function crashes on current builds (see debug.log crash at that address).
 	return ResolveLocalPlayerControllerBySchema();
 }
 
@@ -116,7 +108,7 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 		if ( !pBinding )
 			continue;
 
-		const char* className = pBinding->m_bindingName();
+		const char* className = pController->GetSchemaClassName();
 
 		if ( !className || std::strcmp( className , "C_DOTAPlayerController" ) != 0 )
 			continue;

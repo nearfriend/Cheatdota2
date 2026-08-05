@@ -52,6 +52,7 @@ public:
 
 public:
 	auto OnReopenGUI() -> void;
+	auto ProcessHotkeys() -> void;
 
 public:
 	static LRESULT WINAPI GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam , LPARAM lParam );

@@ -38,30 +38,42 @@ inline bool IsReadable( const void* ptr , size_t size = 1 )
 
 auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* pInst , CHandle handle ) -> void
 {
+	const char* className = nullptr;
 	auto* pIdentity = pInst ? pInst->pEntityIdentity() : nullptr;
-	auto* pBinding = pInst ? pInst->GetSchemaClassBinding() : nullptr;
-	const char* className = ( pBinding && pBinding->m_bindingName() ) ? pBinding->m_bindingName() : "<unknown>";
 
-	// NEW APPROACH: Check class binding directly (more reliable than name)
-	// Entity names may not be initialized when OnAddEntity is called
-	static int s_nEntityCount = 0;
-	static int s_nHeroCount = 0;
-	s_nEntityCount++;
-	
-	if ( pInst && IsReadable( pInst ) && pBinding && className )
+	if ( pInst )
+		className = pInst->GetSchemaClassName();
+
+	if ( !className && pIdentity && IsReadable( pIdentity ) )
 	{
-		// Check if it's a hero by class name
-		if ( strstr( className , "C_DOTA_BaseNPC_Hero" ) != nullptr )
+		const auto& designerName = pIdentity->DesingerName();
+
+		if ( designerName.String() && IsReadable( designerName.String() , 128 ) )
+			className = designerName.String();
+	}
+
+	if ( !className )
+		className = "<unknown>";
+
+	static int s_nHeroCount = 0;
+
+	if ( pInst && IsReadable( pInst ) && className != "<unknown>" )
+	{
+		const bool isHero =
+			strstr( className , "C_DOTA_BaseNPC_Hero" ) != nullptr ||
+			strstr( className , "npc_dota_hero" ) != nullptr;
+
+		if ( isHero )
 		{
 			s_nHeroCount++;
 			DEV_LOG( "[OnAddEntity] HERO FOUND #%d: class='%s', ptr=%p\n" , s_nHeroCount , className , pInst );
-			
-			// Try to cast to hero
+
 			auto* pHero = static_cast<C_DOTA_BaseNPC_Hero*>( pInst );
+
 			if ( pHero && IsReadable( pHero ) )
 			{
-				// Try to get entity name (may fail, but try anyway)
 				std::string entityName;
+
 				if ( pIdentity && IsReadable( pIdentity ) )
 				{
 					try
@@ -69,20 +81,16 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 						if ( IsReadable( &pIdentity->Name() ) )
 						{
 							auto nameSymbol = pIdentity->Name();
+
 							if ( IsReadable( nameSymbol.String() , 128 ) )
-							{
 								entityName = nameSymbol.String();
-							}
 						}
 					}
 					catch ( ... )
 					{
-						// Name reading failed, continue anyway
 					}
 				}
-				
-				// For now, capture ALL heroes and let MeepoController figure out which one is Meepo
-				// (In Demo mode, there's usually only one hero anyway)
+
 				if ( auto* pClient = GetAndromedaClient() )
 				{
 					pClient->GetMeepoController().OnEntityAdded( pInst );
@@ -147,6 +155,5 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 		}
 	}
 
-	DEV_LOG( "Hook_OnAddEntity: %p , %s\n" , pIdentity , className );
 	return OnAddEntity_o( pCGameEntitySystem , pInst , handle );
 }

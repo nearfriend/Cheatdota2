@@ -46,9 +46,25 @@ public:
 		CSchemaClassBinding* pBinding = nullptr;
 
 		VirtualFn( void )( CEntityInstance* , CSchemaClassBinding** );
-		vget< Fn >( this , SDK::VMT_Index::CSchemaSystem::SchemaClassInfo )( this , &pBinding );
+		vget< Fn >( this , SDK::VMT_Index::CEntityInstance::SchemaClassInfo )( this , &pBinding );
 
 		return pBinding;
+	}
+
+	auto GetSchemaClassName() -> const char*
+	{
+		auto* pBinding = GetSchemaClassBinding();
+
+		if ( !pBinding )
+			return nullptr;
+
+		// Runtime VMT returns CSchemaClassInfo (name at +0x8).
+		const char* nameAt8 = *reinterpret_cast<const char**>( reinterpret_cast<uintptr_t>( pBinding ) + 8 );
+
+		if ( nameAt8 )
+			return nameAt8;
+
+		return pBinding->m_bindingName();
 	}
 
 public:
@@ -82,7 +98,7 @@ public:
 class C_DOTA_BaseNPC_Hero : public C_DOTA_BaseNPC
 {
 public:
-	SCHEMA_OFFSET("C_DOTA_BaseNPC_Hero", "m_hAbilities", m_hAbilities, CUtlVector<CHandle>);
+	SCHEMA_OFFSET( "C_DOTA_BaseNPC" , "m_vecAbilities" , m_vecAbilities , CUtlVector<CHandle> );
 
 };
 

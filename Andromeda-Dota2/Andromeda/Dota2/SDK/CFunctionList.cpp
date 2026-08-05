@@ -4,10 +4,8 @@ static CFunctionList g_CFunctionList{};
 
 auto CFunctionList::OnInit() -> bool
 {
-	const bool hasLocalPlayerPattern = CGameEntitySystem_GetLocalPlayerController.Search( true );
-
-	if ( !hasLocalPlayerPattern )
-		DEV_LOG( "[warn] CBasePattern: CGameEntitySystem::GetLocalPlayerController (using schema fallback)\n" );
+	// Do not call the pattern-scanned GetLocalPlayerController - it crashes on current builds.
+	CGameEntitySystem_GetLocalPlayerController.Search( true );
 
 	std::vector<CBasePattern*> requiredPatterns =
 	{

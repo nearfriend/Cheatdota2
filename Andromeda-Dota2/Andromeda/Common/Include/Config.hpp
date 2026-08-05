@@ -25,6 +25,6 @@
 // Set to 1 to enable schema offset discovery (for Phase 1)
 // WARNING: Generates VERY large log file (50+ MB) and may cause delays/crashes
 // If game crashes on injection, try setting this to 0 temporarily
-#define DUMP_SCHEMA_ALL_OFFSET		1  // Phase 1: Enable schema offset discovery
+#define DUMP_SCHEMA_ALL_OFFSET		0
 
 #endif // RELEASE_BUILD

@@ -7,6 +7,7 @@
 #include <Dota2/SDK/Types/CEntityData.hpp>
 #include <Dota2/SDK/Types/CHandle.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
+#include <Dota2/SDK/Update/AbilityOffsets.hpp>
 #include <Dota2/SDK/SDK.hpp>
 #include <Dota2/SDK/Update/CDOTAInput.hpp>
 #include <Dota2/SDK/Update/CUserCmd.hpp>
@@ -62,21 +63,24 @@ bool CInvokerController::EnsureAbilityOffsets()
 		return true;
 	
 	uint32_t offset = 0;
-	if ( !GetSchemaOffset()->TryGetOffset( "C_DOTA_BaseNPC" , "m_hAbilities" , offset ) )
+	if ( !GetSchemaOffset()->TryGetOffset( "C_DOTA_BaseNPC" , "m_vecAbilities" , offset ) )
 	{
+		offset = BaseNPCOffsets::m_vecAbilities;
 		static bool warned = false;
 		if ( !warned )
 		{
-			DEV_LOG( "[invoker] m_hAbilities offset not found in schema\n" );
+			DEV_LOG( "[invoker] m_vecAbilities not in schema, using fallback 0x%04X\n" , offset );
 			DEV_LOG( "[invoker] Available classes: %zu\n" , GetSchemaOffset()->GetClassCount() );
 			warned = true;
 		}
-		return false;
 	}
-	
+
+	if ( offset == 0 )
+		return false;
+
 	m_AbilityArrayOffset = offset;
 	m_OffsetsReady = true;
-	DEV_LOG( "[invoker] m_hAbilities offset found: 0x%04X\n" , offset );
+	DEV_LOG( "[invoker] m_vecAbilities offset: 0x%04X\n" , offset );
 	return true;
 }
 

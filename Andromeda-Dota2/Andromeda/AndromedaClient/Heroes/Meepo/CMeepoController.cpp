@@ -7,6 +7,7 @@
 #include <Dota2/SDK/Update/CDOTAInput.hpp>
 #include <Dota2/SDK/Update/CUserCmd.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
+#include <Dota2/SDK/Update/AbilityOffsets.hpp>
 
 #include <Windows.h>
 #include <algorithm>
@@ -302,32 +303,26 @@ bool CMeepoController::RefreshAbilityList()
 	if (!m_pHero)
 		return false;
 
-	// MANUAL OFFSET - Found via Cheat Engine
-	// Hero Address: 0x0000057653EAC800
-	// Pattern Address: 0x0000057653EACAA8
-	// Offset = 0x2A8
-	static constexpr uint32_t MANUAL_ABILITIES_OFFSET = 0x2A8;
-
-	// Try schema offset first, fallback to manual offset
+	// Try schema offset first, fallback to static client offset
 	uint32_t offset = 0;
-	bool useSchemaOffset = GetSchemaOffset()->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_hAbilities", offset) && offset > 0;
+	bool useSchemaOffset = GetSchemaOffset()->TryGetOffset( "C_DOTA_BaseNPC" , "m_vecAbilities" , offset ) && offset > 0;
 
-	if (!useSchemaOffset)
+	if ( !useSchemaOffset )
 	{
-		offset = MANUAL_ABILITIES_OFFSET;
+		offset = BaseNPCOffsets::m_vecAbilities;
 		static bool warned = false;
-		if (!warned)
+		if ( !warned )
 		{
-			DEV_LOG("[meepo] Using manual m_hAbilities offset: 0x%X\n", offset);
+			DEV_LOG( "[meepo] Using fallback m_vecAbilities offset: 0x%X\n" , offset );
 			warned = true;
 		}
 	}
 	else
 	{
 		static bool warned = false;
-		if (!warned)
+		if ( !warned )
 		{
-			DEV_LOG("[meepo] Using schema m_hAbilities offset: 0x%X\n", offset);
+			DEV_LOG( "[meepo] Using schema m_vecAbilities offset: 0x%X\n" , offset );
 			warned = true;
 		}
 	}
@@ -681,7 +676,7 @@ bool CMeepoController::RefreshAbilityList()
 	}
 	catch (...)
 	{
-		DEV_LOG("[meepo] Failed to access m_hAbilities (offset: 0x%X)\n", offset);
+		DEV_LOG( "[meepo] Failed to access m_vecAbilities (offset: 0x%X)\n" , offset );
 		return false;
 	}
 }

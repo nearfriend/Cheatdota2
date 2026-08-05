@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Common/Common.hpp>
+#include <Dota2/SDK/Update/AbilityOffsets.hpp>
 #include <vector>
 #include <string>
 
@@ -45,7 +46,7 @@ private:
 	C_DOTA_BaseNPC_Hero* m_pHero = nullptr;
 	std::vector<MeepoAbilityInfo> m_Abilities;
 
-	uint32_t m_hAbilitiesOffset = 0x1A00; // Default offset from Cheat Engine guide
+	uint32_t m_vecAbilitiesOffset = BaseNPCOffsets::m_vecAbilities;
 	uint32_t m_iHeroIDOffset = 0x2A8; // Common offset for hero ID
 
 	static constexpr int kMaxAbilitySlots = 24;

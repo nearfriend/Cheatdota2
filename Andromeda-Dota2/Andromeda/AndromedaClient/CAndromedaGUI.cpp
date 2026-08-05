@@ -17,11 +17,14 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hwnd , UINT msg , WP
 
 auto CAndromedaGUI::OnInit( IDXGISwapChain* pSwapChain ) -> void
 {
-	DXGI_SWAP_CHAIN_DESC SwapChainDesc;
+	if ( m_bInit || !pSwapChain )
+		return;
 
-	if ( FAILED( pSwapChain->GetDevice( IID_PPV_ARGS( &m_pDevice ) ) ) )
+	DXGI_SWAP_CHAIN_DESC SwapChainDesc{};
+
+	if ( FAILED( pSwapChain->GetDevice( IID_PPV_ARGS( &m_pDevice ) ) ) || !m_pDevice )
 	{
-		DEV_LOG( "[error] CAndromedaGUI::OnInit: #1\n" );
+		DEV_LOG( "[error] CAndromedaGUI::OnInit: GetDevice failed\n" );
 		return;
 	}
 
@@ -29,11 +32,17 @@ auto CAndromedaGUI::OnInit( IDXGISwapChain* pSwapChain ) -> void
 
 	if ( FAILED( pSwapChain->GetDesc( &SwapChainDesc ) ) )
 	{
-		DEV_LOG( "[error] CAndromedaGUI::OnInit: #2\n" );
+		DEV_LOG( "[error] CAndromedaGUI::OnInit: GetDesc failed\n" );
 		return;
 	}
 
 	m_hCS2Window = SwapChainDesc.OutputWindow;
+
+	if ( !m_hCS2Window )
+	{
+		DEV_LOG( "[error] CAndromedaGUI::OnInit: OutputWindow is null\n" );
+		return;
+	}
 
 	m_pImGuiContext = ImGui::CreateContext();
 
@@ -54,13 +63,12 @@ auto CAndromedaGUI::OnInit( IDXGISwapChain* pSwapChain ) -> void
 	ImGui_ImplDX11_Init( m_pDevice , m_pDeviceContext );
 
 	InitFont();
-
-	// Apply the Dota Dark theme on startup.
 	UpdateStyle();
 
 	m_WndProc_o = (WNDPROC)SetWindowLongPtrA( m_hCS2Window , GWLP_WNDPROC , (LONG_PTR)GUI_WndProc );
 
 	m_bInit = true;
+	DEV_LOG( "[+] CAndromedaGUI initialized (hwnd=%p device=%p)\n" , m_hCS2Window , m_pDevice );
 }
 
 auto CAndromedaGUI::OnDestroy() -> void
@@ -118,70 +126,108 @@ auto CAndromedaGUI::InitFont() -> void
 
 void CAndromedaGUI::OnPresent( IDXGISwapChain* pSwapChain )
 {
+	static int s_PresentLog = 0;
+
+	if ( s_PresentLog < 3 )
+	{
+		DEV_LOG( "[+] Present callback #%d (swapchain=%p init=%d)\n" , s_PresentLog + 1 , pSwapChain , m_bInit ? 1 : 0 );
+		s_PresentLog++;
+	}
+
+	ProcessHotkeys();
+
 	if ( !m_bInit )
 		OnInit( pSwapChain );
-	else
+
+	if ( m_bInit )
 		OnRender( pSwapChain );
 }
 
-void CAndromedaGUI::OnResizeBuffers( IDXGISwapChain* pSwapChain )
+void CAndromedaGUI::OnResizeBuffers( IDXGISwapChain* /*pSwapChain*/ )
 {
-	OnDestroy();
+	ClearRenderTargetView();
 }
  
 void CAndromedaGUI::OnRender( IDXGISwapChain* pSwapChain )
 {
+	if ( !pSwapChain || !m_pDevice || !m_pDeviceContext )
+		return;
+
 	if ( m_pFreeType_Font && m_pFreeType_Font->PreNewFrame() )
 	{
 		ImGui_ImplDX11_InvalidateDeviceObjects();
 		ImGui_ImplDX11_CreateDeviceObjects();
 	}
-	else
+
+	if ( !m_pRenderTargetView )
 	{
-		if ( !m_pRenderTargetView )
+		ID3D11Texture2D* pBackBuffer = nullptr;
+
+		if ( SUCCEEDED( pSwapChain->GetBuffer( 0 , IID_PPV_ARGS( &pBackBuffer ) ) ) && pBackBuffer )
 		{
-			ID3D11Texture2D* pBackBuffer = nullptr;
-
-			pSwapChain->GetBuffer( 0 , IID_PPV_ARGS( &pBackBuffer ) );
-
-			D3D11_RENDER_TARGET_VIEW_DESC RenderTargetDesc;
-
-			memset( &RenderTargetDesc , 0 , sizeof( RenderTargetDesc ) );
-
-			RenderTargetDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-			RenderTargetDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
-
-			if ( pBackBuffer )
-			{
-				m_pDevice->CreateRenderTargetView( pBackBuffer , &RenderTargetDesc , &m_pRenderTargetView );
-				pBackBuffer->Release();
-			}
+			// Let D3D pick the correct format from the backbuffer (Dota may not be R8G8B8A8).
+			m_pDevice->CreateRenderTargetView( pBackBuffer , nullptr , &m_pRenderTargetView );
+			pBackBuffer->Release();
 		}
 
-		ImGui::SetCurrentContext( m_pImGuiContext );
-
-		m_pDeviceContext->OMGetRenderTargets( 1 , &m_pMainRenderTarget , 0 );
-		m_pDeviceContext->OMSetRenderTargets( 1 , &m_pRenderTargetView , 0 );
-
-		ImGui_ImplDX11_NewFrame();
-		ImGui_ImplWin32_NewFrame();
-
-		ImGui::NewFrame();
-
-		GetAndromedaClient()->OnRender();
-
-		ImGui::EndFrame();
-		ImGui::Render();
-
-		ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
-
-		m_pDeviceContext->OMSetRenderTargets( 1 , &m_pMainRenderTarget , 0 );
+		if ( !m_pRenderTargetView )
+		{
+			static bool logged = false;
+			if ( !logged )
+			{
+				DEV_LOG( "[error] CreateRenderTargetView failed\n" );
+				logged = true;
+			}
+			return;
+		}
 	}
+
+	ImGui::SetCurrentContext( m_pImGuiContext );
+
+	ID3D11RenderTargetView* pOldRTV = nullptr;
+	m_pDeviceContext->OMGetRenderTargets( 1 , &pOldRTV , nullptr );
+	m_pDeviceContext->OMSetRenderTargets( 1 , &m_pRenderTargetView , nullptr );
+
+	ImGui_ImplDX11_NewFrame();
+	ImGui_ImplWin32_NewFrame();
+
+	ImGui::NewFrame();
+
+	GetAndromedaClient()->OnRender();
+
+	ImGui::EndFrame();
+	ImGui::Render();
+
+	ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
+
+	m_pDeviceContext->OMSetRenderTargets( 1 , &pOldRTV , nullptr );
+
+	if ( pOldRTV )
+		pOldRTV->Release();
+}
+
+auto CAndromedaGUI::ProcessHotkeys() -> void
+{
+	static bool f6WasDown = false;
+
+	const bool f6Down = ( GetAsyncKeyState( VK_F6 ) & 0x8000 ) != 0;
+
+	if ( f6Down && !f6WasDown )
+		OnReopenGUI();
+
+	f6WasDown = f6Down;
 }
 
 auto CAndromedaGUI::OnReopenGUI() -> void
 {
 	m_bVisible = !m_bVisible;
+
+	DEV_LOG( "[gui] F6 toggle -> visible=%d init=%d\n" , m_bVisible ? 1 : 0 , m_bInit ? 1 : 0 );
+
+	if ( !m_bInit )
+		return;
+
+	ImGui::SetCurrentContext( m_pImGuiContext );
 
 	ImGui::GetIO().MouseDrawCursor = m_bVisible;
 	ShowCursor( !m_bVisible );
@@ -207,11 +253,14 @@ LRESULT WINAPI CAndromedaGUI::GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam
 		return true;
 	}
 
+	if ( uMsg == WM_KEYUP && wParam == VK_F6 )
+	{
+		GetAndromedaGUI()->OnReopenGUI();
+		return 0;
+	}
+
 	if ( GetAndromedaGUI()->m_bInit )
 	{
-		if ( uMsg == WM_KEYUP && wParam == VK_F6 )
-			GetAndromedaGUI()->OnReopenGUI();
-
 		if ( GetAndromedaGUI()->IsVisible() && ImGui_ImplWin32_WndProcHandler( hwnd , uMsg , wParam , lParam ) == 0 )
 			return true;
 	}
