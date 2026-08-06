@@ -253,12 +253,6 @@ LRESULT WINAPI CAndromedaGUI::GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam
 		return true;
 	}
 
-	if ( uMsg == WM_KEYUP && wParam == VK_F6 )
-	{
-		GetAndromedaGUI()->OnReopenGUI();
-		return 0;
-	}
-
 	if ( GetAndromedaGUI()->m_bInit )
 	{
 		if ( GetAndromedaGUI()->IsVisible() && ImGui_ImplWin32_WndProcHandler( hwnd , uMsg , wParam , lParam ) == 0 )
@@ -273,9 +267,9 @@ auto CAndromedaGUI::SetDotaDarkStyle() -> void
 	auto& style = ImGui::GetStyle();
 	auto& colors = style.Colors;
 
-	style.WindowPadding = ImVec2( 16.f , 16.f );
-	style.FramePadding = ImVec2( 10.f , 8.f );
-	style.ItemSpacing = ImVec2( 12.f , 10.f );
+	style.WindowPadding = ImVec2( 0.f , 0.f );
+	style.FramePadding = ImVec2( 9.f , 6.f );
+	style.ItemSpacing = ImVec2( 8.f , 7.f );
 	style.ItemInnerSpacing = ImVec2( 8.f , 6.f );
 	style.WindowRounding = 8.f;
 	style.FrameRounding = 8.f;
@@ -292,13 +286,13 @@ auto CAndromedaGUI::SetDotaDarkStyle() -> void
 	style.ScrollbarSize = 14.f;
 	style.WindowTitleAlign = ImVec2( 0.05f , 0.5f );
 
-	const ImVec4 bg0 = ImVec4( 0.07f , 0.08f , 0.10f , 1.00f );
-	const ImVec4 bg1 = ImVec4( 0.09f , 0.10f , 0.12f , 1.00f );
-	const ImVec4 bg2 = ImVec4( 0.12f , 0.14f , 0.17f , 1.00f );
-	const ImVec4 accent = ImVec4( 0.88f , 0.22f , 0.22f , 1.00f );
+	const ImVec4 bg0 = ImVec4( 0.035f , 0.038f , 0.043f , 0.98f );
+	const ImVec4 bg1 = ImVec4( 0.050f , 0.054f , 0.060f , 0.98f );
+	const ImVec4 bg2 = ImVec4( 0.075f , 0.080f , 0.090f , 1.00f );
+	const ImVec4 accent = ImVec4( 0.96f , 0.20f , 0.24f , 1.00f );
 	const ImVec4 accentSoft = ImVec4( accent.x , accent.y , accent.z , 0.35f );
-	const ImVec4 text = ImVec4( 0.95f , 0.95f , 0.96f , 1.0f );
-	const ImVec4 textMuted = ImVec4( 0.65f , 0.68f , 0.72f , 1.0f );
+	const ImVec4 text = ImVec4( 0.82f , 0.83f , 0.86f , 1.0f );
+	const ImVec4 textMuted = ImVec4( 0.48f , 0.49f , 0.54f , 1.0f );
 
 	colors[ImGuiCol_Text] = text;
 	colors[ImGuiCol_TextDisabled] = textMuted;

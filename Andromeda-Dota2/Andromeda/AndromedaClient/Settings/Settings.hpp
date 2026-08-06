@@ -7,7 +7,12 @@ namespace Settings
 {
 	namespace Camera
 	{
+		inline auto Enable = true;
 		inline auto Distance = 1200.f; // Default
+		inline auto SmoothZoom = true;
+		inline auto SmoothnessDuration = 1.4f;
+		inline auto ZoomUsingWheel = 0;
+		inline auto ZoomSpeed = 50.f;
 	}
 	namespace Menu
 	{

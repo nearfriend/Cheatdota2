@@ -285,7 +285,236 @@ static void TryLoadMeepoTextures()
 	}
 }
 
+static void DrawBrandMark( ImDrawList* drawList , const ImVec2& center )
+{
+	const ImU32 red = IM_COL32( 243 , 48 , 59 , 255 );
+	const ImU32 white = IM_COL32( 236 , 238 , 242 , 255 );
+
+	drawList->AddTriangleFilled( ImVec2( center.x , center.y - 17.f ) , ImVec2( center.x - 14.f , center.y - 8.f ) , ImVec2( center.x - 5.f , center.y ) , red );
+	drawList->AddTriangleFilled( ImVec2( center.x + 17.f , center.y ) , ImVec2( center.x + 8.f , center.y - 14.f ) , ImVec2( center.x , center.y - 5.f ) , red );
+	drawList->AddTriangleFilled( ImVec2( center.x , center.y + 17.f ) , ImVec2( center.x + 14.f , center.y + 8.f ) , ImVec2( center.x + 5.f , center.y ) , red );
+	drawList->AddTriangleFilled( ImVec2( center.x - 17.f , center.y ) , ImVec2( center.x - 8.f , center.y + 14.f ) , ImVec2( center.x , center.y + 5.f ) , red );
+	drawList->AddRectFilled( ImVec2( center.x - 4.f , center.y - 4.f ) , ImVec2( center.x + 4.f , center.y + 4.f ) , white , 1.f );
+}
+
+static bool DrawRailButton( const char* id , const char* glyph , bool selected )
+{
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	const ImVec2 size( 38.f , 36.f );
+	ImGui::InvisibleButton( id , size );
+	const bool hovered = ImGui::IsItemHovered();
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+	if ( selected || hovered )
+		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 29 , 34 , 38 , 255 ) : IM_COL32( 25 , 28 , 32 , 220 ) , 5.f );
+	if ( selected )
+		drawList->AddRectFilled( ImVec2( pos.x - 6.f , pos.y + 9.f ) , ImVec2( pos.x - 3.f , pos.y + 27.f ) , IM_COL32( 244 , 48 , 57 , 255 ) , 2.f );
+
+	const ImVec2 glyphSize = ImGui::CalcTextSize( glyph );
+	drawList->AddText( ImVec2( pos.x + ( size.x - glyphSize.x ) * 0.5f , pos.y + ( size.y - glyphSize.y ) * 0.5f ) , selected ? IM_COL32( 244 , 53 , 62 , 255 ) : IM_COL32( 181 , 183 , 197 , 255 ) , glyph );
+	return ImGui::IsItemClicked();
+}
+
+static bool DrawNavigationItem( const char* label , const char* glyph , bool selected )
+{
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	const ImVec2 size( ImGui::GetContentRegionAvail().x , 32.f );
+	ImGui::InvisibleButton( label , size );
+	const bool hovered = ImGui::IsItemHovered();
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+	if ( selected || hovered )
+		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 25 , 31 , 34 , 255 ) : IM_COL32( 22 , 25 , 28 , 220 ) , 5.f );
+	if ( selected )
+		drawList->AddRectFilled( ImVec2( pos.x - 7.f , pos.y + 6.f ) , ImVec2( pos.x - 4.f , pos.y + 26.f ) , IM_COL32( 244 , 48 , 57 , 255 ) , 2.f );
+
+	const ImU32 iconColor = selected ? IM_COL32( 244 , 55 , 65 , 255 ) : IM_COL32( 154 , 156 , 170 , 255 );
+	const ImU32 textColor = selected ? IM_COL32( 238 , 82 , 88 , 255 ) : IM_COL32( 166 , 168 , 181 , 255 );
+	drawList->AddText( ImVec2( pos.x + 9.f , pos.y + 7.f ) , iconColor , glyph );
+	drawList->AddText( ImVec2( pos.x + 35.f , pos.y + 7.f ) , textColor , label );
+	return ImGui::IsItemClicked();
+}
+
+static bool DrawSwitchRow( const char* label , const char* id , bool& value )
+{
+	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+	const float rowWidth = ImGui::GetContentRegionAvail().x;
+	const float rowHeight = 38.f;
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 10.f ) , IM_COL32( 218 , 219 , 224 , 255 ) , label );
+	drawList->AddText( ImVec2( rowPos.x + 2.f , rowPos.y + 9.f ) , IM_COL32( 244 , 50 , 60 , 255 ) , value ? "+" : "-" );
+
+	const ImVec2 switchPos( rowPos.x + rowWidth - 31.f , rowPos.y + 9.f );
+	ImGui::SetCursorScreenPos( switchPos );
+	ImGui::InvisibleButton( id , ImVec2( 30.f , 18.f ) );
+	const bool clicked = ImGui::IsItemClicked();
+	if ( clicked )
+		value = !value;
+
+	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? IM_COL32( 116 , 34 , 39 , 255 ) : IM_COL32( 48 , 50 , 56 , 255 ) , 9.f );
+	const float knobX = value ? switchPos.x + 21.f : switchPos.x + 9.f;
+	drawList->AddCircleFilled( ImVec2( knobX , switchPos.y + 9.f ) , 7.5f , value ? IM_COL32( 246 , 52 , 61 , 255 ) : IM_COL32( 150 , 152 , 160 , 255 ) );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
+	return clicked;
+}
+
+static bool DrawSliderRow( const char* label , const char* id , float& value , float minValue , float maxValue , const char* valueFormat )
+{
+	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+	const float rowWidth = ImGui::GetContentRegionAvail().x;
+	char valueText[32] = {};
+	snprintf( valueText , sizeof( valueText ) , valueFormat , value );
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 7.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , label );
+	drawList->AddText( ImVec2( rowPos.x + 2.f , rowPos.y + 6.f ) , IM_COL32( 244 , 50 , 60 , 255 ) , "o" );
+	const ImVec2 valueSize = ImGui::CalcTextSize( valueText );
+	drawList->AddText( ImVec2( rowPos.x + rowWidth - valueSize.x , rowPos.y + 7.f ) , IM_COL32( 186 , 187 , 193 , 255 ) , valueText );
+
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + 28.f ) );
+	ImGui::PushStyleVar( ImGuiStyleVar_FramePadding , ImVec2( 0.f , 1.f ) );
+	ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding , 2.f );
+	ImGui::PushStyleVar( ImGuiStyleVar_GrabRounding , 6.f );
+	ImGui::PushStyleVar( ImGuiStyleVar_GrabMinSize , 11.f );
+	ImGui::PushStyleColor( ImGuiCol_FrameBg , IM_COL32( 36 , 38 , 45 , 255 ) );
+	ImGui::PushStyleColor( ImGuiCol_FrameBgHovered , IM_COL32( 42 , 44 , 50 , 255 ) );
+	ImGui::PushStyleColor( ImGuiCol_SliderGrab , IM_COL32( 234 , 235 , 238 , 255 ) );
+	ImGui::PushStyleColor( ImGuiCol_SliderGrabActive , IM_COL32( 250 , 250 , 252 , 255 ) );
+	ImGui::SetNextItemWidth( rowWidth );
+	const bool changed = ImGui::SliderFloat( id , &value , minValue , maxValue , "" , ImGuiSliderFlags_AlwaysClamp );
+	ImGui::PopStyleColor( 4 );
+	ImGui::PopStyleVar( 4 );
+	const float grabX = rowPos.x + rowWidth * ( value - minValue ) / ( maxValue - minValue );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + 29.f ) , ImVec2( grabX , rowPos.y + 29.f ) , IM_COL32( 246 , 51 , 60 , 255 ) , 5.f );
+	drawList->AddCircleFilled( ImVec2( grabX , rowPos.y + 29.f ) , 5.5f , IM_COL32( 238 , 239 , 242 , 255 ) );
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + 48.f ) );
+	return changed;
+}
+
 auto CAndromedaMenu::OnRenderMenu() -> void
+{
+	float menuAlpha = static_cast<float>( Settings::Menu::MenuAlpha ) / 255.f;
+	menuAlpha = (std::max)( menuAlpha , Settings::Menu::MenuAlphaMin );
+	const ImVec2 display = ImGui::GetIO().DisplaySize;
+	ImGui::SetNextWindowPos( ImVec2( display.x * 0.5f , display.y * 0.5f ) , ImGuiCond_FirstUseEver , ImVec2( 0.5f , 0.5f ) );
+	ImGui::SetNextWindowSize( ImVec2( 840.f , 560.f ) , ImGuiCond_Always );
+	ImGui::PushStyleVar( ImGuiStyleVar_Alpha , menuAlpha );
+	ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 0.f , 0.f ) );
+	ImGui::PushStyleColor( ImGuiCol_WindowBg , IM_COL32( 8 , 9 , 10 , 250 ) );
+	const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+
+	if ( ImGui::Begin( "##AndromedaReferenceMenu" , nullptr , flags ) )
+	{
+		static int selectedPage = 2;
+		const char* pageNames[] = { "Info Screen", "Aggro Drawer", "Camera", "Heroes Overlay", "Info Overlay", "Notifications", "Offscreen", "Radius", "Show Me More", "Visible Settings", "Ward Helper" };
+		const char* pageGlyphs[] = { "i", ">", "C", "H", "II", "!", "^", "v", "x", "o", "w" };
+
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
+		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
+		DrawBrandMark( ImGui::GetWindowDrawList() , ImVec2( ImGui::GetWindowPos().x + 25.f , ImGui::GetWindowPos().y + 25.f ) );
+		ImGui::SetCursorPosY( 58.f );
+		const char* railGlyphs[] = { "i", "A", "C", "H", "S", "*", "X", "</>", "~" };
+		for ( int i = 0; i < IM_ARRAYSIZE( railGlyphs ); ++i )
+		{
+			ImGui::SetCursorPosX( 6.f );
+			if ( DrawRailButton( railGlyphs[i] , railGlyphs[i] , i == 2 ) && i < IM_ARRAYSIZE( pageNames ) )
+				selectedPage = i;
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 4.f );
+		}
+		ImGui::SetCursorPos( ImVec2( 6.f , ImGui::GetWindowHeight() - 43.f ) );
+		DrawRailButton( "##settingsRail" , "*" , false );
+		ImGui::EndChild();
+		ImGui::PopStyleColor();
+
+		ImGui::SameLine( 0.f , 0.f );
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 15 , 16 , 18 , 244 ) );
+		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 12.f ) );
+		ImGui::BeginChild( "##navigation" , ImVec2( 164.f , 0.f ) , true , ImGuiWindowFlags_NoScrollbar );
+		ImGui::SetCursorPosY( 21.f );
+		ImGui::SetCursorPosX( 16.f );
+		ImGui::TextColored( ImVec4( 0.66f , 0.67f , 0.72f , 1.f ) , "Info Screen" );
+		ImGui::SetCursorPosY( 63.f );
+		for ( int i = 0; i < IM_ARRAYSIZE( pageNames ); ++i )
+		{
+			if ( DrawNavigationItem( pageNames[i] , pageGlyphs[i] , selectedPage == i ) )
+				selectedPage = i;
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 1.f );
+		}
+		ImGui::EndChild();
+		ImGui::PopStyleVar();
+		ImGui::PopStyleColor();
+
+		ImGui::SameLine( 0.f , 0.f );
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 9 , 10 , 11 , 242 ) );
+		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 12.f ) );
+		ImGui::BeginChild( "##mainContent" , ImVec2( 0.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
+		ImGui::SetCursorPosY( 19.f );
+		ImGui::TextDisabled( "Main  /" );
+		ImGui::SameLine();
+		ImGui::TextColored( ImVec4( 0.95f , 0.25f , 0.29f , 1.f ) , "%s" , pageNames[selectedPage] );
+
+		static char search[64] = {};
+		const float rightStart = ImGui::GetWindowWidth() - 267.f;
+		ImGui::SameLine( rightStart );
+		ImGui::PushStyleVar( ImGuiStyleVar_FramePadding , ImVec2( 6.f , 4.f ) );
+		ImGui::Button( "[ ]##save" , ImVec2( 28.f , 27.f ) );
+		ImGui::SameLine( 0.f , 4.f );
+		ImGui::Button( "~##cloud" , ImVec2( 28.f , 27.f ) );
+		ImGui::SameLine( 0.f , 7.f );
+		ImGui::SetNextItemWidth( 190.f );
+		ImGui::InputTextWithHint( "##referenceSearch" , "Search" , search , IM_ARRAYSIZE( search ) );
+		ImGui::PopStyleVar();
+
+		ImGui::SetCursorPosY( 63.f );
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 16 , 17 , 19 , 250 ) );
+		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
+		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
+		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
+		ImGui::BeginChild( "##settingsCard" , ImVec2( 0.f , selectedPage == 2 ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
+		ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , pageNames[selectedPage] );
+		ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+
+		if ( selectedPage == 2 )
+		{
+			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable );
+			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 5000.f , "%.0f" ) )
+				GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
+			DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom );
+			DrawSliderRow( "Smoothness Duration" , "##smoothDuration" , Settings::Camera::SmoothnessDuration , 0.1f , 3.0f , "%.2f sec" );
+
+			const ImVec2 comboRow = ImGui::GetCursorScreenPos();
+			const float comboWidth = ImGui::GetContentRegionAvail().x;
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			drawList->AddText( ImVec2( comboRow.x + 27.f , comboRow.y + 9.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , "Zoom using Wheel" );
+			drawList->AddText( ImVec2( comboRow.x + 2.f , comboRow.y + 8.f ) , IM_COL32( 244 , 50 , 60 , 255 ) , "o" );
+			ImGui::SetCursorScreenPos( ImVec2( comboRow.x + comboWidth - 120.f , comboRow.y + 3.f ) );
+			const char* wheelModes[] = { "Wheel", "Disabled" };
+			ImGui::SetNextItemWidth( 120.f );
+			ImGui::Combo( "##wheelMode" , &Settings::Camera::ZoomUsingWheel , wheelModes , IM_ARRAYSIZE( wheelModes ) );
+			drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+			ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
+			DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" );
+		}
+		else
+		{
+			ImGui::Spacing();
+			ImGui::TextColored( ImVec4( 0.76f , 0.77f , 0.80f , 1.f ) , "%s" , pageNames[selectedPage] );
+			ImGui::TextDisabled( "This module has no configurable options yet." );
+		}
+
+		ImGui::EndChild();
+		ImGui::PopStyleVar( 2 );
+		ImGui::PopStyleColor( 2 );
+		ImGui::EndChild();
+		ImGui::PopStyleVar();
+		ImGui::PopStyleColor();
+	}
+	ImGui::End();
+	ImGui::PopStyleColor();
+	ImGui::PopStyleVar( 2 );
+}
+
+auto CAndromedaMenu::OnRenderLegacyMenu() -> void
 {
 	float MenuAlpha = static_cast<float>( Settings::Menu::MenuAlpha ) / 255.f;
 	MenuAlpha = (std::max)( MenuAlpha , Settings::Menu::MenuAlphaMin );

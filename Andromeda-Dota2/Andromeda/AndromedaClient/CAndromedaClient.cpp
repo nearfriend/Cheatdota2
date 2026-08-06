@@ -415,7 +415,7 @@ auto CAndromedaClient::SetCameraDistance( float Distance ) -> void
 auto CAndromedaClient::OnRender() -> void
 {
 	// Only force camera once pointers are confirmed writable.
-	if ( m_pCameraDistance || m_pCameraFarplane )
+	if ( Settings::Camera::Enable && ( m_pCameraDistance || m_pCameraFarplane ) )
 		SetCameraDistance( Settings::Camera::Distance );
 
 	if ( GetAndromedaGUI()->IsVisible() )
@@ -435,7 +435,7 @@ auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserC
 	if ( s_nCallCount <= 3 )
 		DEV_LOG( "[andromeda] OnCreateMove called (call #%d, pCUserCmd=%p)\n" , s_nCallCount , pCUserCmd );
 
-	if ( m_pCameraDistance || m_pCameraFarplane )
+	if ( Settings::Camera::Enable && ( m_pCameraDistance || m_pCameraFarplane ) )
 		SetCameraDistance( Settings::Camera::Distance );
 
 	m_InvokerController.OnCreateMove( pCDOTAInput , pCUserCmd );
