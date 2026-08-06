@@ -365,23 +365,15 @@ auto CAndromedaClient::OnInit() -> void
 
 	const std::string baseDir = GetDllDir();
 	const std::string heroJsonPath = baseDir + "Assets\\data\\npc_heroes.json";
-	const bool heroFileOk = std::filesystem::exists( heroJsonPath ) && std::filesystem::file_size( heroJsonPath ) > 128u;
+	constexpr const char* kHeroJsonUrl = "https://raw.githubusercontent.com/odota/dotaconstants/master/build/heroes.json";
 
-	if ( heroFileOk && g_HeroDataLoader.LoadFromFile( heroJsonPath ) )
+	if ( g_HeroDataLoader.EnsureCacheAndLoad( kHeroJsonUrl , heroJsonPath ) )
 		DEV_LOG( "[heroes] loaded %zu heroes from %s\n" , g_HeroDataLoader.GetAll().size() , g_HeroDataLoader.GetSourcePath().c_str() );
 	else
 		DEV_LOG( "[heroes] skip hero data load (missing/invalid file: %s)\n" , heroJsonPath.c_str() );
 
 	const std::string scriptsRoot = baseDir + "Assets\\Lua\\";
-	const bool hasLuaDll =
-		std::filesystem::exists( scriptsRoot + "lua54.dll" ) ||
-		std::filesystem::exists( scriptsRoot + "lua53.dll" ) ||
-		std::filesystem::exists( scriptsRoot + "lua.dll" );
-
-	if ( hasLuaDll )
-		GetLuaManager()->Init( scriptsRoot );
-	else
-		DEV_LOG( "[lua] skip init: lua*.dll not found in %s\n" , scriptsRoot.c_str() );
+	GetLuaManager()->Init( scriptsRoot );
 }
 
 auto CAndromedaClient::SetCameraDistance( float Distance ) -> void

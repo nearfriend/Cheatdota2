@@ -59,6 +59,19 @@ static bool DownloadFileWinHttp( const std::wstring& url , const std::wstring& o
 	bool ok = WinHttpSendRequest( hRequest , WINHTTP_NO_ADDITIONAL_HEADERS , 0 , WINHTTP_NO_REQUEST_DATA , 0 , 0 , 0 );
 	if ( ok ) ok = WinHttpReceiveResponse( hRequest , nullptr );
 
+	DWORD statusCode = 0;
+	if ( ok )
+	{
+		DWORD statusSize = sizeof( statusCode );
+		ok = WinHttpQueryHeaders(
+			hRequest ,
+			WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER ,
+			WINHTTP_HEADER_NAME_BY_INDEX ,
+			&statusCode ,
+			&statusSize ,
+			WINHTTP_NO_HEADER_INDEX ) && statusCode >= 200 && statusCode < 300;
+	}
+
 	std::vector<uint8_t> buffer;
 	if ( ok )
 	{
@@ -85,7 +98,7 @@ static bool DownloadFileWinHttp( const std::wstring& url , const std::wstring& o
 	WinHttpCloseHandle( hConnect );
 	WinHttpCloseHandle( hSession );
 
-	if ( !ok || buffer.empty() )
+	if ( !ok || buffer.size() <= 128 )
 		return false;
 
 	std::filesystem::create_directories( std::filesystem::path( outPath ).parent_path() );
@@ -210,20 +223,36 @@ static void PreDownloadAssets()
 	const std::string baseDirA = GetInjector()->szCurrentDir;
 	const std::wstring baseDir = std::wstring( baseDirA.begin() , baseDirA.end() );
 
-	// JSON heroes
-	const std::wstring heroJsonUrl = L"https://raw.githubusercontent.com/odota/dotaconstants/master/build/npc_heroes.json";
+	// JSON heroes (odota renamed npc_heroes.json -> heroes.json)
+	const std::wstring heroJsonUrl = L"https://raw.githubusercontent.com/odota/dotaconstants/master/build/heroes.json";
 	const std::wstring heroJsonPath = baseDir + L"Assets\\data\\npc_heroes.json";
 
-	bool heroOk = std::filesystem::exists( heroJsonPath );
-	if ( !heroOk )
+	bool heroCacheOk = false;
+	try
+	{
+		heroCacheOk = std::filesystem::exists( heroJsonPath ) && std::filesystem::file_size( heroJsonPath ) > 128u;
+	}
+	catch ( ... )
+	{
+		heroCacheOk = false;
+	}
+
+	if ( !heroCacheOk )
 	{
 		DEV_LOG( "[info] downloading npc_heroes.json...\n" );
-		heroOk = DownloadFileWinHttp( heroJsonUrl , heroJsonPath );
+		const bool heroOk = DownloadFileWinHttp( heroJsonUrl , heroJsonPath );
 		DEV_LOG( heroOk ? "[info] npc_heroes.json downloaded\n" : "[error] failed download npc_heroes.json\n" );
 	}
 	else
 	{
 		DEV_LOG( "[info] npc_heroes.json already exists\n" );
+	}
+
+	// Lua runtime used by the client scripting layer
+	const std::wstring luaDllPath = baseDir + L"Assets\\Lua\\lua54.dll";
+	if ( !std::filesystem::exists( luaDllPath ) )
+	{
+		DEV_LOG( "[warn] lua54.dll missing at %ws — place Lua 5.4 Win64 DLL there to enable scripting\n" , luaDllPath.c_str() );
 	}
 
 	// тащим иконки из установленных библиотек Dota

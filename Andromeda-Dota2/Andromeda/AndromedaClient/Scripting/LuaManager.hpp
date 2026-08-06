@@ -5,6 +5,8 @@
 #include <string>
 #include <unordered_map>
 #include <filesystem>
+#include <cstdint>
+#include <cstddef>
 
 struct lua_State;
 
@@ -38,17 +40,19 @@ private:
 		HMODULE module = nullptr;
 		bool loaded = false;
 
+		// Only bind symbols that are actually exported by standard lua54.dll.
+		// Macros like luaL_dofile / lua_isfunction / lua_tostring are resolved in code.
 		lua_State* ( __cdecl* luaL_newstate )() = nullptr;
 		void      ( __cdecl* lua_close )( lua_State* ) = nullptr;
 		void      ( __cdecl* luaL_openlibs )( lua_State* ) = nullptr;
-		int       ( __cdecl* luaL_dofile )( lua_State* , const char* ) = nullptr;
+		int       ( __cdecl* luaL_loadfilex )( lua_State* , const char* , const char* ) = nullptr;
 		int       ( __cdecl* lua_gettop )( lua_State* ) = nullptr;
 		void      ( __cdecl* lua_settop )( lua_State* , int ) = nullptr;
 		int       ( __cdecl* lua_getglobal )( lua_State* , const char* ) = nullptr;
-		int       ( __cdecl* lua_isfunction )( lua_State* , int ) = nullptr;
+		int       ( __cdecl* lua_type )( lua_State* , int ) = nullptr;
 		void      ( __cdecl* lua_pushnumber )( lua_State* , double ) = nullptr;
-		int       ( __cdecl* lua_pcallk )( lua_State* , int , int , int , int , void* ) = nullptr;
-		const char* ( __cdecl* lua_tostring )( lua_State* , int ) = nullptr;
+		int       ( __cdecl* lua_pcallk )( lua_State* , int , int , int , intptr_t , void* ) = nullptr;
+		const char* ( __cdecl* lua_tolstring )( lua_State* , int , size_t* ) = nullptr;
 	};
 
 	struct HeroScript

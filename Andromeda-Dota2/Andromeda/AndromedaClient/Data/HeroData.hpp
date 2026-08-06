@@ -50,6 +50,12 @@ public:
 		return true;
 	}
 
+	static inline bool IsValidHeroCache( const std::string& path )
+	{
+		std::error_code ec;
+		return std::filesystem::exists( path , ec ) && std::filesystem::file_size( path , ec ) > 128u && !ec;
+	}
+
 	// Скачивает файл по URL (https/http) в указанный путь. Возвращает true при успехе.
 	static inline bool DownloadFileWinHttp( const std::wstring& url , const std::wstring& outPath )
 	{
@@ -87,6 +93,19 @@ public:
 		bool ok = WinHttpSendRequest( hRequest , WINHTTP_NO_ADDITIONAL_HEADERS , 0 , WINHTTP_NO_REQUEST_DATA , 0 , 0 , 0 );
 		if ( ok ) ok = WinHttpReceiveResponse( hRequest , nullptr );
 
+		DWORD statusCode = 0;
+		if ( ok )
+		{
+			DWORD statusSize = sizeof( statusCode );
+			ok = WinHttpQueryHeaders(
+				hRequest ,
+				WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER ,
+				WINHTTP_HEADER_NAME_BY_INDEX ,
+				&statusCode ,
+				&statusSize ,
+				WINHTTP_NO_HEADER_INDEX ) && statusCode >= 200 && statusCode < 300;
+		}
+
 		std::vector<uint8_t> buffer;
 		if ( ok )
 		{
@@ -112,7 +131,7 @@ public:
 		WinHttpCloseHandle( hConnect );
 		WinHttpCloseHandle( hSession );
 
-		if ( !ok || buffer.empty() )
+		if ( !ok || buffer.size() <= 128 )
 			return false;
 
 		std::filesystem::create_directories( std::filesystem::path( outPath ).parent_path() );
@@ -127,16 +146,15 @@ public:
 	// Проверяет наличие кеша и при необходимости скачивает. Если загрузили — сразу парсим.
 	bool EnsureCacheAndLoad( const std::string& url , const std::string& cachePath , bool forceDownload = false )
 	{
-		const bool cacheExists = std::filesystem::exists( cachePath );
-		bool downloaded = false;
+		const bool cacheOk = IsValidHeroCache( cachePath );
 
-		if ( forceDownload || !cacheExists )
+		if ( forceDownload || !cacheOk )
 		{
-			if ( DownloadFileWinHttp( std::wstring( url.begin() , url.end() ) , std::wstring( cachePath.begin() , cachePath.end() ) ) )
-				downloaded = true;
+			if ( !DownloadFileWinHttp( std::wstring( url.begin() , url.end() ) , std::wstring( cachePath.begin() , cachePath.end() ) ) )
+				DEV_LOG( "[heroes] download failed: %s\n" , url.c_str() );
 		}
 
-		return LoadFromFile( cachePath ) || downloaded;
+		return LoadFromFile( cachePath );
 	}
 
 	auto GetHeroName( int id ) const -> std::string

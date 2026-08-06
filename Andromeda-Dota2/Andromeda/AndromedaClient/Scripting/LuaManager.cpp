@@ -10,6 +10,8 @@
 static CLuaManager g_LuaManager{};
 
 static constexpr int LUA_OK = 0;
+static constexpr int LUA_TFUNCTION = 6;
+static constexpr int LUA_MULTRET = -1;
 
 static std::string ToLowerKey( const std::string& in )
 {
@@ -108,14 +110,14 @@ bool CLuaManager::LoadApi()
 	ok &= load( m_Api.luaL_newstate , "luaL_newstate" );
 	ok &= load( m_Api.lua_close , "lua_close" );
 	ok &= load( m_Api.luaL_openlibs , "luaL_openlibs" );
-	ok &= load( m_Api.luaL_dofile , "luaL_dofile" );
+	ok &= load( m_Api.luaL_loadfilex , "luaL_loadfilex" );
 	ok &= load( m_Api.lua_gettop , "lua_gettop" );
 	ok &= load( m_Api.lua_settop , "lua_settop" );
 	ok &= load( m_Api.lua_getglobal , "lua_getglobal" );
-	ok &= load( m_Api.lua_isfunction , "lua_isfunction" );
+	ok &= load( m_Api.lua_type , "lua_type" );
 	ok &= load( m_Api.lua_pushnumber , "lua_pushnumber" );
 	ok &= load( m_Api.lua_pcallk , "lua_pcallk" );
-	ok &= load( m_Api.lua_tostring , "lua_tostring" );
+	ok &= load( m_Api.lua_tolstring , "lua_tolstring" );
 
 	m_Api.loaded = ok;
 	if ( !m_Api.loaded )
@@ -166,9 +168,11 @@ bool CLuaManager::LoadHeroScript( HeroScript& script )
 
 	m_Api.luaL_openlibs( script.L );
 
-	if ( m_Api.luaL_dofile( script.L , scriptPath.c_str() ) != LUA_OK )
+	if ( !m_Api.luaL_loadfilex || !m_Api.lua_pcallk ||
+		m_Api.luaL_loadfilex( script.L , scriptPath.c_str() , nullptr ) != LUA_OK ||
+		m_Api.lua_pcallk( script.L , 0 , LUA_MULTRET , 0 , 0 , nullptr ) != LUA_OK )
 	{
-		const char* err = m_Api.lua_tostring ? m_Api.lua_tostring( script.L , -1 ) : "lua_dofile failed";
+		const char* err = m_Api.lua_tolstring ? m_Api.lua_tolstring( script.L , -1 , nullptr ) : "lua_dofile failed";
 		script.lastError = err ? err : "unknown lua error";
 		DEV_LOG( "[lua] load error (%s): %s\n" , scriptPath.c_str() , script.lastError.c_str() );
 		CloseHero( script );
@@ -177,7 +181,7 @@ bool CLuaManager::LoadHeroScript( HeroScript& script )
 
 	const int top = m_Api.lua_gettop( script.L );
 	m_Api.lua_getglobal( script.L , "on_tick" );
-	script.hasOnTick = m_Api.lua_isfunction( script.L , -1 ) != 0;
+	script.hasOnTick = m_Api.lua_type && m_Api.lua_type( script.L , -1 ) == LUA_TFUNCTION;
 	m_Api.lua_settop( script.L , top );
 
 	script.loaded = true;
@@ -224,12 +228,12 @@ void CLuaManager::TickHero( const std::string& heroName , float deltaSeconds )
 
 	const int top = m_Api.lua_gettop( hs.L );
 	m_Api.lua_getglobal( hs.L , "on_tick" );
-	if ( m_Api.lua_isfunction( hs.L , -1 ) )
+	if ( m_Api.lua_type && m_Api.lua_type( hs.L , -1 ) == LUA_TFUNCTION )
 	{
 		m_Api.lua_pushnumber( hs.L , static_cast<double>( deltaSeconds ) );
 		if ( m_Api.lua_pcallk( hs.L , 1 , 0 , 0 , 0 , nullptr ) != LUA_OK )
 		{
-			const char* err = m_Api.lua_tostring ? m_Api.lua_tostring( hs.L , -1 ) : "pcall failed";
+			const char* err = m_Api.lua_tolstring ? m_Api.lua_tolstring( hs.L , -1 , nullptr ) : "pcall failed";
 			DEV_LOG( "[lua] on_tick error (%s): %s\n" , hs.name.c_str() , err ? err : "unknown" );
 		}
 	}
@@ -307,7 +311,7 @@ void CLuaManager::CallFunction( HeroScript& script , const char* funcName , cons
 
 	const int top = m_Api.lua_gettop( script.L );
 	m_Api.lua_getglobal( script.L , funcName );
-	if ( m_Api.lua_isfunction( script.L , -1 ) )
+	if ( m_Api.lua_type && m_Api.lua_type( script.L , -1 ) == LUA_TFUNCTION )
 	{
 		for ( double v : args )
 			m_Api.lua_pushnumber( script.L , v );
@@ -315,7 +319,7 @@ void CLuaManager::CallFunction( HeroScript& script , const char* funcName , cons
 		const int argCount = static_cast<int>( args.size() );
 		if ( m_Api.lua_pcallk( script.L , argCount , 0 , 0 , 0 , nullptr ) != LUA_OK )
 		{
-			const char* err = m_Api.lua_tostring ? m_Api.lua_tostring( script.L , -1 ) : "pcall failed";
+			const char* err = m_Api.lua_tolstring ? m_Api.lua_tolstring( script.L , -1 , nullptr ) : "pcall failed";
 			DEV_LOG( "[lua] %s error (%s): %s\n" , funcName , script.name.c_str() , err ? err : "unknown" );
 		}
 	}
