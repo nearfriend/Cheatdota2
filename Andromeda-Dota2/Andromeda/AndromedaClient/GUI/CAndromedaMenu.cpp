@@ -297,7 +297,160 @@ static void DrawBrandMark( ImDrawList* drawList , const ImVec2& center )
 	drawList->AddRectFilled( ImVec2( center.x - 4.f , center.y - 4.f ) , ImVec2( center.x + 4.f , center.y + 4.f ) , white , 1.f );
 }
 
-static bool DrawRailButton( const char* id , const char* glyph , bool selected )
+enum class ReferenceIcon
+{
+	Info, Aggro, Camera, Heroes, Overlay, Bell, Offscreen, Radius, Hidden,
+	Visible, Ward, Sparkles, Tools, Code, Cloud, Globe, Gear, Save, Mouse,
+	Distance, Smooth, Duration, Speed
+};
+
+static void DrawReferenceIcon( ImDrawList* dl , const ImVec2& c , ReferenceIcon icon , ImU32 color , float s = 1.f )
+{
+	const float r = 7.f * s;
+	const float t = (std::max)( 1.f , 1.35f * s );
+	switch ( icon )
+	{
+	case ReferenceIcon::Info:
+		dl->AddCircle( c , r , color , 16 , t );
+		dl->AddCircleFilled( ImVec2( c.x , c.y - 3.2f * s ) , 1.1f * s , color );
+		dl->AddLine( ImVec2( c.x , c.y - 0.5f * s ) , ImVec2( c.x , c.y + 4.2f * s ) , color , t );
+		break;
+	case ReferenceIcon::Aggro:
+		dl->AddCircle( c , 6.5f * s , color , 16 , t );
+		dl->AddCircle( c , 2.2f * s , color , 12 , t );
+		dl->AddLine( ImVec2( c.x + 3.f * s , c.y - 3.f * s ) , ImVec2( c.x + 8.f * s , c.y - 8.f * s ) , color , t );
+		dl->AddTriangleFilled( ImVec2( c.x + 8.f * s , c.y - 8.f * s ) , ImVec2( c.x + 4.f * s , c.y - 7.f * s ) , ImVec2( c.x + 7.f * s , c.y - 4.f * s ) , color );
+		break;
+	case ReferenceIcon::Camera:
+		dl->AddRect( ImVec2( c.x - 8.f * s , c.y - 5.f * s ) , ImVec2( c.x + 8.f * s , c.y + 6.f * s ) , color , 2.f * s , 0 , t );
+		dl->AddRectFilled( ImVec2( c.x - 4.5f * s , c.y - 7.f * s ) , ImVec2( c.x + 1.f * s , c.y - 5.f * s ) , color , 1.f * s );
+		dl->AddCircle( ImVec2( c.x + 1.5f * s , c.y + 0.5f * s ) , 3.3f * s , color , 14 , t );
+		break;
+	case ReferenceIcon::Heroes:
+		dl->AddCircle( ImVec2( c.x - 3.8f * s , c.y - 3.8f * s ) , 2.8f * s , color , 12 , t );
+		dl->AddCircle( ImVec2( c.x + 4.2f * s , c.y - 2.5f * s ) , 2.3f * s , color , 12 , t );
+		dl->AddLine( ImVec2( c.x - 9.f * s , c.y + 7.f * s ) , ImVec2( c.x - 7.f * s , c.y + 2.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 7.f * s , c.y + 2.f * s ) , ImVec2( c.x , c.y + 2.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x , c.y + 2.f * s ) , ImVec2( c.x + 2.f * s , c.y + 7.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 2.f * s , c.y + 3.f * s ) , ImVec2( c.x + 7.f * s , c.y + 3.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 7.f * s , c.y + 3.f * s ) , ImVec2( c.x + 9.f * s , c.y + 7.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Overlay:
+		dl->AddRect( ImVec2( c.x - 8.f * s , c.y - 7.f * s ) , ImVec2( c.x + 8.f * s , c.y + 7.f * s ) , color , 2.f * s , 0 , t );
+		dl->AddLine( ImVec2( c.x - 4.f * s , c.y - 3.f * s ) , ImVec2( c.x + 5.f * s , c.y - 3.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 4.f * s , c.y + 1.f * s ) , ImVec2( c.x + 3.f * s , c.y + 1.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 4.f * s , c.y + 5.f * s ) , ImVec2( c.x + 6.f * s , c.y + 5.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Bell:
+		dl->AddLine( ImVec2( c.x - 6.f * s , c.y + 4.f * s ) , ImVec2( c.x - 5.f * s , c.y - 2.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 5.f * s , c.y - 2.f * s ) , ImVec2( c.x , c.y - 6.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x , c.y - 6.f * s ) , ImVec2( c.x + 5.f * s , c.y - 2.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 5.f * s , c.y - 2.f * s ) , ImVec2( c.x + 6.f * s , c.y + 4.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 7.f * s , c.y + 4.f * s ) , ImVec2( c.x + 7.f * s , c.y + 4.f * s ) , color , t );
+		dl->AddCircleFilled( ImVec2( c.x , c.y + 6.f * s ) , 1.5f * s , color );
+		break;
+	case ReferenceIcon::Offscreen:
+		dl->AddCircle( c , 7.f * s , color , 16 , t );
+		dl->AddLine( ImVec2( c.x - 3.f * s , c.y + 3.f * s ) , ImVec2( c.x + 5.f * s , c.y - 5.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 1.f * s , c.y - 5.f * s ) , ImVec2( c.x + 5.f * s , c.y - 5.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 5.f * s , c.y - 5.f * s ) , ImVec2( c.x + 5.f * s , c.y - 1.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Radius:
+		dl->AddCircle( c , 7.5f * s , color , 20 , t );
+		dl->AddCircle( c , 4.f * s , color , 16 , t );
+		dl->AddCircleFilled( c , 1.4f * s , color );
+		break;
+	case ReferenceIcon::Hidden:
+	case ReferenceIcon::Visible:
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y ) , ImVec2( c.x - 3.f * s , c.y - 4.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 3.f * s , c.y - 4.f * s ) , ImVec2( c.x + 3.f * s , c.y - 4.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 3.f * s , c.y - 4.f * s ) , ImVec2( c.x + 8.f * s , c.y ) , color , t );
+		dl->AddLine( ImVec2( c.x + 8.f * s , c.y ) , ImVec2( c.x + 3.f * s , c.y + 4.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 3.f * s , c.y + 4.f * s ) , ImVec2( c.x - 3.f * s , c.y + 4.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 3.f * s , c.y + 4.f * s ) , ImVec2( c.x - 8.f * s , c.y ) , color , t );
+		dl->AddCircleFilled( c , 2.3f * s , color );
+		if ( icon == ReferenceIcon::Hidden )
+			dl->AddLine( ImVec2( c.x - 8.f * s , c.y + 7.f * s ) , ImVec2( c.x + 8.f * s , c.y - 7.f * s ) , color , 2.f * s );
+		break;
+	case ReferenceIcon::Ward:
+		dl->AddCircle( ImVec2( c.x , c.y - 4.f * s ) , 4.f * s , color , 14 , t );
+		dl->AddCircleFilled( ImVec2( c.x , c.y - 4.f * s ) , 1.4f * s , color );
+		dl->AddLine( ImVec2( c.x , c.y ) , ImVec2( c.x , c.y + 7.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 5.f * s , c.y + 7.f * s ) , ImVec2( c.x + 5.f * s , c.y + 7.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Sparkles:
+		dl->AddLine( ImVec2( c.x , c.y - 8.f * s ) , ImVec2( c.x , c.y + 8.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y ) , ImVec2( c.x + 8.f * s , c.y ) , color , t );
+		dl->AddLine( ImVec2( c.x + 5.f * s , c.y - 7.f * s ) , ImVec2( c.x + 9.f * s , c.y - 3.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 9.f * s , c.y - 7.f * s ) , ImVec2( c.x + 5.f * s , c.y - 3.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Tools:
+		dl->AddLine( ImVec2( c.x - 6.f * s , c.y - 7.f * s ) , ImVec2( c.x + 6.f * s , c.y + 7.f * s ) , color , 2.f * s );
+		dl->AddLine( ImVec2( c.x + 6.f * s , c.y - 7.f * s ) , ImVec2( c.x - 6.f * s , c.y + 7.f * s ) , color , 2.f * s );
+		dl->AddCircle( ImVec2( c.x - 6.f * s , c.y - 7.f * s ) , 2.5f * s , color , 12 , t );
+		break;
+	case ReferenceIcon::Code:
+		dl->AddLine( ImVec2( c.x - 2.f * s , c.y - 7.f * s ) , ImVec2( c.x - 8.f * s , c.y ) , color , t );
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y ) , ImVec2( c.x - 2.f * s , c.y + 7.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 2.f * s , c.y - 7.f * s ) , ImVec2( c.x + 8.f * s , c.y ) , color , t );
+		dl->AddLine( ImVec2( c.x + 8.f * s , c.y ) , ImVec2( c.x + 2.f * s , c.y + 7.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Cloud:
+		dl->AddCircle( ImVec2( c.x - 4.f * s , c.y + 1.f * s ) , 4.f * s , color , 12 , t );
+		dl->AddCircle( ImVec2( c.x + 1.f * s , c.y - 2.f * s ) , 5.f * s , color , 14 , t );
+		dl->AddCircle( ImVec2( c.x + 6.f * s , c.y + 2.f * s ) , 3.5f * s , color , 12 , t );
+		dl->AddLine( ImVec2( c.x - 7.f * s , c.y + 5.f * s ) , ImVec2( c.x + 8.f * s , c.y + 5.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Globe:
+		dl->AddCircle( c , 8.f * s , color , 20 , t );
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y ) , ImVec2( c.x + 8.f * s , c.y ) , color , t );
+		dl->AddCircle( c , 4.f * s , color , 16 , t );
+		break;
+	case ReferenceIcon::Gear:
+		dl->AddCircle( c , 6.f * s , color , 12 , 2.5f * s );
+		dl->AddCircleFilled( c , 2.f * s , IM_COL32( 13 , 14 , 16 , 255 ) );
+		for ( int i = 0; i < 8; ++i )
+		{
+			const float a = static_cast<float>( i ) * 0.785398f;
+			dl->AddLine( ImVec2( c.x + cosf( a ) * 6.f * s , c.y + sinf( a ) * 6.f * s ) , ImVec2( c.x + cosf( a ) * 9.f * s , c.y + sinf( a ) * 9.f * s ) , color , 2.f * s );
+		}
+		break;
+	case ReferenceIcon::Save:
+		dl->AddRect( ImVec2( c.x - 7.f * s , c.y - 8.f * s ) , ImVec2( c.x + 7.f * s , c.y + 8.f * s ) , color , 1.f * s , 0 , t );
+		dl->AddRect( ImVec2( c.x - 4.f * s , c.y - 6.f * s ) , ImVec2( c.x + 3.f * s , c.y - 1.f * s ) , color , 0.f , 0 , t );
+		dl->AddCircle( ImVec2( c.x , c.y + 4.f * s ) , 2.5f * s , color , 12 , t );
+		break;
+	case ReferenceIcon::Mouse:
+		dl->AddRect( ImVec2( c.x - 5.f * s , c.y - 8.f * s ) , ImVec2( c.x + 5.f * s , c.y + 8.f * s ) , color , 5.f * s , 0 , t );
+		dl->AddLine( ImVec2( c.x , c.y - 8.f * s ) , ImVec2( c.x , c.y - 2.f * s ) , color , t );
+		dl->AddCircleFilled( ImVec2( c.x , c.y - 4.5f * s ) , 1.f * s , color );
+		break;
+	case ReferenceIcon::Distance:
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y ) , ImVec2( c.x + 8.f * s , c.y ) , color , t );
+		dl->AddTriangleFilled( ImVec2( c.x - 8.f * s , c.y ) , ImVec2( c.x - 3.f * s , c.y - 3.f * s ) , ImVec2( c.x - 3.f * s , c.y + 3.f * s ) , color );
+		dl->AddTriangleFilled( ImVec2( c.x + 8.f * s , c.y ) , ImVec2( c.x + 3.f * s , c.y - 3.f * s ) , ImVec2( c.x + 3.f * s , c.y + 3.f * s ) , color );
+		break;
+	case ReferenceIcon::Smooth:
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y + 2.f * s ) , ImVec2( c.x - 4.f * s , c.y - 3.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 4.f * s , c.y - 3.f * s ) , ImVec2( c.x , c.y + 3.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x , c.y + 3.f * s ) , ImVec2( c.x + 4.f * s , c.y - 2.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x + 4.f * s , c.y - 2.f * s ) , ImVec2( c.x + 8.f * s , c.y + 1.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Duration:
+		dl->AddCircle( c , 7.f * s , color , 18 , t );
+		dl->AddLine( ImVec2( c.x , c.y ) , ImVec2( c.x , c.y - 4.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x , c.y ) , ImVec2( c.x + 4.f * s , c.y + 2.f * s ) , color , t );
+		dl->AddLine( ImVec2( c.x - 3.f * s , c.y - 9.f * s ) , ImVec2( c.x + 3.f * s , c.y - 9.f * s ) , color , t );
+		break;
+	case ReferenceIcon::Speed:
+		dl->AddLine( ImVec2( c.x - 8.f * s , c.y + 5.f * s ) , ImVec2( c.x - 2.f * s , c.y - 6.f * s ) , color , 2.f * s );
+		dl->AddLine( ImVec2( c.x - 2.f * s , c.y - 6.f * s ) , ImVec2( c.x + 1.f * s , c.y ) , color , 2.f * s );
+		dl->AddLine( ImVec2( c.x + 1.f * s , c.y ) , ImVec2( c.x + 8.f * s , c.y - 1.f * s ) , color , 2.f * s );
+		break;
+	}
+}
+
+static bool DrawRailButton( const char* id , ReferenceIcon icon , bool selected )
 {
 	const ImVec2 pos = ImGui::GetCursorScreenPos();
 	const ImVec2 size( 38.f , 36.f );
@@ -310,12 +463,20 @@ static bool DrawRailButton( const char* id , const char* glyph , bool selected )
 	if ( selected )
 		drawList->AddRectFilled( ImVec2( pos.x - 6.f , pos.y + 9.f ) , ImVec2( pos.x - 3.f , pos.y + 27.f ) , IM_COL32( 244 , 48 , 57 , 255 ) , 2.f );
 
-	const ImVec2 glyphSize = ImGui::CalcTextSize( glyph );
-	drawList->AddText( ImVec2( pos.x + ( size.x - glyphSize.x ) * 0.5f , pos.y + ( size.y - glyphSize.y ) * 0.5f ) , selected ? IM_COL32( 244 , 53 , 62 , 255 ) : IM_COL32( 181 , 183 , 197 , 255 ) , glyph );
+	DrawReferenceIcon( drawList , ImVec2( pos.x + size.x * 0.5f , pos.y + size.y * 0.5f ) , icon , selected ? IM_COL32( 244 , 53 , 62 , 255 ) : IM_COL32( 181 , 183 , 197 , 255 ) );
 	return ImGui::IsItemClicked();
 }
 
-static bool DrawNavigationItem( const char* label , const char* glyph , bool selected )
+static bool DrawIconButton( const char* id , ReferenceIcon icon , const ImVec2& size )
+{
+	const bool clicked = ImGui::Button( id , size );
+	const ImVec2 min = ImGui::GetItemRectMin();
+	const ImVec2 max = ImGui::GetItemRectMax();
+	DrawReferenceIcon( ImGui::GetWindowDrawList() , ImVec2( ( min.x + max.x ) * 0.5f , ( min.y + max.y ) * 0.5f ) , icon , IM_COL32( 166 , 168 , 178 , 255 ) , 0.72f );
+	return clicked;
+}
+
+static bool DrawNavigationItem( const char* label , ReferenceIcon icon , bool selected )
 {
 	const ImVec2 pos = ImGui::GetCursorScreenPos();
 	const ImVec2 size( ImGui::GetContentRegionAvail().x , 32.f );
@@ -330,19 +491,19 @@ static bool DrawNavigationItem( const char* label , const char* glyph , bool sel
 
 	const ImU32 iconColor = selected ? IM_COL32( 244 , 55 , 65 , 255 ) : IM_COL32( 154 , 156 , 170 , 255 );
 	const ImU32 textColor = selected ? IM_COL32( 238 , 82 , 88 , 255 ) : IM_COL32( 166 , 168 , 181 , 255 );
-	drawList->AddText( ImVec2( pos.x + 9.f , pos.y + 7.f ) , iconColor , glyph );
+	DrawReferenceIcon( drawList , ImVec2( pos.x + 16.f , pos.y + 16.f ) , icon , iconColor , 0.78f );
 	drawList->AddText( ImVec2( pos.x + 35.f , pos.y + 7.f ) , textColor , label );
 	return ImGui::IsItemClicked();
 }
 
-static bool DrawSwitchRow( const char* label , const char* id , bool& value )
+static bool DrawSwitchRow( const char* label , const char* id , bool& value , ReferenceIcon icon )
 {
 	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
 	const float rowWidth = ImGui::GetContentRegionAvail().x;
 	const float rowHeight = 38.f;
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 10.f ) , IM_COL32( 218 , 219 , 224 , 255 ) , label );
-	drawList->AddText( ImVec2( rowPos.x + 2.f , rowPos.y + 9.f ) , IM_COL32( 244 , 50 , 60 , 255 ) , value ? "+" : "-" );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 18.f ) , icon , IM_COL32( 244 , 50 , 60 , 255 ) , 0.65f );
 
 	const ImVec2 switchPos( rowPos.x + rowWidth - 31.f , rowPos.y + 9.f );
 	ImGui::SetCursorScreenPos( switchPos );
@@ -359,7 +520,7 @@ static bool DrawSwitchRow( const char* label , const char* id , bool& value )
 	return clicked;
 }
 
-static bool DrawSliderRow( const char* label , const char* id , float& value , float minValue , float maxValue , const char* valueFormat )
+static bool DrawSliderRow( const char* label , const char* id , float& value , float minValue , float maxValue , const char* valueFormat , ReferenceIcon icon )
 {
 	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
 	const float rowWidth = ImGui::GetContentRegionAvail().x;
@@ -367,7 +528,7 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 	snprintf( valueText , sizeof( valueText ) , valueFormat , value );
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 7.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , label );
-	drawList->AddText( ImVec2( rowPos.x + 2.f , rowPos.y + 6.f ) , IM_COL32( 244 , 50 , 60 , 255 ) , "o" );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 15.f ) , icon , IM_COL32( 244 , 50 , 60 , 255 ) , 0.65f );
 	const ImVec2 valueSize = ImGui::CalcTextSize( valueText );
 	drawList->AddText( ImVec2( rowPos.x + rowWidth - valueSize.x , rowPos.y + 7.f ) , IM_COL32( 186 , 187 , 193 , 255 ) , valueText );
 
@@ -418,22 +579,23 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 	{
 		static int selectedPage = 2;
 		const char* pageNames[] = { "Info Screen", "Aggro Drawer", "Camera", "Heroes Overlay", "Info Overlay", "Notifications", "Offscreen", "Radius", "Show Me More", "Visible Settings", "Ward Helper" };
-		const char* pageGlyphs[] = { "i", ">", "C", "H", "II", "!", "^", "v", "x", "o", "w" };
+		const ReferenceIcon pageIcons[] = { ReferenceIcon::Info, ReferenceIcon::Aggro, ReferenceIcon::Camera, ReferenceIcon::Heroes, ReferenceIcon::Overlay, ReferenceIcon::Bell, ReferenceIcon::Offscreen, ReferenceIcon::Radius, ReferenceIcon::Hidden, ReferenceIcon::Visible, ReferenceIcon::Ward };
 
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
 		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
 		DrawBrandMark( ImGui::GetWindowDrawList() , ImVec2( ImGui::GetWindowPos().x + 25.f , ImGui::GetWindowPos().y + 25.f ) );
 		ImGui::SetCursorPosY( 58.f );
-		const char* railGlyphs[] = { "i", "A", "C", "H", "S", "*", "X", "</>", "~" };
-		for ( int i = 0; i < IM_ARRAYSIZE( railGlyphs ); ++i )
+		const ReferenceIcon railIcons[] = { ReferenceIcon::Globe, ReferenceIcon::Aggro, ReferenceIcon::Camera, ReferenceIcon::Heroes, ReferenceIcon::Overlay, ReferenceIcon::Sparkles, ReferenceIcon::Tools, ReferenceIcon::Code, ReferenceIcon::Cloud };
+		const char* railIds[] = { "##railGlobe", "##railAggro", "##railCamera", "##railHeroes", "##railOverlay", "##railSparkles", "##railTools", "##railCode", "##railCloud" };
+		for ( int i = 0; i < IM_ARRAYSIZE( railIcons ); ++i )
 		{
 			ImGui::SetCursorPosX( 6.f );
-			if ( DrawRailButton( railGlyphs[i] , railGlyphs[i] , i == 2 ) && i < IM_ARRAYSIZE( pageNames ) )
+			if ( DrawRailButton( railIds[i] , railIcons[i] , i == 2 ) && i < IM_ARRAYSIZE( pageNames ) )
 				selectedPage = i;
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 4.f );
 		}
 		ImGui::SetCursorPos( ImVec2( 6.f , ImGui::GetWindowHeight() - 43.f ) );
-		DrawRailButton( "##settingsRail" , "*" , false );
+		DrawRailButton( "##settingsRail" , ReferenceIcon::Gear , false );
 		ImGui::EndChild();
 		ImGui::PopStyleColor();
 
@@ -447,7 +609,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::SetCursorPosY( 63.f );
 		for ( int i = 0; i < IM_ARRAYSIZE( pageNames ); ++i )
 		{
-			if ( DrawNavigationItem( pageNames[i] , pageGlyphs[i] , selectedPage == i ) )
+			if ( DrawNavigationItem( pageNames[i] , pageIcons[i] , selectedPage == i ) )
 				selectedPage = i;
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 1.f );
 		}
@@ -468,9 +630,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		const float rightStart = ImGui::GetWindowWidth() - 267.f;
 		ImGui::SameLine( rightStart );
 		ImGui::PushStyleVar( ImGuiStyleVar_FramePadding , ImVec2( 6.f , 4.f ) );
-		ImGui::Button( "[ ]##save" , ImVec2( 28.f , 27.f ) );
+		DrawIconButton( "##save" , ReferenceIcon::Save , ImVec2( 28.f , 27.f ) );
 		ImGui::SameLine( 0.f , 4.f );
-		ImGui::Button( "~##cloud" , ImVec2( 28.f , 27.f ) );
+		DrawIconButton( "##cloud" , ReferenceIcon::Cloud , ImVec2( 28.f , 27.f ) );
 		ImGui::SameLine( 0.f , 7.f );
 		ImGui::SetNextItemWidth( 190.f );
 		ImGui::InputTextWithHint( "##referenceSearch" , "Search" , search , IM_ARRAYSIZE( search ) );
@@ -487,24 +649,24 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 
 		if ( selectedPage == 2 )
 		{
-			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable );
-			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 5000.f , "%.0f" ) )
+			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
+			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 5000.f , "%.0f" , ReferenceIcon::Distance ) )
 				GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
-			DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom );
-			DrawSliderRow( "Smoothness Duration" , "##smoothDuration" , Settings::Camera::SmoothnessDuration , 0.1f , 3.0f , "%.2f sec" );
+			DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom , ReferenceIcon::Smooth );
+			DrawSliderRow( "Smoothness Duration" , "##smoothDuration" , Settings::Camera::SmoothnessDuration , 0.1f , 3.0f , "%.2f sec" , ReferenceIcon::Duration );
 
 			const ImVec2 comboRow = ImGui::GetCursorScreenPos();
 			const float comboWidth = ImGui::GetContentRegionAvail().x;
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
 			drawList->AddText( ImVec2( comboRow.x + 27.f , comboRow.y + 9.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , "Zoom using Wheel" );
-			drawList->AddText( ImVec2( comboRow.x + 2.f , comboRow.y + 8.f ) , IM_COL32( 244 , 50 , 60 , 255 ) , "o" );
+			DrawReferenceIcon( drawList , ImVec2( comboRow.x + 9.f , comboRow.y + 17.f ) , ReferenceIcon::Mouse , IM_COL32( 244 , 50 , 60 , 255 ) , 0.65f );
 			ImGui::SetCursorScreenPos( ImVec2( comboRow.x + comboWidth - 120.f , comboRow.y + 3.f ) );
 			const char* wheelModes[] = { "Wheel", "Disabled" };
 			ImGui::SetNextItemWidth( 120.f );
 			ImGui::Combo( "##wheelMode" , &Settings::Camera::ZoomUsingWheel , wheelModes , IM_ARRAYSIZE( wheelModes ) );
 			drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
 			ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
-			DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" );
+			DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" , ReferenceIcon::Speed );
 		}
 		else
 		{
