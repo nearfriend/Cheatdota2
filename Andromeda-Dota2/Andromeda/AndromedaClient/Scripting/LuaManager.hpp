@@ -70,6 +70,7 @@ private:
 
 	bool LoadApi();
 	bool EnsureApi();
+	bool ValidateApiPointers() const;
 	HeroScript& EnsureHeroEntry( const std::string& heroName );
 	bool LoadHeroScript( HeroScript& script );
 	void CloseHero( HeroScript& script );

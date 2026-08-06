@@ -14,16 +14,52 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstring>
+#include <string>
 
 static constexpr const char* kInvokerHeroName = "invoker";
 static constexpr int kMaxAbilitySlots = 24;
 
+static bool HeroNameContains( C_DOTA_BaseNPC_Hero* pHero , const char* needle )
+{
+	if ( !pHero || !needle || !needle[0] )
+		return false;
+
+	auto matches = [needle]( const char* s ) -> bool
+	{
+		if ( !s || !s[0] )
+			return false;
+
+		std::string lower( s );
+		std::transform( lower.begin() , lower.end() , lower.begin() , []( unsigned char c ) { return static_cast<char>( std::tolower( c ) ); } );
+		return lower.find( needle ) != std::string::npos;
+	};
+
+	if ( matches( pHero->GetSchemaClassName() ) )
+		return true;
+
+	if ( auto* id = pHero->pEntityIdentity() )
+	{
+		if ( matches( id->DesingerName().String() ) )
+			return true;
+		if ( matches( id->Name().String() ) )
+			return true;
+	}
+
+	return false;
+}
+
 void CInvokerController::OnCreateMove( CDOTAInput* /*pCDOTAInput*/ , CUserCmd* /*pCUserCmd*/ )
 {
-	TickLua();
-
 	if ( !ResolveLocalHero() )
 		return;
+
+	// Only run Invoker Lua / ability scrape when local hero is actually Invoker.
+	if ( !HeroNameContains( m_pHero , kInvokerHeroName ) )
+		return;
+
+	TickLua();
 
 	if ( !EnsureAbilityOffsets() )
 		return;

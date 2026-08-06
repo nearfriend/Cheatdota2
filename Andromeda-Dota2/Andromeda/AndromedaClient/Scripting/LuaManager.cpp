@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <vector>
+#include <Windows.h>
 
 // We avoid linking against lua directly: dynamically load lua54.dll / lua53.dll / lua.dll next to Assets\\Lua\\ or in PATH.
 static CLuaManager g_LuaManager{};
@@ -18,6 +19,121 @@ static std::string ToLowerKey( const std::string& in )
 	std::string out = in;
 	std::transform( out.begin() , out.end() , out.begin() , []( unsigned char c ) { return static_cast<char>( std::tolower( c ) ); } );
 	return out;
+}
+
+static bool IsExecutableCode( const void* ptr )
+{
+	if ( !ptr )
+		return false;
+
+	MEMORY_BASIC_INFORMATION mbi{};
+	if ( !VirtualQuery( ptr , &mbi , sizeof( mbi ) ) )
+		return false;
+
+	if ( mbi.State != MEM_COMMIT )
+		return false;
+
+	const DWORD protect = mbi.Protect;
+	return protect == PAGE_EXECUTE ||
+		protect == PAGE_EXECUTE_READ ||
+		protect == PAGE_EXECUTE_READWRITE ||
+		protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+static bool IsCodeInModule( HMODULE module , const void* ptr )
+{
+	if ( !module || !ptr || !IsExecutableCode( ptr ) )
+		return false;
+
+	auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>( module );
+	if ( dos->e_magic != IMAGE_DOS_SIGNATURE )
+		return false;
+
+	auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>( reinterpret_cast<const uint8_t*>( module ) + dos->e_lfanew );
+	if ( nt->Signature != IMAGE_NT_SIGNATURE )
+		return false;
+
+	const auto base = reinterpret_cast<uintptr_t>( module );
+	const auto addr = reinterpret_cast<uintptr_t>( ptr );
+	return addr >= base && addr < base + nt->OptionalHeader.SizeOfImage;
+}
+
+// Isolated SEH wrappers — no C++ objects with destructors in these functions.
+static lua_State* SafeLuaNewState( lua_State* ( __cdecl* fn )() )
+{
+	if ( !fn )
+		return nullptr;
+
+	__try
+	{
+		return fn();
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return nullptr;
+	}
+}
+
+static void SafeLuaClose( void ( __cdecl* fn )( lua_State* ) , lua_State* L )
+{
+	if ( !fn || !L )
+		return;
+
+	__try
+	{
+		fn( L );
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
+}
+
+static int SafeLuaPCallK( int ( __cdecl* fn )( lua_State* , int , int , int , intptr_t , void* ) ,
+	lua_State* L , int nargs , int nresults , int errfunc )
+{
+	if ( !fn || !L )
+		return -1;
+
+	__try
+	{
+		return fn( L , nargs , nresults , errfunc , 0 , nullptr );
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return -1;
+	}
+}
+
+static bool SafeLuaOpenLibs( void ( __cdecl* fn )( lua_State* ) , lua_State* L )
+{
+	if ( !fn || !L )
+		return false;
+
+	__try
+	{
+		fn( L );
+		return true;
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+
+static int SafeLuaLoadFileX( int ( __cdecl* fn )( lua_State* , const char* , const char* ) ,
+	lua_State* L , const char* path )
+{
+	if ( !fn || !L || !path )
+		return -1;
+
+	__try
+	{
+		return fn( L , path , nullptr );
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return -1;
+	}
 }
 
 static HMODULE TryLoadLuaModule( const std::string& baseDir )
@@ -84,13 +200,49 @@ void CLuaManager::Shutdown()
 
 bool CLuaManager::EnsureApi()
 {
-	if ( m_Api.loaded )
+	if ( m_Api.loaded && ValidateApiPointers() )
 		return true;
+
+	// Stale / corrupted pointers — force a clean reload.
+	if ( m_Api.module )
+	{
+		DEV_LOG( "[lua] API pointers invalid — reloading lua runtime\n" );
+		FreeLibrary( m_Api.module );
+		m_Api = {};
+	}
 
 	if ( !LoadApi() )
 		return false;
 
-	return m_Api.loaded;
+	return m_Api.loaded && ValidateApiPointers();
+}
+
+bool CLuaManager::ValidateApiPointers() const
+{
+	if ( !m_Api.module || !m_Api.loaded )
+		return false;
+
+	const void* fns[] = {
+		reinterpret_cast<const void*>( m_Api.luaL_newstate ),
+		reinterpret_cast<const void*>( m_Api.lua_close ),
+		reinterpret_cast<const void*>( m_Api.luaL_openlibs ),
+		reinterpret_cast<const void*>( m_Api.luaL_loadfilex ),
+		reinterpret_cast<const void*>( m_Api.lua_gettop ),
+		reinterpret_cast<const void*>( m_Api.lua_settop ),
+		reinterpret_cast<const void*>( m_Api.lua_getglobal ),
+		reinterpret_cast<const void*>( m_Api.lua_type ),
+		reinterpret_cast<const void*>( m_Api.lua_pushnumber ),
+		reinterpret_cast<const void*>( m_Api.lua_pcallk ),
+		reinterpret_cast<const void*>( m_Api.lua_tolstring ),
+	};
+
+	for ( const void* fn : fns )
+	{
+		if ( !IsCodeInModule( m_Api.module , fn ) )
+			return false;
+	}
+
+	return true;
 }
 
 bool CLuaManager::LoadApi()
@@ -103,7 +255,7 @@ bool CLuaManager::LoadApi()
 	auto load = [&]( auto& fn , const char* name )
 	{
 		fn = reinterpret_cast<decltype( fn )>( GetProcAddress( m_Api.module , name ) );
-		return fn != nullptr;
+		return fn != nullptr && IsCodeInModule( m_Api.module , reinterpret_cast<const void*>( fn ) );
 	};
 
 	bool ok = true;
@@ -122,6 +274,7 @@ bool CLuaManager::LoadApi()
 	m_Api.loaded = ok;
 	if ( !m_Api.loaded )
 	{
+		DEV_LOG( "[lua] failed to resolve required exports from lua runtime\n" );
 		FreeLibrary( m_Api.module );
 		m_Api = {};
 	}
@@ -150,7 +303,8 @@ bool CLuaManager::LoadHeroScript( HeroScript& script )
 		return false;
 
 	const std::string scriptPath = script.folder + "main.lua";
-	if ( !std::filesystem::exists( scriptPath ) )
+	std::error_code ec;
+	if ( !std::filesystem::exists( scriptPath , ec ) )
 	{
 		script.lastError = "main.lua not found";
 		script.loaded = false;
@@ -159,18 +313,32 @@ bool CLuaManager::LoadHeroScript( HeroScript& script )
 
 	CloseHero( script );
 
-	script.L = m_Api.luaL_newstate ? m_Api.luaL_newstate() : nullptr;
-	if ( !script.L )
+	if ( !ValidateApiPointers() )
 	{
-		script.lastError = "luaL_newstate failed";
+		script.lastError = "lua API pointers invalid";
+		DEV_LOG( "[lua] refusing LoadHeroScript — invalid API pointers\n" );
 		return false;
 	}
 
-	m_Api.luaL_openlibs( script.L );
+	script.L = SafeLuaNewState( m_Api.luaL_newstate );
+	if ( !script.L )
+	{
+		script.lastError = "luaL_newstate failed";
+		DEV_LOG( "[lua] luaL_newstate failed or faulted for %s\n" , scriptPath.c_str() );
+		return false;
+	}
 
-	if ( !m_Api.luaL_loadfilex || !m_Api.lua_pcallk ||
-		m_Api.luaL_loadfilex( script.L , scriptPath.c_str() , nullptr ) != LUA_OK ||
-		m_Api.lua_pcallk( script.L , 0 , LUA_MULTRET , 0 , 0 , nullptr ) != LUA_OK )
+	if ( !SafeLuaOpenLibs( m_Api.luaL_openlibs , script.L ) )
+	{
+		script.lastError = "luaL_openlibs faulted";
+		DEV_LOG( "[lua] luaL_openlibs faulted for %s\n" , scriptPath.c_str() );
+		SafeLuaClose( m_Api.lua_close , script.L );
+		script.L = nullptr;
+		return false;
+	}
+
+	if ( SafeLuaLoadFileX( m_Api.luaL_loadfilex , script.L , scriptPath.c_str() ) != LUA_OK ||
+		SafeLuaPCallK( m_Api.lua_pcallk , script.L , 0 , LUA_MULTRET , 0 ) != LUA_OK )
 	{
 		const char* err = m_Api.lua_tolstring ? m_Api.lua_tolstring( script.L , -1 , nullptr ) : "lua_dofile failed";
 		script.lastError = err ? err : "unknown lua error";
@@ -186,7 +354,6 @@ bool CLuaManager::LoadHeroScript( HeroScript& script )
 
 	script.loaded = true;
 	script.lastError.clear();
-	std::error_code ec;
 	script.lastWrite = std::filesystem::last_write_time( scriptPath , ec );
 
 	DEV_LOG( "[lua] loaded hero script: %s\n" , scriptPath.c_str() );
@@ -195,8 +362,8 @@ bool CLuaManager::LoadHeroScript( HeroScript& script )
 
 void CLuaManager::CloseHero( HeroScript& script )
 {
-	if ( script.L && m_Api.lua_close )
-		m_Api.lua_close( script.L );
+	if ( script.L )
+		SafeLuaClose( m_Api.lua_close , script.L );
 
 	script.L = nullptr;
 	script.loaded = false;
@@ -212,6 +379,9 @@ bool CLuaManager::ReloadHero( const std::string& heroName )
 void CLuaManager::TickHero( const std::string& heroName , float deltaSeconds )
 {
 	if ( !m_Initialized )
+		return;
+
+	if ( !EnsureApi() )
 		return;
 
 	auto& hs = EnsureHeroEntry( heroName );
@@ -231,7 +401,7 @@ void CLuaManager::TickHero( const std::string& heroName , float deltaSeconds )
 	if ( m_Api.lua_type && m_Api.lua_type( hs.L , -1 ) == LUA_TFUNCTION )
 	{
 		m_Api.lua_pushnumber( hs.L , static_cast<double>( deltaSeconds ) );
-		if ( m_Api.lua_pcallk( hs.L , 1 , 0 , 0 , 0 , nullptr ) != LUA_OK )
+		if ( SafeLuaPCallK( m_Api.lua_pcallk , hs.L , 1 , 0 , 0 ) != LUA_OK )
 		{
 			const char* err = m_Api.lua_tolstring ? m_Api.lua_tolstring( hs.L , -1 , nullptr ) : "pcall failed";
 			DEV_LOG( "[lua] on_tick error (%s): %s\n" , hs.name.c_str() , err ? err : "unknown" );
@@ -317,7 +487,7 @@ void CLuaManager::CallFunction( HeroScript& script , const char* funcName , cons
 			m_Api.lua_pushnumber( script.L , v );
 
 		const int argCount = static_cast<int>( args.size() );
-		if ( m_Api.lua_pcallk( script.L , argCount , 0 , 0 , 0 , nullptr ) != LUA_OK )
+		if ( SafeLuaPCallK( m_Api.lua_pcallk , script.L , argCount , 0 , 0 ) != LUA_OK )
 		{
 			const char* err = m_Api.lua_tolstring ? m_Api.lua_tolstring( script.L , -1 , nullptr ) : "pcall failed";
 			DEV_LOG( "[lua] %s error (%s): %s\n" , funcName , script.name.c_str() , err ? err : "unknown" );

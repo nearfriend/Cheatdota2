@@ -62,21 +62,36 @@ void CMeepoController::OnEntityAdded(CEntityInstance* pInst)
 	if (!pInst)
 		return;
 
-	// Cast to hero
+	auto heroNameLooksLikeMeepo = [](const char* s) -> bool
+	{
+		if (!s || !s[0])
+			return false;
+		std::string lower(s);
+		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (lower.find("announcer") != std::string::npos)
+			return false;
+		return lower.find("meepo") != std::string::npos;
+	};
+
+	bool isMeepo = heroNameLooksLikeMeepo(pInst->GetSchemaClassName());
+	if (!isMeepo)
+	{
+		if (auto* id = pInst->pEntityIdentity())
+		{
+			isMeepo = heroNameLooksLikeMeepo(id->DesingerName().String()) ||
+				heroNameLooksLikeMeepo(id->Name().String());
+		}
+	}
+
+	if (!isMeepo)
+		return;
+
 	auto* pHero = static_cast<C_DOTA_BaseNPC_Hero*>(pInst);
 	if (!pHero)
 		return;
 
-	// In Demo mode, the first hero found is usually the player's hero
-	// Store it (we can verify later if needed)
-	if (!m_pHero)
-	{
-		m_pHero = pHero;
-		DEV_LOG("[meepo] Hero set via OnEntityAdded: %p\n", m_pHero);
-
-		// Try to verify it's Meepo by checking entity name (may work later when name is initialized)
-		// For now, just store it and we'll verify in RefreshAbilityList
-	}
+	m_pHero = pHero;
+	DEV_LOG("[meepo] Hero set via OnEntityAdded: %p\n", m_pHero);
 }
 
 void CMeepoController::OnAbilityAdded(CEntityInstance* pInst)
@@ -150,6 +165,36 @@ void CMeepoController::OnAbilityAdded(CEntityInstance* pInst)
 
 bool CMeepoController::ResolveLocalHero()
 {
+	auto heroNameLooksLikeMeepo = [](C_DOTA_BaseNPC_Hero* pHero) -> bool
+	{
+		if (!pHero)
+			return false;
+
+		auto check = [](const char* s) -> bool
+		{
+			if (!s || !s[0])
+				return false;
+			std::string lower(s);
+			std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (lower.find("announcer") != std::string::npos)
+				return false;
+			return lower.find("meepo") != std::string::npos;
+		};
+
+		if (check(pHero->GetSchemaClassName()))
+			return true;
+		if (auto* id = pHero->pEntityIdentity())
+			return check(id->DesingerName().String()) || check(id->Name().String());
+		return false;
+	};
+
+	// Drop stale non-Meepo captures (e.g. announcer false positives from older builds).
+	if (m_pHero && !heroNameLooksLikeMeepo(m_pHero))
+	{
+		DEV_LOG("[meepo] Clearing non-Meepo cached hero %p\n", m_pHero);
+		m_pHero = nullptr;
+	}
+
 	// If hero was already captured via OnEntityAdded, use it
 	if (m_pHero)
 	{
@@ -191,6 +236,13 @@ bool CMeepoController::ResolveLocalHero()
 	m_pHero = static_cast<C_DOTA_BaseNPC_Hero*>(
 		SDK::Interfaces::GameEntitySystem()->GetBaseEntityFromHandle(heroHandle)
 		);
+
+	if (m_pHero && !heroNameLooksLikeMeepo(m_pHero))
+	{
+		// Local hero is someone else — do not scrape as Meepo.
+		m_pHero = nullptr;
+		return false;
+	}
 
 	// Log hero address for Cheat Engine - this is where Meepo's hero object is in memory
 	if (m_pHero)

@@ -36,6 +36,31 @@ inline bool IsReadable( const void* ptr , size_t size = 1 )
 	return committed && canRead && ptrEnd <= regionEnd;
 }
 
+static bool IsExcludedHeroName( const char* name )
+{
+	if ( !name || !name[0] )
+		return true;
+
+	return strstr( name , "announcer" ) != nullptr ||
+		strstr( name , "target_dummy" ) != nullptr ||
+		strstr( name , "npc_dota_hero_base" ) != nullptr;
+}
+
+static bool IsPlayableHeroName( const char* name )
+{
+	if ( !name || !name[0] || IsExcludedHeroName( name ) )
+		return false;
+
+	if ( std::strcmp( name , "C_DOTA_BaseNPC_Hero" ) == 0 )
+		return true;
+
+	// Designer / entity names: npc_dota_hero_meepo (not announcer variants).
+	if ( std::strncmp( name , "npc_dota_hero_" , 14 ) == 0 )
+		return true;
+
+	return false;
+}
+
 auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* pInst , CHandle handle ) -> void
 {
 	const char* className = nullptr;
@@ -59,9 +84,36 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 
 	if ( pInst && IsReadable( pInst ) && className != "<unknown>" )
 	{
+		std::string entityName;
+
+		if ( pIdentity && IsReadable( pIdentity ) )
+		{
+			try
+			{
+				if ( IsReadable( &pIdentity->Name() ) )
+				{
+					auto nameSymbol = pIdentity->Name();
+
+					if ( IsReadable( nameSymbol.String() , 128 ) )
+						entityName = nameSymbol.String();
+				}
+
+				if ( entityName.empty() )
+				{
+					const auto& designerName = pIdentity->DesingerName();
+
+					if ( designerName.String() && IsReadable( designerName.String() , 128 ) )
+						entityName = designerName.String();
+				}
+			}
+			catch ( ... )
+			{
+			}
+		}
+
 		const bool isHero =
-			strstr( className , "C_DOTA_BaseNPC_Hero" ) != nullptr ||
-			strstr( className , "npc_dota_hero" ) != nullptr;
+			IsPlayableHeroName( className ) ||
+			( !entityName.empty() && IsPlayableHeroName( entityName.c_str() ) );
 
 		if ( isHero )
 		{
@@ -72,29 +124,26 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 
 			if ( pHero && IsReadable( pHero ) )
 			{
-				std::string entityName;
-
-				if ( pIdentity && IsReadable( pIdentity ) )
+				const bool looksLikeMeepo = [&]() -> bool
 				{
-					try
+					auto hasMeepo = []( const char* s ) -> bool
 					{
-						if ( IsReadable( &pIdentity->Name() ) )
-						{
-							auto nameSymbol = pIdentity->Name();
+						if ( !s )
+							return false;
+						std::string lower( s );
+						std::transform( lower.begin() , lower.end() , lower.begin() , []( unsigned char c ) { return static_cast<char>( std::tolower( c ) ); } );
+						return lower.find( "meepo" ) != std::string::npos && lower.find( "announcer" ) == std::string::npos;
+					};
+					return hasMeepo( className ) || hasMeepo( entityName.c_str() );
+				}();
 
-							if ( IsReadable( nameSymbol.String() , 128 ) )
-								entityName = nameSymbol.String();
-						}
-					}
-					catch ( ... )
-					{
-					}
-				}
-
-				if ( auto* pClient = GetAndromedaClient() )
+				if ( looksLikeMeepo )
 				{
-					pClient->GetMeepoController().OnEntityAdded( pInst );
-					DEV_LOG( "[meepo] Hero captured via OnAddEntity: %p (class: %s, name: %s)\n" , pHero , className , entityName.empty() ? "<unknown>" : entityName.c_str() );
+					if ( auto* pClient = GetAndromedaClient() )
+					{
+						pClient->GetMeepoController().OnEntityAdded( pInst );
+						DEV_LOG( "[meepo] Hero captured via OnAddEntity: %p (class: %s, name: %s)\n" , pHero , className , entityName.empty() ? "<unknown>" : entityName.c_str() );
+					}
 				}
 			}
 		}
@@ -128,19 +177,13 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 					}
 				}
 				
-				// Check if it's a Meepo ability (by name if available, or capture all abilities)
+				// Only capture abilities that are clearly Meepo (avoid grabbing every ability in lobby).
 				bool isMeepoAbility = false;
 				if ( !entityName.empty() )
 				{
 					std::string lowerName = entityName;
 					std::transform( lowerName.begin() , lowerName.end() , lowerName.begin() , ::tolower );
 					isMeepoAbility = ( lowerName.find( "meepo" ) != std::string::npos );
-				}
-				else
-				{
-					// If name unavailable, capture all abilities and let MeepoController filter
-					// In Demo mode with Meepo, all abilities should be Meepo's
-					isMeepoAbility = true;
 				}
 				
 				if ( isMeepoAbility )

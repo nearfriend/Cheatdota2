@@ -438,6 +438,11 @@ auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserC
 	if ( Settings::Camera::Enable && ( m_pCameraDistance || m_pCameraFarplane ) )
 		SetCameraDistance( Settings::Camera::Distance );
 
+	// Skip hero/Lua work until we have a real usercmd (match fully loaded).
+	// Running Lua during load crashed the client (debug.log AV in LoadHeroScript).
+	if ( !pCUserCmd )
+		return;
+
 	m_InvokerController.OnCreateMove( pCDOTAInput , pCUserCmd );
 	m_MeepoController.OnCreateMove( pCDOTAInput , pCUserCmd );
 }
