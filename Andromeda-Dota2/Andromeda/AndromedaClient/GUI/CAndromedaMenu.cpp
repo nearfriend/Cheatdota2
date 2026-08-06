@@ -371,22 +371,33 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 	const ImVec2 valueSize = ImGui::CalcTextSize( valueText );
 	drawList->AddText( ImVec2( rowPos.x + rowWidth - valueSize.x , rowPos.y + 7.f ) , IM_COL32( 186 , 187 , 193 , 255 ) , valueText );
 
-	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + 28.f ) );
-	ImGui::PushStyleVar( ImGuiStyleVar_FramePadding , ImVec2( 0.f , 1.f ) );
-	ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding , 2.f );
-	ImGui::PushStyleVar( ImGuiStyleVar_GrabRounding , 6.f );
-	ImGui::PushStyleVar( ImGuiStyleVar_GrabMinSize , 11.f );
-	ImGui::PushStyleColor( ImGuiCol_FrameBg , IM_COL32( 36 , 38 , 45 , 255 ) );
-	ImGui::PushStyleColor( ImGuiCol_FrameBgHovered , IM_COL32( 42 , 44 , 50 , 255 ) );
-	ImGui::PushStyleColor( ImGuiCol_SliderGrab , IM_COL32( 234 , 235 , 238 , 255 ) );
-	ImGui::PushStyleColor( ImGuiCol_SliderGrabActive , IM_COL32( 250 , 250 , 252 , 255 ) );
-	ImGui::SetNextItemWidth( rowWidth );
-	const bool changed = ImGui::SliderFloat( id , &value , minValue , maxValue , "" , ImGuiSliderFlags_AlwaysClamp );
-	ImGui::PopStyleColor( 4 );
-	ImGui::PopStyleVar( 4 );
-	const float grabX = rowPos.x + rowWidth * ( value - minValue ) / ( maxValue - minValue );
-	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + 29.f ) , ImVec2( grabX , rowPos.y + 29.f ) , IM_COL32( 246 , 51 , 60 , 255 ) , 5.f );
-	drawList->AddCircleFilled( ImVec2( grabX , rowPos.y + 29.f ) , 5.5f , IM_COL32( 238 , 239 , 242 , 255 ) );
+	// Use an invisible interaction area and render the slider ourselves. Mixing the
+	// native ImGui grab with a custom circle creates the double/pill-shaped handle.
+	const float handleRadius = 6.f;
+	const float trackStartX = rowPos.x + handleRadius;
+	const float trackEndX = rowPos.x + rowWidth - handleRadius;
+	const float trackWidth = trackEndX - trackStartX;
+	const float trackY = rowPos.y + 31.f;
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , trackY - 10.f ) );
+	ImGui::InvisibleButton( id , ImVec2( rowWidth , 20.f ) );
+	const bool hovered = ImGui::IsItemHovered();
+	bool changed = false;
+
+	if ( ImGui::IsItemActive() )
+	{
+		const float normalized = std::clamp( ( ImGui::GetIO().MousePos.x - trackStartX ) / trackWidth , 0.f , 1.f );
+		const float newValue = minValue + normalized * ( maxValue - minValue );
+		changed = newValue != value;
+		value = newValue;
+	}
+
+	const float fraction = std::clamp( ( value - minValue ) / ( maxValue - minValue ) , 0.f , 1.f );
+	const float grabX = trackStartX + trackWidth * fraction;
+	drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( trackEndX , trackY + 2.5f ) , IM_COL32( 35 , 37 , 43 , 255 ) , 2.5f );
+	if ( grabX > trackStartX )
+		drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( grabX , trackY + 2.5f ) , IM_COL32( 246 , 51 , 60 , 255 ) , 2.5f );
+	drawList->AddCircleFilled( ImVec2( grabX , trackY ) , handleRadius + 1.f , IM_COL32( 15 , 16 , 18 , 230 ) );
+	drawList->AddCircleFilled( ImVec2( grabX , trackY ) , hovered || ImGui::IsItemActive() ? handleRadius : handleRadius - 0.5f , IM_COL32( 238 , 239 , 242 , 255 ) );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + 48.f ) );
 	return changed;
 }
