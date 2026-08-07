@@ -7,7 +7,6 @@
 #include <Dota2/SDK/Types/CHandle.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
 
-#include <AndromedaClient/Fonts/CFontManager.hpp>
 #include <AndromedaClient/GUI/CAndromedaMenu.hpp>
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <AndromedaClient/Data/HeroData.hpp>
@@ -907,8 +906,9 @@ auto CAndromedaClient::OnRender() -> void
 	if ( GetAndromedaGUI()->IsVisible() )
 		GetAndromedaMenu()->OnRenderMenu();
 
-	GetFontManager()->FirstInitFonts();
-	GetFontManager()->m_VerdanaFont.DrawString( 1 , 1 , ImColor( 255 , 255 , 0 ) , FW1_LEFT , XorStr( CHEAT_NAME ) );
+	// Use the existing ImGui draw list. Initializing FW1FontWrapper lazily from
+	// Present performs synchronous D3D/DirectWrite work on Dota's render thread.
+	ImGui::GetForegroundDrawList()->AddText( ImVec2( 1.f , 1.f ) , IM_COL32( 255 , 255 , 0 , 255 ) , XorStr( CHEAT_NAME ) );
 }
 
 auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserCmd ) -> void

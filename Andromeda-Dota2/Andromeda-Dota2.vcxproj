@@ -163,8 +163,6 @@
     <ClCompile Include="Andromeda\AndromedaClient\CAndromedaGUI.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Heroes\Invoker\CInvokerController.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Heroes\Meepo\CMeepoController.cpp" />
-    <ClCompile Include="Andromeda\AndromedaClient\Fonts\CFont.cpp" />
-    <ClCompile Include="Andromeda\AndromedaClient\Fonts\CFontManager.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Scripting\LuaManager.cpp" />
     <ClCompile Include="Andromeda\Common\CrashLog.cpp" />
