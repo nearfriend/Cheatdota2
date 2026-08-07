@@ -800,25 +800,19 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor();
 
-		const float mainOuterMargin = 10.f;
-		ImGui::SameLine( 0.f , mainOuterMargin );
-		ImGui::SetCursorPosY( mainOuterMargin );
+		ImGui::SameLine( 0.f , 0.f );
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 9 , 10 , 11 , 242 ) );
-		const float mainHorizontalMargin = 18.f;
-		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( mainHorizontalMargin , 14.f ) );
-		const ImVec2 mainAvailable = ImGui::GetContentRegionAvail();
-		const ImVec2 mainSize(
-			(std::max)( 1.f , mainAvailable.x - mainOuterMargin ),
-			(std::max)( 1.f , mainAvailable.y - mainOuterMargin ) );
-		ImGui::BeginChild( "##mainContent" , mainSize , false , ImGuiWindowFlags_NoScrollbar );
-		ImGui::SetCursorPosY( 20.f );
+		const float mainContentMargin = 20.f;
+		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 0.f , 0.f ) );
+		ImGui::BeginChild( "##mainContent" , ImVec2( 0.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
+		ImGui::SetCursorPos( ImVec2( mainContentMargin , 20.f ) );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
 		ImGui::TextColored( ImVec4( 0.95f , 0.25f , 0.29f , 1.f ) , "%s" , page.label );
 
 		static char search[64] = {};
 		const float headerControlsWidth = 28.f + 4.f + 28.f + 7.f + 190.f;
-		const float rightStart = ImGui::GetWindowWidth() - mainHorizontalMargin - headerControlsWidth;
+		const float rightStart = ImGui::GetWindowWidth() - mainContentMargin - headerControlsWidth;
 		ImGui::SameLine( rightStart );
 		ImGui::PushStyleVar( ImGuiStyleVar_FramePadding , ImVec2( 6.f , 4.f ) );
 		DrawIconButton( "##save" , ReferenceIcon::Save , ImVec2( 28.f , 27.f ) );
@@ -829,13 +823,14 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::InputTextWithHint( "##referenceSearch" , "Search" , search , IM_ARRAYSIZE( search ) );
 		ImGui::PopStyleVar();
 
-		ImGui::SetCursorPosY( 67.f );
+		ImGui::SetCursorPos( ImVec2( mainContentMargin , 67.f ) );
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 16 , 17 , 19 , 250 ) );
 		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
 		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
-		ImGui::BeginChild( "##settingsCard" , ImVec2( 0.f , cameraPage ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
+		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
+		ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , cameraPage ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
 		ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 		ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
