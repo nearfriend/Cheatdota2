@@ -8,7 +8,30 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <array>
+#include <deque>
+#include <mutex>
 #include <Windows.h>
+
+namespace
+{
+	constexpr size_t kMaxPendingEntityAdds = 4096;
+	std::mutex g_PendingEntityAddsLock;
+	std::deque<CHandle> g_PendingEntityAdds;
+
+	auto QueueEntityAdd( CHandle handle ) -> void
+	{
+		if ( !handle.IsValid() )
+			return;
+
+		std::lock_guard lock( g_PendingEntityAddsLock );
+
+		// Never let a loading spike allocate without bound. Dropping an event is
+		// safe because hero controllers also resolve from the entity system.
+		if ( g_PendingEntityAdds.size() < kMaxPendingEntityAdds )
+			g_PendingEntityAdds.push_back( handle );
+	}
+}
 
 // Helper to check if memory is readable
 inline bool IsReadable( const void* ptr , size_t size = 1 )
@@ -61,7 +84,7 @@ static bool IsPlayableHeroName( const char* name )
 	return false;
 }
 
-auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* pInst , CHandle handle ) -> void
+static auto ProcessAddedEntity( CEntityInstance* pInst ) -> void
 {
 	const char* className = nullptr;
 	auto* pIdentity = pInst ? pInst->pEntityIdentity() : nullptr;
@@ -222,5 +245,50 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 		}
 	}
 
-	return OnAddEntity_o( pCGameEntitySystem , pInst , handle );
+	return;
+}
+
+auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* pInst , CHandle handle ) -> void
+{
+	// Let Dota finish constructing the entity immediately. All classification,
+	// string work and controller bookkeeping is deferred and bounded per tick.
+	if ( OnAddEntity_o )
+		OnAddEntity_o( pCGameEntitySystem , pInst , handle );
+
+	QueueEntityAdd( handle );
+}
+
+auto ProcessPendingEntityAdds( size_t maxEvents ) -> void
+{
+	if ( maxEvents == 0 )
+		return;
+
+	constexpr size_t kMaxBatchSize = 32;
+	std::array<CHandle , kMaxBatchSize> batch{};
+	const size_t requested = (std::min)( maxEvents , kMaxBatchSize );
+	size_t count = 0;
+
+	{
+		std::lock_guard lock( g_PendingEntityAddsLock );
+
+		while ( count < requested && !g_PendingEntityAdds.empty() )
+		{
+			batch[count++] = g_PendingEntityAdds.front();
+			g_PendingEntityAdds.pop_front();
+		}
+	}
+
+	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
+
+	if ( !entitySystem )
+		return;
+
+	for ( size_t index = 0; index < count; ++index )
+	{
+		auto* entity = reinterpret_cast<CEntityInstance*>(
+			entitySystem->GetBaseEntityFromHandle( batch[index] ) );
+
+		if ( entity )
+			ProcessAddedEntity( entity );
+	}
 }
