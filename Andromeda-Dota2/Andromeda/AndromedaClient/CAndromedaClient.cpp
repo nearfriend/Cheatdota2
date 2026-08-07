@@ -550,8 +550,6 @@ auto CAndromedaClient::ResolveFogConVars() -> void
 
 auto CAndromedaClient::ApplyFogConVars() -> bool
 {
-	ResolveFogConVars();
-
 	constexpr float kFar = 50000.f;
 	bool wrote = false;
 
@@ -825,9 +823,6 @@ auto CAndromedaClient::OnInit() -> void
 
 auto CAndromedaClient::SetCameraDistance( float Distance ) -> void
 {
-	if ( !m_pCameraDistance )
-		ResolveCameraPointers();
-
 	if ( m_pCameraDistance )
 	{
 		if ( !SafeWriteFloat( m_pCameraDistance , Distance ) )
@@ -899,9 +894,6 @@ auto CAndromedaClient::OnRender() -> void
 				kMaxCameraDistance );
 		}
 
-		if ( !m_pCameraDistance )
-			ResolveCameraPointers();
-
 		if ( m_pCameraDistance || m_pRFarz )
 			SetCameraDistance( Settings::Camera::Distance );
 	}
@@ -934,9 +926,6 @@ auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserC
 
 	if ( Settings::Camera::Enable )
 	{
-		if ( !m_pCameraDistance )
-			ResolveCameraPointers();
-
 		if ( m_pCameraDistance || m_pRFarz )
 			SetCameraDistance( Settings::Camera::Distance );
 	}

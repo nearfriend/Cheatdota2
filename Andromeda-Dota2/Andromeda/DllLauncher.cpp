@@ -123,22 +123,24 @@ auto WINAPI CDllLauncher::StartCheatTheard( LPVOID lpThreadParameter ) -> DWORD
 		// Continue anyway - GUI might still work
 	}
 
-	// Wait before installing second hooks
+	// Resolve all runtime pointers before the render/gameplay hooks can call the
+	// client. Pattern scans are intentionally kept on this initialization thread;
+	// running them from Present/CreateMove stalls Dota's render and input threads.
 	Sleep( 500 );
 
-	// Install second hooks (gameplay hooks)
+	// Initialize client (camera/fog resolution, data and scripts).
+	// Vectored exception handler will catch any exceptions
+	SafeInitClient();
+
+	// Install render/gameplay hooks only after client initialization has
+	// published the cached pointers they consume.
+	Sleep( 500 );
+
 	if ( !GetHook_Loader()->InstallSecondHook() )
 	{
 		DEV_LOG( "[error] Hook_Loader::InstallSecondHook\n" );
-		// Continue anyway - GUI should still work
+		// Continue anyway - the account hook may still work
 	}
-
-	// Wait before client initialization
-	Sleep( 500 );
-
-	// Initialize client (this might trigger schema dump)
-	// Vectored exception handler will catch any exceptions
-	SafeInitClient();
 
 	DEV_LOG( "[success] Cheat initialization complete\n" );
 
