@@ -62,6 +62,7 @@ private:
 private:
 	float* m_pCameraDistance = nullptr;
 	float* m_pRFarz = nullptr;
+	bool m_bCameraWasEnabled = true;
 
 	// Dota RTS camera fog — these drive the zoom haze (not C_FogController).
 	float* m_pFogStartZoomedOut = nullptr;

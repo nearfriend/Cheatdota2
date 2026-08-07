@@ -886,6 +886,8 @@ auto CAndromedaClient::OnRender() -> void
 
 	if ( Settings::Camera::Enable )
 	{
+		m_bCameraWasEnabled = true;
+
 		// The first combo entry is "Wheel"; the second explicitly disables wheel zoom.
 		if ( Settings::Camera::ZoomUsingWheel == 0 && mouseWheelDelta != 0.f )
 		{
@@ -902,6 +904,12 @@ auto CAndromedaClient::OnRender() -> void
 
 		if ( m_pCameraDistance || m_pRFarz )
 			SetCameraDistance( Settings::Camera::Distance );
+	}
+	else if ( m_bCameraWasEnabled )
+	{
+		// Restore the game's default without overwriting the user's saved slider value.
+		SetCameraDistance( 1200.f );
+		m_bCameraWasEnabled = false;
 	}
 
 	if ( GetAndromedaGUI()->IsVisible() )

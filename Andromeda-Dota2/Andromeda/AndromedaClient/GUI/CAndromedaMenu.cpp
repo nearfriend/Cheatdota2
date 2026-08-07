@@ -841,6 +841,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		if ( cameraPage )
 		{
 			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
+			const ImVec2 disabledAreaStart = ImGui::GetCursorScreenPos();
+			const float disabledAreaWidth = ImGui::GetContentRegionAvail().x;
+			ImGui::BeginDisabled( !Settings::Camera::Enable );
 			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 10000.f , "%.0f" , ReferenceIcon::Distance ) )
 				GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
 			DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom , ReferenceIcon::Smooth );
@@ -858,6 +861,16 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
 			ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
 			DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" , ReferenceIcon::Speed );
+			ImGui::EndDisabled();
+
+			if ( !Settings::Camera::Enable )
+			{
+				const float disabledAreaEndY = ImGui::GetCursorScreenPos().y;
+				ImGui::GetWindowDrawList()->AddRectFilled(
+					disabledAreaStart,
+					ImVec2( disabledAreaStart.x + disabledAreaWidth , disabledAreaEndY ),
+					IM_COL32( 8 , 9 , 10 , 112 ) );
+			}
 		}
 		else
 		{
