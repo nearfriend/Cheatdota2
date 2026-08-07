@@ -890,7 +890,7 @@ auto CAndromedaClient::OnRender() -> void
 		if ( Settings::Camera::ZoomUsingWheel == 0 && mouseWheelDelta != 0.f )
 		{
 			constexpr float kMinCameraDistance = 1200.f;
-			constexpr float kMaxCameraDistance = 5000.f;
+			constexpr float kMaxCameraDistance = 10000.f;
 			Settings::Camera::Distance = std::clamp(
 				Settings::Camera::Distance - mouseWheelDelta * Settings::Camera::ZoomSpeed,
 				kMinCameraDistance,

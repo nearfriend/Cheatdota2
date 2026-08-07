@@ -26,6 +26,10 @@
 
 static CAndromedaMenu g_CAndromedaMenu{};
 
+static constexpr ImU32 kAccentColor = IM_COL32( 168 , 85 , 247 , 255 );
+static constexpr ImU32 kAccentTextColor = IM_COL32( 201 , 151 , 252 , 255 );
+static constexpr ImU32 kAccentTrackColor = IM_COL32( 78 , 43 , 110 , 255 );
+
 struct GuiTexture
 {
 	ID3D11ShaderResourceView* srv = nullptr;
@@ -288,13 +292,13 @@ static void TryLoadMeepoTextures()
 
 static void DrawBrandMark( ImDrawList* drawList , const ImVec2& center )
 {
-	const ImU32 red = IM_COL32( 243 , 48 , 59 , 255 );
+	const ImU32 purple = kAccentColor;
 	const ImU32 white = IM_COL32( 236 , 238 , 242 , 255 );
 
-	drawList->AddTriangleFilled( ImVec2( center.x , center.y - 17.f ) , ImVec2( center.x - 14.f , center.y - 8.f ) , ImVec2( center.x - 5.f , center.y ) , red );
-	drawList->AddTriangleFilled( ImVec2( center.x + 17.f , center.y ) , ImVec2( center.x + 8.f , center.y - 14.f ) , ImVec2( center.x , center.y - 5.f ) , red );
-	drawList->AddTriangleFilled( ImVec2( center.x , center.y + 17.f ) , ImVec2( center.x + 14.f , center.y + 8.f ) , ImVec2( center.x + 5.f , center.y ) , red );
-	drawList->AddTriangleFilled( ImVec2( center.x - 17.f , center.y ) , ImVec2( center.x - 8.f , center.y + 14.f ) , ImVec2( center.x , center.y + 5.f ) , red );
+	drawList->AddTriangleFilled( ImVec2( center.x , center.y - 17.f ) , ImVec2( center.x - 14.f , center.y - 8.f ) , ImVec2( center.x - 5.f , center.y ) , purple );
+	drawList->AddTriangleFilled( ImVec2( center.x + 17.f , center.y ) , ImVec2( center.x + 8.f , center.y - 14.f ) , ImVec2( center.x , center.y - 5.f ) , purple );
+	drawList->AddTriangleFilled( ImVec2( center.x , center.y + 17.f ) , ImVec2( center.x + 14.f , center.y + 8.f ) , ImVec2( center.x + 5.f , center.y ) , purple );
+	drawList->AddTriangleFilled( ImVec2( center.x - 17.f , center.y ) , ImVec2( center.x - 8.f , center.y + 14.f ) , ImVec2( center.x , center.y + 5.f ) , purple );
 	drawList->AddRectFilled( ImVec2( center.x - 4.f , center.y - 4.f ) , ImVec2( center.x + 4.f , center.y + 4.f ) , white , 1.f );
 }
 
@@ -462,9 +466,9 @@ static bool DrawRailButton( const char* id , ReferenceIcon icon , bool selected 
 	if ( selected || hovered )
 		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 29 , 34 , 38 , 255 ) : IM_COL32( 25 , 28 , 32 , 220 ) , 5.f );
 	if ( selected )
-		drawList->AddRectFilled( ImVec2( pos.x - 6.f , pos.y + 9.f ) , ImVec2( pos.x - 3.f , pos.y + 27.f ) , IM_COL32( 244 , 48 , 57 , 255 ) , 2.f );
+		drawList->AddRectFilled( ImVec2( pos.x - 6.f , pos.y + 9.f ) , ImVec2( pos.x - 3.f , pos.y + 27.f ) , kAccentColor , 2.f );
 
-	DrawReferenceIcon( drawList , ImVec2( pos.x + size.x * 0.5f , pos.y + size.y * 0.5f ) , icon , selected ? IM_COL32( 244 , 53 , 62 , 255 ) : IM_COL32( 181 , 183 , 197 , 255 ) );
+	DrawReferenceIcon( drawList , ImVec2( pos.x + size.x * 0.5f , pos.y + size.y * 0.5f ) , icon , selected ? kAccentColor : IM_COL32( 181 , 183 , 197 , 255 ) );
 	return ImGui::IsItemClicked();
 }
 
@@ -488,10 +492,10 @@ static bool DrawNavigationItem( const char* label , ReferenceIcon icon , bool se
 	if ( selected || hovered )
 		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 25 , 31 , 34 , 255 ) : IM_COL32( 22 , 25 , 28 , 220 ) , 5.f );
 	if ( selected )
-		drawList->AddRectFilled( ImVec2( pos.x - 7.f , pos.y + 6.f ) , ImVec2( pos.x - 4.f , pos.y + 26.f ) , IM_COL32( 244 , 48 , 57 , 255 ) , 2.f );
+		drawList->AddRectFilled( ImVec2( pos.x - 7.f , pos.y + 6.f ) , ImVec2( pos.x - 4.f , pos.y + 26.f ) , kAccentColor , 2.f );
 
-	const ImU32 iconColor = selected ? IM_COL32( 244 , 55 , 65 , 255 ) : IM_COL32( 154 , 156 , 170 , 255 );
-	const ImU32 textColor = selected ? IM_COL32( 238 , 82 , 88 , 255 ) : IM_COL32( 166 , 168 , 181 , 255 );
+	const ImU32 iconColor = selected ? kAccentColor : IM_COL32( 154 , 156 , 170 , 255 );
+	const ImU32 textColor = selected ? kAccentTextColor : IM_COL32( 166 , 168 , 181 , 255 );
 	DrawReferenceIcon( drawList , ImVec2( pos.x + 16.f , pos.y + 16.f ) , icon , iconColor , 0.78f );
 
 	// Keep every label inside the navigation column. Long labels scroll from side
@@ -674,7 +678,7 @@ static bool DrawSwitchRow( const char* label , const char* id , bool& value , Re
 	const float rowHeight = 38.f;
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 10.f ) , IM_COL32( 218 , 219 , 224 , 255 ) , label );
-	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 18.f ) , icon , IM_COL32( 244 , 50 , 60 , 255 ) , 0.65f );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 18.f ) , icon , kAccentColor , 0.65f );
 
 	const ImVec2 switchPos( rowPos.x + rowWidth - 31.f , rowPos.y + 9.f );
 	ImGui::SetCursorScreenPos( switchPos );
@@ -683,9 +687,9 @@ static bool DrawSwitchRow( const char* label , const char* id , bool& value , Re
 	if ( clicked )
 		value = !value;
 
-	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? IM_COL32( 116 , 34 , 39 , 255 ) : IM_COL32( 48 , 50 , 56 , 255 ) , 9.f );
+	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? kAccentTrackColor : IM_COL32( 48 , 50 , 56 , 255 ) , 9.f );
 	const float knobX = value ? switchPos.x + 21.f : switchPos.x + 9.f;
-	drawList->AddCircleFilled( ImVec2( knobX , switchPos.y + 9.f ) , 7.5f , value ? IM_COL32( 246 , 52 , 61 , 255 ) : IM_COL32( 150 , 152 , 160 , 255 ) );
+	drawList->AddCircleFilled( ImVec2( knobX , switchPos.y + 9.f ) , 7.5f , value ? kAccentColor : IM_COL32( 150 , 152 , 160 , 255 ) );
 	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
 	return clicked;
@@ -699,7 +703,7 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 	snprintf( valueText , sizeof( valueText ) , valueFormat , value );
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 7.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , label );
-	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 15.f ) , icon , IM_COL32( 244 , 50 , 60 , 255 ) , 0.65f );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 15.f ) , icon , kAccentColor , 0.65f );
 	const ImVec2 valueSize = ImGui::CalcTextSize( valueText );
 	drawList->AddText( ImVec2( rowPos.x + rowWidth - valueSize.x , rowPos.y + 7.f ) , IM_COL32( 186 , 187 , 193 , 255 ) , valueText );
 
@@ -727,7 +731,7 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 	const float grabX = trackStartX + trackWidth * fraction;
 	drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( trackEndX , trackY + 2.5f ) , IM_COL32( 35 , 37 , 43 , 255 ) , 2.5f );
 	if ( grabX > trackStartX )
-		drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( grabX , trackY + 2.5f ) , IM_COL32( 246 , 51 , 60 , 255 ) , 2.5f );
+		drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( grabX , trackY + 2.5f ) , kAccentColor , 2.5f );
 	drawList->AddCircleFilled( ImVec2( grabX , trackY ) , handleRadius + 1.f , IM_COL32( 15 , 16 , 18 , 230 ) );
 	drawList->AddCircleFilled( ImVec2( grabX , trackY ) , hovered || ImGui::IsItemActive() ? handleRadius : handleRadius - 0.5f , IM_COL32( 238 , 239 , 242 , 255 ) );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + 48.f ) );
@@ -808,7 +812,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::SetCursorPos( ImVec2( mainContentMargin , 20.f ) );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
-		ImGui::TextColored( ImVec4( 0.95f , 0.25f , 0.29f , 1.f ) , "%s" , page.label );
+		ImGui::TextColored( ImVec4( 0.66f , 0.33f , 0.97f , 1.f ) , "%s" , page.label );
 
 		static char search[64] = {};
 		const float headerControlsWidth = 28.f + 4.f + 28.f + 7.f + 190.f;
@@ -837,7 +841,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		if ( cameraPage )
 		{
 			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
-			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 5000.f , "%.0f" , ReferenceIcon::Distance ) )
+			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 10000.f , "%.0f" , ReferenceIcon::Distance ) )
 				GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
 			DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom , ReferenceIcon::Smooth );
 			DrawSliderRow( "Smoothness Duration" , "##smoothDuration" , Settings::Camera::SmoothnessDuration , 0.1f , 3.0f , "%.2f sec" , ReferenceIcon::Duration );
@@ -846,7 +850,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			const float comboWidth = ImGui::GetContentRegionAvail().x;
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
 			drawList->AddText( ImVec2( comboRow.x + 27.f , comboRow.y + 9.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , "Zoom using Wheel" );
-			DrawReferenceIcon( drawList , ImVec2( comboRow.x + 9.f , comboRow.y + 17.f ) , ReferenceIcon::Mouse , IM_COL32( 244 , 50 , 60 , 255 ) , 0.65f );
+			DrawReferenceIcon( drawList , ImVec2( comboRow.x + 9.f , comboRow.y + 17.f ) , ReferenceIcon::Mouse , kAccentColor , 0.65f );
 			ImGui::SetCursorScreenPos( ImVec2( comboRow.x + comboWidth - 120.f , comboRow.y + 3.f ) );
 			const char* wheelModes[] = { "Wheel", "Disabled" };
 			ImGui::SetNextItemWidth( 120.f );
@@ -1036,7 +1040,7 @@ auto CAndromedaMenu::OnRenderLegacyMenu() -> void
 				if ( headerFont ) ImGui::PopFont();
 				ImGui::Separator();
 
-				if ( RenderSliderFloat( XorStr( "Distance" ) , XorStr( "##Camera.Distance" ) , Settings::Camera::Distance , 1200.f , 3000.f ) )
+				if ( RenderSliderFloat( XorStr( "Distance" ) , XorStr( "##Camera.Distance" ) , Settings::Camera::Distance , 1200.f , 10000.f ) )
 					GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
 			}
 			else if ( SelectedTab == 2 )

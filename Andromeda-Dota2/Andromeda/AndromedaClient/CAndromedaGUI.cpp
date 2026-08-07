@@ -324,7 +324,7 @@ auto CAndromedaGUI::SetDotaDarkStyle() -> void
 	const ImVec4 bg0 = ImVec4( 0.035f , 0.038f , 0.043f , 0.98f );
 	const ImVec4 bg1 = ImVec4( 0.050f , 0.054f , 0.060f , 0.98f );
 	const ImVec4 bg2 = ImVec4( 0.075f , 0.080f , 0.090f , 1.00f );
-	const ImVec4 accent = ImVec4( 0.96f , 0.20f , 0.24f , 1.00f );
+	const ImVec4 accent = ImVec4( 0.66f , 0.33f , 0.97f , 1.00f );
 	const ImVec4 accentSoft = ImVec4( accent.x , accent.y , accent.z , 0.35f );
 	const ImVec4 text = ImVec4( 0.82f , 0.83f , 0.86f , 1.0f );
 	const ImVec4 textMuted = ImVec4( 0.48f , 0.49f , 0.54f , 1.0f );
