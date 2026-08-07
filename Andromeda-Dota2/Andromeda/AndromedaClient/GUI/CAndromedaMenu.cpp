@@ -802,15 +802,17 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 
 		ImGui::SameLine( 0.f , 0.f );
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 9 , 10 , 11 , 242 ) );
-		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 12.f ) );
+		const float mainHorizontalMargin = 18.f;
+		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( mainHorizontalMargin , 14.f ) );
 		ImGui::BeginChild( "##mainContent" , ImVec2( 0.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
-		ImGui::SetCursorPosY( 19.f );
+		ImGui::SetCursorPosY( 20.f );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
 		ImGui::TextColored( ImVec4( 0.95f , 0.25f , 0.29f , 1.f ) , "%s" , page.label );
 
 		static char search[64] = {};
-		const float rightStart = ImGui::GetWindowWidth() - 267.f;
+		const float headerControlsWidth = 28.f + 4.f + 28.f + 7.f + 190.f;
+		const float rightStart = ImGui::GetWindowWidth() - mainHorizontalMargin - headerControlsWidth;
 		ImGui::SameLine( rightStart );
 		ImGui::PushStyleVar( ImGuiStyleVar_FramePadding , ImVec2( 6.f , 4.f ) );
 		DrawIconButton( "##save" , ReferenceIcon::Save , ImVec2( 28.f , 27.f ) );
@@ -821,7 +823,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::InputTextWithHint( "##referenceSearch" , "Search" , search , IM_ARRAYSIZE( search ) );
 		ImGui::PopStyleVar();
 
-		ImGui::SetCursorPosY( 63.f );
+		ImGui::SetCursorPosY( 67.f );
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 16 , 17 , 19 , 250 ) );
 		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
