@@ -496,6 +496,137 @@ static bool DrawNavigationItem( const char* label , ReferenceIcon icon , bool se
 	return ImGui::IsItemClicked();
 }
 
+struct ReferenceNavigationItem
+{
+	const char* label;
+	ReferenceIcon icon;
+	const char* section;
+};
+
+struct ReferenceNavigationCategory
+{
+	const char* title;
+	ReferenceIcon railIcon;
+	const ReferenceNavigationItem* items;
+	int itemCount;
+};
+
+static const ReferenceNavigationItem g_GeneralNavigation[] =
+{
+	{ "Auto Control Renewal", ReferenceIcon::Sparkles, nullptr },
+	{ "Auto Disabler", ReferenceIcon::Bell, nullptr },
+	{ "Builds Helper", ReferenceIcon::Info, nullptr },
+	{ "Dodger", ReferenceIcon::Hidden, nullptr },
+	{ "FailSwitch", ReferenceIcon::Offscreen, nullptr },
+	{ "Heal and Restore", ReferenceIcon::Info, nullptr },
+	{ "Illusion Shuffle", ReferenceIcon::Smooth, nullptr },
+	{ "Items Manager", ReferenceIcon::Tools, nullptr },
+	{ "Kill Stealer", ReferenceIcon::Aggro, nullptr },
+	{ "Overwolf", ReferenceIcon::Visible, nullptr },
+	{ "Procast Damage", ReferenceIcon::Sparkles, nullptr },
+	{ "Shop Manager", ReferenceIcon::Overlay, nullptr },
+	{ "Snatcher", ReferenceIcon::Mouse, nullptr },
+};
+
+static const ReferenceNavigationItem g_HeroesNavigation[] =
+{
+	{ "Settings", ReferenceIcon::Gear, nullptr },
+	{ "Abaddon", ReferenceIcon::Heroes, "Hero List" },
+	{ "Alchemist", ReferenceIcon::Heroes, nullptr },
+	{ "Ancient Apparition", ReferenceIcon::Heroes, nullptr },
+	{ "Anti Mage", ReferenceIcon::Heroes, nullptr },
+	{ "Arc Warden", ReferenceIcon::Heroes, nullptr },
+	{ "Axe", ReferenceIcon::Heroes, nullptr },
+	{ "Bane", ReferenceIcon::Heroes, nullptr },
+	{ "Batrider", ReferenceIcon::Heroes, nullptr },
+	{ "Beastmaster", ReferenceIcon::Heroes, nullptr },
+	{ "Bloodseeker", ReferenceIcon::Heroes, nullptr },
+	{ "Bounty Hunter", ReferenceIcon::Heroes, nullptr },
+	{ "Brewmaster", ReferenceIcon::Heroes, nullptr },
+};
+
+static const ReferenceNavigationItem g_InfoNavigation[] =
+{
+	{ "Aggro Drawer", ReferenceIcon::Aggro, nullptr },
+	{ "Camera", ReferenceIcon::Camera, nullptr },
+	{ "Heroes Overlay", ReferenceIcon::Heroes, nullptr },
+	{ "Info Overlay", ReferenceIcon::Overlay, nullptr },
+	{ "Notifications", ReferenceIcon::Bell, nullptr },
+	{ "Offscreen", ReferenceIcon::Offscreen, nullptr },
+	{ "Radius", ReferenceIcon::Radius, nullptr },
+	{ "Show Me More", ReferenceIcon::Hidden, nullptr },
+	{ "Visible Settings", ReferenceIcon::Visible, nullptr },
+	{ "Ward Helper", ReferenceIcon::Ward, nullptr },
+};
+
+static const ReferenceNavigationItem g_CreepsNavigation[] =
+{
+	{ "Aggro Deaggro", ReferenceIcon::Aggro, nullptr },
+	{ "Auto Stack", ReferenceIcon::Overlay, nullptr },
+	{ "Camps Bounty", ReferenceIcon::Info, nullptr },
+	{ "Creep Blocker", ReferenceIcon::Heroes, nullptr },
+	{ "Creep Waves", ReferenceIcon::Smooth, nullptr },
+	{ "Illusion Control", ReferenceIcon::Heroes, nullptr },
+	{ "Jungle Bot", ReferenceIcon::Sparkles, nullptr },
+	{ "[v2] Last Hit Helper", ReferenceIcon::Info, nullptr },
+};
+
+static const ReferenceNavigationItem g_ChangerNavigation[] =
+{
+	{ "Better UI", ReferenceIcon::Overlay, nullptr },
+	{ "Changer", ReferenceIcon::Mouse, nullptr },
+	{ "Color Changer", ReferenceIcon::Info, nullptr },
+	{ "Cursor Trail", ReferenceIcon::Mouse, nullptr },
+	{ "Profile Changer", ReferenceIcon::Heroes, nullptr },
+	{ "Runes Changer", ReferenceIcon::Sparkles, nullptr },
+	{ "Sounds", ReferenceIcon::Bell, nullptr },
+	{ "Tree Changer", ReferenceIcon::Sparkles, nullptr },
+	{ "Unlocker", ReferenceIcon::Gear, nullptr },
+	{ "Walk Effects", ReferenceIcon::Mouse, nullptr },
+	{ "Watermark", ReferenceIcon::Overlay, nullptr },
+	{ "World", ReferenceIcon::Globe, nullptr },
+};
+
+static const ReferenceNavigationItem g_MiscNavigation[] =
+{
+	{ "Abuse Mini Games", ReferenceIcon::Info, "Other" },
+	{ "Auto Pick", ReferenceIcon::Sparkles, nullptr },
+	{ "Auto Queue", ReferenceIcon::Speed, nullptr },
+	{ "MMR Tracker", ReferenceIcon::Overlay, nullptr },
+	{ "Match Accept", ReferenceIcon::Info, nullptr },
+	{ "Meta Tracker", ReferenceIcon::Info, nullptr },
+	{ "MpHp Abuse", ReferenceIcon::Smooth, nullptr },
+	{ "Players Notes", ReferenceIcon::Overlay, nullptr },
+	{ "Show Roles", ReferenceIcon::Visible, nullptr },
+	{ "Social Feed", ReferenceIcon::Heroes, nullptr },
+	{ "Anti Illusion", ReferenceIcon::Hidden, "In Game" },
+	{ "Armlet Abuse", ReferenceIcon::Aggro, nullptr },
+	{ "Auto Glyph", ReferenceIcon::Gear, nullptr },
+};
+
+static const ReferenceNavigationItem g_ScriptsNavigation[] =
+{
+	{ "List", ReferenceIcon::Code, nullptr },
+	{ "Security", ReferenceIcon::Hidden, nullptr },
+};
+
+static const ReferenceNavigationItem g_CloudNavigation[] =
+{
+	{ "Configs", ReferenceIcon::Save, nullptr },
+};
+
+static const ReferenceNavigationCategory g_NavigationCategories[] =
+{
+	{ "General", ReferenceIcon::Globe, g_GeneralNavigation, IM_ARRAYSIZE( g_GeneralNavigation ) },
+	{ "Heroes", ReferenceIcon::Heroes, g_HeroesNavigation, IM_ARRAYSIZE( g_HeroesNavigation ) },
+	{ "Info Screen", ReferenceIcon::Overlay, g_InfoNavigation, IM_ARRAYSIZE( g_InfoNavigation ) },
+	{ "Creeps", ReferenceIcon::Aggro, g_CreepsNavigation, IM_ARRAYSIZE( g_CreepsNavigation ) },
+	{ "Changer", ReferenceIcon::Sparkles, g_ChangerNavigation, IM_ARRAYSIZE( g_ChangerNavigation ) },
+	{ "Miscellaneous", ReferenceIcon::Tools, g_MiscNavigation, IM_ARRAYSIZE( g_MiscNavigation ) },
+	{ "Scripts", ReferenceIcon::Code, g_ScriptsNavigation, IM_ARRAYSIZE( g_ScriptsNavigation ) },
+	{ "Cloud", ReferenceIcon::Cloud, g_CloudNavigation, IM_ARRAYSIZE( g_CloudNavigation ) },
+};
+
 static bool DrawSwitchRow( const char* label , const char* id , bool& value , ReferenceIcon icon )
 {
 	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
@@ -577,21 +708,20 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 
 	if ( ImGui::Begin( "##AndromedaReferenceMenu" , nullptr , flags ) )
 	{
-		static int selectedPage = 2;
-		const char* pageNames[] = { "Info Screen", "Aggro Drawer", "Camera", "Heroes Overlay", "Info Overlay", "Notifications", "Offscreen", "Radius", "Show Me More", "Visible Settings", "Ward Helper" };
-		const ReferenceIcon pageIcons[] = { ReferenceIcon::Info, ReferenceIcon::Aggro, ReferenceIcon::Camera, ReferenceIcon::Heroes, ReferenceIcon::Overlay, ReferenceIcon::Bell, ReferenceIcon::Offscreen, ReferenceIcon::Radius, ReferenceIcon::Hidden, ReferenceIcon::Visible, ReferenceIcon::Ward };
+		static int selectedCategory = 2;
+		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = {};
 
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
 		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
 		DrawBrandMark( ImGui::GetWindowDrawList() , ImVec2( ImGui::GetWindowPos().x + 25.f , ImGui::GetWindowPos().y + 25.f ) );
 		ImGui::SetCursorPosY( 58.f );
-		const ReferenceIcon railIcons[] = { ReferenceIcon::Globe, ReferenceIcon::Aggro, ReferenceIcon::Camera, ReferenceIcon::Heroes, ReferenceIcon::Overlay, ReferenceIcon::Sparkles, ReferenceIcon::Tools, ReferenceIcon::Code, ReferenceIcon::Cloud };
-		const char* railIds[] = { "##railGlobe", "##railAggro", "##railCamera", "##railHeroes", "##railOverlay", "##railSparkles", "##railTools", "##railCode", "##railCloud" };
-		for ( int i = 0; i < IM_ARRAYSIZE( railIcons ); ++i )
+		for ( int i = 0; i < IM_ARRAYSIZE( g_NavigationCategories ); ++i )
 		{
 			ImGui::SetCursorPosX( 6.f );
-			if ( DrawRailButton( railIds[i] , railIcons[i] , i == 2 ) && i < IM_ARRAYSIZE( pageNames ) )
-				selectedPage = i;
+			ImGui::PushID( i );
+			if ( DrawRailButton( "##railCategory" , g_NavigationCategories[i].railIcon , i == selectedCategory ) )
+				selectedCategory = i;
+			ImGui::PopID();
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 4.f );
 		}
 		ImGui::SetCursorPos( ImVec2( 6.f , ImGui::GetWindowHeight() - 43.f ) );
@@ -599,18 +729,31 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::EndChild();
 		ImGui::PopStyleColor();
 
+		const ReferenceNavigationCategory& category = g_NavigationCategories[selectedCategory];
+		int& selectedItem = selectedItems[selectedCategory];
+		const ReferenceNavigationItem& page = category.items[selectedItem];
+
 		ImGui::SameLine( 0.f , 0.f );
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 15 , 16 , 18 , 244 ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 12.f ) );
 		ImGui::BeginChild( "##navigation" , ImVec2( 164.f , 0.f ) , true , ImGuiWindowFlags_NoScrollbar );
 		ImGui::SetCursorPosY( 21.f );
 		ImGui::SetCursorPosX( 16.f );
-		ImGui::TextColored( ImVec4( 0.66f , 0.67f , 0.72f , 1.f ) , "Info Screen" );
+		ImGui::TextColored( ImVec4( 0.66f , 0.67f , 0.72f , 1.f ) , "%s" , category.title );
 		ImGui::SetCursorPosY( 63.f );
-		for ( int i = 0; i < IM_ARRAYSIZE( pageNames ); ++i )
+		for ( int i = 0; i < category.itemCount; ++i )
 		{
-			if ( DrawNavigationItem( pageNames[i] , pageIcons[i] , selectedPage == i ) )
-				selectedPage = i;
+			const ReferenceNavigationItem& item = category.items[i];
+			if ( item.section )
+			{
+				ImGui::SetCursorPosX( 5.f );
+				ImGui::TextColored( ImVec4( 0.56f , 0.57f , 0.62f , 1.f ) , "%s" , item.section );
+				ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 3.f );
+			}
+			ImGui::PushID( i );
+			if ( DrawNavigationItem( item.label , item.icon , selectedItem == i ) )
+				selectedItem = i;
+			ImGui::PopID();
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 1.f );
 		}
 		ImGui::EndChild();
@@ -624,7 +767,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::SetCursorPosY( 19.f );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
-		ImGui::TextColored( ImVec4( 0.95f , 0.25f , 0.29f , 1.f ) , "%s" , pageNames[selectedPage] );
+		ImGui::TextColored( ImVec4( 0.95f , 0.25f , 0.29f , 1.f ) , "%s" , page.label );
 
 		static char search[64] = {};
 		const float rightStart = ImGui::GetWindowWidth() - 267.f;
@@ -643,11 +786,12 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
-		ImGui::BeginChild( "##settingsCard" , ImVec2( 0.f , selectedPage == 2 ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
-		ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , pageNames[selectedPage] );
+		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
+		ImGui::BeginChild( "##settingsCard" , ImVec2( 0.f , cameraPage ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
+		ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 		ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
-		if ( selectedPage == 2 )
+		if ( cameraPage )
 		{
 			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
 			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 5000.f , "%.0f" , ReferenceIcon::Distance ) )
@@ -671,7 +815,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		else
 		{
 			ImGui::Spacing();
-			ImGui::TextColored( ImVec4( 0.76f , 0.77f , 0.80f , 1.f ) , "%s" , pageNames[selectedPage] );
+			ImGui::TextColored( ImVec4( 0.76f , 0.77f , 0.80f , 1.f ) , "%s" , page.label );
 			ImGui::TextDisabled( "This module has no configurable options yet." );
 		}
 
