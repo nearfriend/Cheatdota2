@@ -800,11 +800,17 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor();
 
-		ImGui::SameLine( 0.f , 0.f );
+		const float mainOuterMargin = 10.f;
+		ImGui::SameLine( 0.f , mainOuterMargin );
+		ImGui::SetCursorPosY( mainOuterMargin );
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 9 , 10 , 11 , 242 ) );
 		const float mainHorizontalMargin = 18.f;
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( mainHorizontalMargin , 14.f ) );
-		ImGui::BeginChild( "##mainContent" , ImVec2( 0.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
+		const ImVec2 mainAvailable = ImGui::GetContentRegionAvail();
+		const ImVec2 mainSize(
+			(std::max)( 1.f , mainAvailable.x - mainOuterMargin ),
+			(std::max)( 1.f , mainAvailable.y - mainOuterMargin ) );
+		ImGui::BeginChild( "##mainContent" , mainSize , false , ImGuiWindowFlags_NoScrollbar );
 		ImGui::SetCursorPosY( 20.f );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
