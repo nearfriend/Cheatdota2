@@ -19,6 +19,7 @@
 #include <winreg.h>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 #pragma comment(lib, "windowscodecs.lib")
@@ -492,7 +493,46 @@ static bool DrawNavigationItem( const char* label , ReferenceIcon icon , bool se
 	const ImU32 iconColor = selected ? IM_COL32( 244 , 55 , 65 , 255 ) : IM_COL32( 154 , 156 , 170 , 255 );
 	const ImU32 textColor = selected ? IM_COL32( 238 , 82 , 88 , 255 ) : IM_COL32( 166 , 168 , 181 , 255 );
 	DrawReferenceIcon( drawList , ImVec2( pos.x + 16.f , pos.y + 16.f ) , icon , iconColor , 0.78f );
-	drawList->AddText( ImVec2( pos.x + 35.f , pos.y + 7.f ) , textColor , label );
+
+	// Keep every label inside the navigation column. Long labels scroll from side
+	// to side while hovered so their hidden portion remains readable.
+	const float textStartX = pos.x + 35.f;
+	const float textEndX = pos.x + size.x - 5.f;
+	const float availableTextWidth = (std::max)( 0.f , textEndX - textStartX );
+	const float textWidth = ImGui::CalcTextSize( label ).x;
+	const float overflow = (std::max)( 0.f , textWidth - availableTextWidth );
+	float scrollOffset = 0.f;
+
+	ImGuiStorage* storage = ImGui::GetStateStorage();
+	const ImGuiID hoverStartKey = ImGui::GetID( "##navigationMarqueeStart" );
+	if ( hovered && overflow > 0.f )
+	{
+		float hoverStart = storage->GetFloat( hoverStartKey , -1.f );
+		if ( hoverStart < 0.f )
+		{
+			hoverStart = static_cast<float>( ImGui::GetTime() );
+			storage->SetFloat( hoverStartKey , hoverStart );
+		}
+
+		const float pauseDuration = 0.45f;
+		const float travelDuration = overflow / 38.f;
+		const float cycleDuration = pauseDuration * 2.f + travelDuration * 2.f;
+		const float phase = fmodf( static_cast<float>( ImGui::GetTime() ) - hoverStart , cycleDuration );
+		if ( phase > pauseDuration && phase <= pauseDuration + travelDuration )
+			scrollOffset = overflow * ( phase - pauseDuration ) / travelDuration;
+		else if ( phase > pauseDuration + travelDuration && phase <= pauseDuration * 2.f + travelDuration )
+			scrollOffset = overflow;
+		else if ( phase > pauseDuration * 2.f + travelDuration )
+			scrollOffset = overflow * ( 1.f - ( phase - pauseDuration * 2.f - travelDuration ) / travelDuration );
+	}
+	else
+	{
+		storage->SetFloat( hoverStartKey , -1.f );
+	}
+
+	drawList->PushClipRect( ImVec2( textStartX , pos.y ) , ImVec2( textEndX , pos.y + size.y ) , true );
+	drawList->AddText( ImVec2( textStartX - scrollOffset , pos.y + 7.f ) , textColor , label );
+	drawList->PopClipRect();
 	return ImGui::IsItemClicked();
 }
 
