@@ -882,9 +882,21 @@ auto CAndromedaClient::OnRender() -> void
 {
 	// Apply independently of the camera option so fog cannot return during interpolation.
 	ApplyNoFog();
+	const float mouseWheelDelta = GetAndromedaGUI()->ConsumeMouseWheelDelta();
 
 	if ( Settings::Camera::Enable )
 	{
+		// The first combo entry is "Wheel"; the second explicitly disables wheel zoom.
+		if ( Settings::Camera::ZoomUsingWheel == 0 && mouseWheelDelta != 0.f )
+		{
+			constexpr float kMinCameraDistance = 1200.f;
+			constexpr float kMaxCameraDistance = 5000.f;
+			Settings::Camera::Distance = std::clamp(
+				Settings::Camera::Distance - mouseWheelDelta * Settings::Camera::ZoomSpeed,
+				kMinCameraDistance,
+				kMaxCameraDistance );
+		}
+
 		if ( !m_pCameraDistance )
 			ResolveCameraPointers();
 

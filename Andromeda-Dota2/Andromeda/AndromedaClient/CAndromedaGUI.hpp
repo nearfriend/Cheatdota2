@@ -53,6 +53,8 @@ public:
 public:
 	auto OnReopenGUI() -> void;
 	auto ProcessHotkeys() -> void;
+	auto AddMouseWheelDelta( short Delta ) -> void;
+	auto ConsumeMouseWheelDelta() -> float;
 
 public:
 	static LRESULT WINAPI GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam , LPARAM lParam );
@@ -89,6 +91,7 @@ public:
 
 private:
 	ImVec2 m_vecMousePosSave;
+	volatile LONG m_nMouseWheelDelta = 0;
 
 private:
 	struct FreeTypeBuild

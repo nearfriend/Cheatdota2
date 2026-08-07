@@ -223,6 +223,17 @@ auto CAndromedaGUI::ProcessHotkeys() -> void
 	f6WasDown = f6Down;
 }
 
+auto CAndromedaGUI::AddMouseWheelDelta( short Delta ) -> void
+{
+	InterlockedExchangeAdd( &m_nMouseWheelDelta , static_cast<LONG>( Delta ) );
+}
+
+auto CAndromedaGUI::ConsumeMouseWheelDelta() -> float
+{
+	const LONG delta = InterlockedExchange( &m_nMouseWheelDelta , 0 );
+	return static_cast<float>( delta ) / static_cast<float>( WHEEL_DELTA );
+}
+
 auto CAndromedaGUI::OnReopenGUI() -> void
 {
 	m_bVisible = !m_bVisible;
@@ -272,6 +283,9 @@ LRESULT WINAPI CAndromedaGUI::GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam
 		GetDllLauncher()->OnDestroy();
 		return true;
 	}
+
+	if ( uMsg == WM_MOUSEWHEEL )
+		GetAndromedaGUI()->AddMouseWheelDelta( static_cast<short>( GET_WHEEL_DELTA_WPARAM( wParam ) ) );
 
 	if ( GetAndromedaGUI()->m_bInit && GetAndromedaGUI()->IsVisible() )
 	{
