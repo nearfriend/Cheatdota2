@@ -77,6 +77,11 @@ auto CAndromedaGUI::OnDestroy() -> void
 
 	m_bVisible = false;
 
+	int guard = 0;
+	while ( ShowCursor( TRUE ) < 0 && ++guard < 8 )
+	{
+	}
+
 	if ( m_pFreeType_Font )
 	{
 		delete m_pFreeType_Font;
@@ -230,7 +235,22 @@ auto CAndromedaGUI::OnReopenGUI() -> void
 	ImGui::SetCurrentContext( m_pImGuiContext );
 
 	ImGui::GetIO().MouseDrawCursor = m_bVisible;
-	ShowCursor( !m_bVisible );
+
+	// ShowCursor uses a display counter — drive it to an absolute visible/hidden state.
+	if ( m_bVisible )
+	{
+		int guard = 0;
+		while ( ShowCursor( FALSE ) >= 0 && ++guard < 8 )
+		{
+		}
+	}
+	else
+	{
+		int guard = 0;
+		while ( ShowCursor( TRUE ) < 0 && ++guard < 8 )
+		{
+		}
+	}
 
 	if ( m_bVisible )
 	{
@@ -253,9 +273,10 @@ LRESULT WINAPI CAndromedaGUI::GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam
 		return true;
 	}
 
-	if ( GetAndromedaGUI()->m_bInit )
+	if ( GetAndromedaGUI()->m_bInit && GetAndromedaGUI()->IsVisible() )
 	{
-		if ( GetAndromedaGUI()->IsVisible() && ImGui_ImplWin32_WndProcHandler( hwnd , uMsg , wParam , lParam ) == 0 )
+		// ImGui returns non-zero when it consumed the message — don't forward those to the game.
+		if ( ImGui_ImplWin32_WndProcHandler( hwnd , uMsg , wParam , lParam ) )
 			return true;
 	}
 

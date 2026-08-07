@@ -8,9 +8,13 @@
 #include <AndromedaClient/Heroes/Invoker/CInvokerController.hpp>
 #include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
 
+#include <array>
+#include <atomic>
+
 class CDOTAInput;
 class CUserCmd;
 class CHeroDataLoader;
+class CEntityInstance;
 
 class IAndromedaClient
 {
@@ -36,20 +40,50 @@ public:
 
 public:
 	auto GetHeroData() -> CHeroDataLoader*;
+	auto RegisterFogController( CEntityInstance* pEntity ) -> void;
+	auto UnregisterFogController( CEntityInstance* pEntity ) -> void;
 	CMeepoController& GetMeepoController() { return m_MeepoController; }
 	const CMeepoController& GetMeepoController() const { return m_MeepoController; }
 
 private:
+	auto ResolveFogOffsets() -> void;
+	auto ResolveFogConVars() -> void;
+	auto ApplyFogConVars() -> bool;
+	auto ApplyNoFogParams( uintptr_t fog ) -> void;
+	auto ApplyNoFog() -> void;
+	auto ApplyNoFog( CEntityInstance* pEntity ) -> void;
+	auto FogPlanesReady() const -> bool;
+
 	CBasePattern dota_camera_distance = { XorStr( "dota_camera_distance" ) , XorStr( "F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA ? ? ? ? F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA" ) , XorStr( CLIENT_DLL ) , 0 , eBasePatternSearchType::SEARCH_TYPE_MOV_PTR };
-	CBasePattern dota_camera_fog_end = { XorStr( "dota_camera_fog_end" ) , XorStr( "F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? F3 0F 11 05" ) , XorStr( CLIENT_DLL ) , 0 , eBasePatternSearchType::SEARCH_TYPE_MOV_PTR };
 	CBasePattern dota_camera_farplane = { XorStr( "dota_camera_farplane" ) , XorStr( "F3 0F 11 05 ? ? ? ? 48 83 C4 ? C3" ) , XorStr( CLIENT_DLL ) , 0 , eBasePatternSearchType::SEARCH_TYPE_MOV_PTR };
 
 	auto SearchCameraConvar( CBasePattern& pattern , const char** fallbackPatterns ) -> bool;
 
 private:
 	float* m_pCameraDistance = nullptr;
-	float* m_pCameraFogEnd = nullptr;
-	float* m_pCameraFarplane = nullptr;
+	float* m_pRFarz = nullptr;
+
+	// Dota RTS camera fog — these drive the zoom haze (not C_FogController).
+	float* m_pFogStartZoomedOut = nullptr;
+	float* m_pFogEndZoomedOut = nullptr;
+	float* m_pFogStartZoomedIn = nullptr;
+	float* m_pFogEndZoomedIn = nullptr;
+	bool* m_pFogEnable = nullptr;
+	int m_FogConVarResolveAttempts = 0;
+
+	std::array<std::atomic<CEntityInstance*> , 16> m_FogControllers{};
+
+	// Secondary: fogparams_t on fog controllers (density/enable only).
+	uint32_t m_FogEnableOffset = 0;
+	uint32_t m_FogBlendOffset = 0;
+	uint32_t m_FogMaxDensityOffset = 0;
+	uint32_t m_FogMaxDensityLerpOffset = 0;
+	uint32_t m_FogSkyboxFactorOffset = 0;
+	uint32_t m_FogSkyboxFactorLerpOffset = 0;
+	uint32_t m_FogControllerFogOffset = 0;
+	uint32_t m_FogChangedVariablesOffset = 0;
+	bool m_FogParamsResolved = false;
+	bool m_FogControllerResolved = false;
 
 private:
 	CInvokerController m_InvokerController;

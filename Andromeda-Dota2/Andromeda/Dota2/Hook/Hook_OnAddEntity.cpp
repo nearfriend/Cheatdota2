@@ -82,6 +82,30 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 
 	static int s_nHeroCount = 0;
 
+	if ( pInst )
+	{
+		bool isFogController = className && std::strstr( className , "FogController" );
+
+		if ( !isFogController && pIdentity && IsReadable( pIdentity ) )
+		{
+			const auto& designerName = pIdentity->DesingerName();
+			const char* designer = designerName.String();
+
+			if ( designer && IsReadable( designer , 32 ) )
+			{
+				isFogController =
+					std::strstr( designer , "fog_controller" ) != nullptr ||
+					std::strstr( designer , "FogController" ) != nullptr;
+			}
+		}
+
+		if ( isFogController )
+		{
+			if ( auto* client = GetAndromedaClient() )
+				client->RegisterFogController( pInst );
+		}
+	}
+
 	if ( pInst && IsReadable( pInst ) && className != "<unknown>" )
 	{
 		std::string entityName;
