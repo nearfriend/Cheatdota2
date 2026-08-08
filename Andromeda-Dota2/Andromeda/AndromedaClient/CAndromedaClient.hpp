@@ -50,6 +50,7 @@ private:
 	auto ResolveFogConVars() -> void;
 	auto ApplyFogConVars() -> bool;
 	auto ApplyNoFogParams( uintptr_t fog ) -> void;
+	auto ApplyNoFogCameraServices() -> void;
 	auto ApplyNoFog() -> void;
 	auto ApplyNoFog( CEntityInstance* pEntity ) -> void;
 	auto FogPlanesReady() const -> bool;
@@ -75,17 +76,33 @@ private:
 
 	std::array<std::atomic<CEntityInstance*> , 16> m_FogControllers{};
 
-	// Secondary: fogparams_t on fog controllers (density/enable only).
+	// Shared fogparams_t layout used by controllers and local camera services.
 	uint32_t m_FogEnableOffset = 0;
 	uint32_t m_FogBlendOffset = 0;
+	uint32_t m_FogStartOffset = 0;
+	uint32_t m_FogEndOffset = 0;
+	uint32_t m_FogFarZOffset = 0;
 	uint32_t m_FogMaxDensityOffset = 0;
+	uint32_t m_FogStartLerpOffset = 0;
+	uint32_t m_FogEndLerpOffset = 0;
 	uint32_t m_FogMaxDensityLerpOffset = 0;
 	uint32_t m_FogSkyboxFactorOffset = 0;
 	uint32_t m_FogSkyboxFactorLerpOffset = 0;
+	uint32_t m_FogBlendToBackgroundOffset = 0;
+	uint32_t m_FogScatteringOffset = 0;
 	uint32_t m_FogControllerFogOffset = 0;
 	uint32_t m_FogChangedVariablesOffset = 0;
+	uint32_t m_PlayerControllerPawnOffset = 0;
+	uint32_t m_PlayerPawnCameraServicesOffset = 0;
+	uint32_t m_CameraCurrentFogOffset = 0;
+	uint32_t m_CameraOverrideFogColorEnabledOffset = 0;
+	uint32_t m_CameraOverrideFogColorOffset = 0;
+	uint32_t m_CameraOverrideFogStartEndEnabledOffset = 0;
+	uint32_t m_CameraOverrideFogStartOffset = 0;
+	uint32_t m_CameraOverrideFogEndOffset = 0;
 	bool m_FogParamsResolved = false;
 	bool m_FogControllerResolved = false;
+	bool m_CameraFogResolved = false;
 	int m_FogScanCursor = 0;
 	ULONGLONG m_NextFogRescanTick = 0;
 

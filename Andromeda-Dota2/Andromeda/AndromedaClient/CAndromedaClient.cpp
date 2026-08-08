@@ -461,7 +461,7 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 {
 	static bool s_Logged = false;
 
-	if ( m_FogParamsResolved && m_FogControllerResolved )
+	if ( m_FogParamsResolved && m_FogControllerResolved && m_CameraFogResolved )
 		return;
 
 	auto* schema = GetSchemaOffset();
@@ -471,10 +471,26 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 
 	schema->TryGetOffset( "fogparams_t" , "enable" , m_FogEnableOffset );
 	schema->TryGetOffset( "fogparams_t" , "blend" , m_FogBlendOffset );
+	schema->TryGetOffset( "fogparams_t" , "start" , m_FogStartOffset );
+	schema->TryGetOffset( "fogparams_t" , "end" , m_FogEndOffset );
+	schema->TryGetOffset( "fogparams_t" , "farz" , m_FogFarZOffset );
 	schema->TryGetOffset( "fogparams_t" , "maxdensity" , m_FogMaxDensityOffset );
+	schema->TryGetOffset( "fogparams_t" , "startLerpTo" , m_FogStartLerpOffset );
+	schema->TryGetOffset( "fogparams_t" , "endLerpTo" , m_FogEndLerpOffset );
 	schema->TryGetOffset( "fogparams_t" , "maxdensityLerpTo" , m_FogMaxDensityLerpOffset );
 	schema->TryGetOffset( "fogparams_t" , "skyboxFogFactor" , m_FogSkyboxFactorOffset );
 	schema->TryGetOffset( "fogparams_t" , "skyboxFogFactorLerpTo" , m_FogSkyboxFactorLerpOffset );
+	schema->TryGetOffset( "fogparams_t" , "blendtobackground" , m_FogBlendToBackgroundOffset );
+	schema->TryGetOffset( "fogparams_t" , "scattering" , m_FogScatteringOffset );
+
+	schema->TryGetOffset( "CBasePlayerController" , "m_hPawn" , m_PlayerControllerPawnOffset );
+	schema->TryGetOffset( "C_BasePlayerPawn" , "m_pCameraServices" , m_PlayerPawnCameraServicesOffset );
+	schema->TryGetOffset( "CPlayer_CameraServices" , "m_CurrentFog" , m_CameraCurrentFogOffset );
+	schema->TryGetOffset( "CPlayer_CameraServices" , "m_bOverrideFogColor" , m_CameraOverrideFogColorEnabledOffset );
+	schema->TryGetOffset( "CPlayer_CameraServices" , "m_OverrideFogColor" , m_CameraOverrideFogColorOffset );
+	schema->TryGetOffset( "CPlayer_CameraServices" , "m_bOverrideFogStartEnd" , m_CameraOverrideFogStartEndEnabledOffset );
+	schema->TryGetOffset( "CPlayer_CameraServices" , "m_fOverrideFogStart" , m_CameraOverrideFogStartOffset );
+	schema->TryGetOffset( "CPlayer_CameraServices" , "m_fOverrideFogEnd" , m_CameraOverrideFogEndOffset );
 	if ( !m_FogControllerFogOffset )
 	{
 		static const char* controllerClasses[] =
@@ -499,6 +515,12 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 		m_FogEnableOffset = 0x64;
 	if ( !m_FogMaxDensityOffset )
 		m_FogMaxDensityOffset = 0x30;
+	if ( !m_FogStartOffset )
+		m_FogStartOffset = 0x24;
+	if ( !m_FogEndOffset )
+		m_FogEndOffset = 0x28;
+	if ( !m_FogFarZOffset )
+		m_FogFarZOffset = 0x2C;
 	if ( !m_FogBlendOffset )
 		m_FogBlendOffset = 0x65;
 	if ( !m_FogSkyboxFactorOffset )
@@ -507,15 +529,47 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 		m_FogSkyboxFactorLerpOffset = 0x40;
 	if ( !m_FogMaxDensityLerpOffset )
 		m_FogMaxDensityLerpOffset = 0x4C;
+	if ( !m_FogStartLerpOffset )
+		m_FogStartLerpOffset = 0x44;
+	if ( !m_FogEndLerpOffset )
+		m_FogEndLerpOffset = 0x48;
+	if ( !m_FogBlendToBackgroundOffset )
+		m_FogBlendToBackgroundOffset = 0x58;
+	if ( !m_FogScatteringOffset )
+		m_FogScatteringOffset = 0x5C;
+
+	// Linked Windows schema fallbacks. Runtime schema values above take priority.
+	if ( !m_PlayerControllerPawnOffset )
+		m_PlayerControllerPawnOffset = 0x6A4;
+	if ( !m_PlayerPawnCameraServicesOffset )
+		m_PlayerPawnCameraServicesOffset = 0xB98;
+	if ( !m_CameraCurrentFogOffset )
+		m_CameraCurrentFogOffset = 0x130;
+	if ( !m_CameraOverrideFogColorEnabledOffset )
+		m_CameraOverrideFogColorEnabledOffset = 0x19C;
+	if ( !m_CameraOverrideFogColorOffset )
+		m_CameraOverrideFogColorOffset = 0x1A1;
+	if ( !m_CameraOverrideFogStartEndEnabledOffset )
+		m_CameraOverrideFogStartEndEnabledOffset = 0x1B5;
+	if ( !m_CameraOverrideFogStartOffset )
+		m_CameraOverrideFogStartOffset = 0x1BC;
+	if ( !m_CameraOverrideFogEndOffset )
+		m_CameraOverrideFogEndOffset = 0x1D0;
 
 	m_FogParamsResolved = m_FogEnableOffset > 0 && m_FogMaxDensityOffset > 0;
 	m_FogControllerResolved = m_FogControllerFogOffset > 0 && m_FogParamsResolved;
+	m_CameraFogResolved = m_FogParamsResolved && m_PlayerControllerPawnOffset > 0 &&
+		m_PlayerPawnCameraServicesOffset > 0 && m_CameraCurrentFogOffset > 0 &&
+		m_CameraOverrideFogColorEnabledOffset > 0 && m_CameraOverrideFogColorOffset > 0 &&
+		m_CameraOverrideFogStartEndEnabledOffset > 0 && m_CameraOverrideFogStartOffset > 0 &&
+		m_CameraOverrideFogEndOffset > 0;
 
-	if ( !s_Logged || m_FogControllerResolved )
+	if ( !s_Logged || ( m_FogControllerResolved && m_CameraFogResolved ) )
 	{
-		DEV_LOG( "[fog] schema secondary: params=%d controller=%d enable=0x%X dens=0x%X ctrl_fog=0x%X\n" ,
+		DEV_LOG( "[fog] schema paths: params=%d controller=%d camera=%d enable=0x%X dens=0x%X ctrl_fog=0x%X current=0x%X\n" ,
 			m_FogParamsResolved ? 1 : 0 , m_FogControllerResolved ? 1 : 0 ,
-			m_FogEnableOffset , m_FogMaxDensityOffset , m_FogControllerFogOffset );
+			m_CameraFogResolved ? 1 : 0 , m_FogEnableOffset , m_FogMaxDensityOffset ,
+			m_FogControllerFogOffset , m_CameraCurrentFogOffset );
 		s_Logged = true;
 	}
 }
@@ -659,27 +713,100 @@ auto CAndromedaClient::ApplyNoFogParams( uintptr_t fog ) -> void
 
 	uint32_t highest = m_FogEnableOffset;
 	highest = (std::max)( highest , m_FogBlendOffset );
+	highest = (std::max)( highest , m_FogStartOffset );
+	highest = (std::max)( highest , m_FogEndOffset );
+	highest = (std::max)( highest , m_FogFarZOffset );
 	highest = (std::max)( highest , m_FogMaxDensityOffset );
+	highest = (std::max)( highest , m_FogStartLerpOffset );
+	highest = (std::max)( highest , m_FogEndLerpOffset );
 	highest = (std::max)( highest , m_FogMaxDensityLerpOffset );
 	highest = (std::max)( highest , m_FogSkyboxFactorOffset );
 	highest = (std::max)( highest , m_FogSkyboxFactorLerpOffset );
+	highest = (std::max)( highest , m_FogBlendToBackgroundOffset );
+	highest = (std::max)( highest , m_FogScatteringOffset );
 
 	if ( !IsWritableRange( reinterpret_cast<void*>( fog ) , highest + sizeof( float ) ) )
 		return;
 
-	// Density/enable only — do not rewrite start/end (that previously thickened the wash).
+	constexpr float kNoFogDistance = 50000.f;
 	*reinterpret_cast<bool*>( fog + m_FogEnableOffset ) = false;
 
 	if ( m_FogBlendOffset )
 		*reinterpret_cast<bool*>( fog + m_FogBlendOffset ) = false;
+	if ( m_FogStartOffset )
+		*reinterpret_cast<float*>( fog + m_FogStartOffset ) = kNoFogDistance;
+	if ( m_FogEndOffset )
+		*reinterpret_cast<float*>( fog + m_FogEndOffset ) = kNoFogDistance;
+	if ( m_FogFarZOffset )
+		*reinterpret_cast<float*>( fog + m_FogFarZOffset ) = kNoFogDistance;
 	if ( m_FogMaxDensityOffset )
 		*reinterpret_cast<float*>( fog + m_FogMaxDensityOffset ) = 0.f;
+	if ( m_FogStartLerpOffset )
+		*reinterpret_cast<float*>( fog + m_FogStartLerpOffset ) = kNoFogDistance;
+	if ( m_FogEndLerpOffset )
+		*reinterpret_cast<float*>( fog + m_FogEndLerpOffset ) = kNoFogDistance;
 	if ( m_FogMaxDensityLerpOffset )
 		*reinterpret_cast<float*>( fog + m_FogMaxDensityLerpOffset ) = 0.f;
 	if ( m_FogSkyboxFactorOffset )
 		*reinterpret_cast<float*>( fog + m_FogSkyboxFactorOffset ) = 0.f;
 	if ( m_FogSkyboxFactorLerpOffset )
 		*reinterpret_cast<float*>( fog + m_FogSkyboxFactorLerpOffset ) = 0.f;
+	if ( m_FogBlendToBackgroundOffset )
+		*reinterpret_cast<float*>( fog + m_FogBlendToBackgroundOffset ) = 0.f;
+	if ( m_FogScatteringOffset )
+		*reinterpret_cast<float*>( fog + m_FogScatteringOffset ) = 0.f;
+}
+
+auto CAndromedaClient::ApplyNoFogCameraServices() -> void
+{
+	if ( !m_CameraFogResolved )
+		return;
+
+	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
+	auto* controller = CGameEntitySystem::GetLocalPlayerController();
+	if ( !entitySystem || !controller )
+		return;
+
+	auto* pawnHandle = reinterpret_cast<CHandle*>(
+		reinterpret_cast<uintptr_t>( controller ) + m_PlayerControllerPawnOffset );
+	if ( !IsWritableRange( pawnHandle , sizeof( *pawnHandle ) ) || !pawnHandle->IsValid() )
+		return;
+
+	auto* pawn = entitySystem->GetBaseEntityFromHandle( *pawnHandle );
+	if ( !pawn )
+		return;
+
+	auto** cameraSlot = reinterpret_cast<void**>(
+		reinterpret_cast<uintptr_t>( pawn ) + m_PlayerPawnCameraServicesOffset );
+	if ( !IsWritableRange( cameraSlot , sizeof( *cameraSlot ) ) || !*cameraSlot )
+		return;
+
+	const uintptr_t camera = reinterpret_cast<uintptr_t>( *cameraSlot );
+	ApplyNoFogParams( camera + m_CameraCurrentFogOffset );
+
+	constexpr size_t kFogOverrideCount = 5;
+	constexpr float kNoFogDistance = 50000.f;
+	auto* colorEnabled = reinterpret_cast<bool*>( camera + m_CameraOverrideFogColorEnabledOffset );
+	auto* colors = reinterpret_cast<uint32_t*>( camera + m_CameraOverrideFogColorOffset );
+	auto* distanceEnabled = reinterpret_cast<bool*>( camera + m_CameraOverrideFogStartEndEnabledOffset );
+	auto* starts = reinterpret_cast<float*>( camera + m_CameraOverrideFogStartOffset );
+	auto* ends = reinterpret_cast<float*>( camera + m_CameraOverrideFogEndOffset );
+
+	if ( !IsWritableRange( colorEnabled , kFogOverrideCount * sizeof( bool ) ) ||
+		 !IsWritableRange( colors , kFogOverrideCount * sizeof( uint32_t ) ) ||
+		 !IsWritableRange( distanceEnabled , kFogOverrideCount * sizeof( bool ) ) ||
+		 !IsWritableRange( starts , kFogOverrideCount * sizeof( float ) ) ||
+		 !IsWritableRange( ends , kFogOverrideCount * sizeof( float ) ) )
+		return;
+
+	for ( size_t index = 0; index < kFogOverrideCount; ++index )
+	{
+		colorEnabled[index] = true;
+		colors[index] = 0u;
+		distanceEnabled[index] = true;
+		starts[index] = kNoFogDistance;
+		ends[index] = kNoFogDistance;
+	}
 }
 
 auto CAndromedaClient::ApplyNoFog( CEntityInstance* pEntity ) -> void
@@ -705,6 +832,7 @@ auto CAndromedaClient::ApplyNoFog() -> void
 
 	// Primary path: Dota camera fog ConVars. Entity fogparams alone cannot clear zoom haze.
 	ApplyFogConVars();
+	ApplyNoFogCameraServices();
 
 	for ( auto& slot : m_FogControllers )
 	{
