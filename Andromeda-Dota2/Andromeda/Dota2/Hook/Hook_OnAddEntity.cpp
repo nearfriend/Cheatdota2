@@ -4,6 +4,40 @@
 #include <Dota2/SDK/Types/CEntityData.hpp>
 
 #include <cstring>
+#include <cctype>
+
+namespace
+{
+	auto LooksLikeFogControllerName( const char* name ) -> bool
+	{
+		if ( !name || !name[0] )
+			return false;
+
+		auto contains = [name]( const char* word )
+		{
+			const size_t nameLength = std::strlen( name );
+			const size_t wordLength = std::strlen( word );
+
+			for ( size_t index = 0; index + wordLength <= nameLength; ++index )
+			{
+				size_t offset = 0;
+				for ( ; offset < wordLength; ++offset )
+				{
+					const unsigned char value = static_cast<unsigned char>( name[index + offset] );
+					if ( static_cast<char>( std::tolower( value ) ) != word[offset] )
+						break;
+				}
+
+				if ( offset == wordLength )
+					return true;
+			}
+
+			return false;
+		};
+
+		return contains( "fog" ) && contains( "controller" );
+	}
+}
 
 auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* pInst , CHandle handle ) -> void
 {
@@ -16,8 +50,18 @@ auto Hook_OnAddEntity( CGameEntitySystem* pCGameEntitySystem , CEntityInstance* 
 		return;
 
 	const char* className = pInst->GetSchemaClassName();
+	bool isFogController = LooksLikeFogControllerName( className );
 
-	if ( className && std::strstr( className , "FogController" ) )
+	if ( !isFogController )
+	{
+		if ( auto* identity = pInst->pEntityIdentity() )
+		{
+			isFogController = LooksLikeFogControllerName( identity->DesingerName().String() ) ||
+				LooksLikeFogControllerName( identity->Name().String() );
+		}
+	}
+
+	if ( isFogController )
 	{
 		if ( auto* client = GetAndromedaClient() )
 			client->RegisterFogController( pInst );

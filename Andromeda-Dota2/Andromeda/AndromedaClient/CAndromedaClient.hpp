@@ -53,6 +53,7 @@ private:
 	auto ApplyNoFog() -> void;
 	auto ApplyNoFog( CEntityInstance* pEntity ) -> void;
 	auto FogPlanesReady() const -> bool;
+	auto DiscoverFogControllers() -> void;
 
 	CBasePattern dota_camera_distance = { XorStr( "dota_camera_distance" ) , XorStr( "F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA ? ? ? ? F3 0F 11 05 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? BA" ) , XorStr( CLIENT_DLL ) , 0 , eBasePatternSearchType::SEARCH_TYPE_MOV_PTR };
 	CBasePattern dota_camera_farplane = { XorStr( "dota_camera_farplane" ) , XorStr( "F3 0F 11 05 ? ? ? ? 48 83 C4 ? C3" ) , XorStr( CLIENT_DLL ) , 0 , eBasePatternSearchType::SEARCH_TYPE_MOV_PTR };
@@ -85,6 +86,8 @@ private:
 	uint32_t m_FogChangedVariablesOffset = 0;
 	bool m_FogParamsResolved = false;
 	bool m_FogControllerResolved = false;
+	int m_FogScanCursor = 0;
+	ULONGLONG m_NextFogRescanTick = 0;
 
 private:
 	CInvokerController m_InvokerController;

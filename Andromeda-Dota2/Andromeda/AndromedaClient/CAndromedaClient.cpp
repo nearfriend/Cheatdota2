@@ -16,6 +16,7 @@
 #include <Common/MemoryEngine.hpp>
 #include <filesystem>
 #include <cstring>
+#include <cctype>
 #include <cmath>
 #include <algorithm>
 
@@ -24,6 +25,40 @@ static CHeroDataLoader g_HeroDataLoader{};
 
 namespace
 {
+	auto LooksLikeFogControllerName( const char* name ) -> bool
+	{
+		if ( !name || !name[0] )
+			return false;
+
+		bool sawFog = false;
+		bool sawController = false;
+		const size_t length = strlen( name );
+
+		for ( size_t index = 0; index < length; ++index )
+		{
+			auto matchesAt = [&]( const char* word )
+			{
+				const size_t wordLength = strlen( word );
+				if ( index + wordLength > length )
+					return false;
+
+				for ( size_t offset = 0; offset < wordLength; ++offset )
+				{
+					const unsigned char value = static_cast<unsigned char>( name[index + offset] );
+					if ( static_cast<char>( std::tolower( value ) ) != word[offset] )
+						return false;
+				}
+
+				return true;
+			};
+
+			sawFog = sawFog || matchesAt( "fog" );
+			sawController = sawController || matchesAt( "controller" );
+		}
+
+		return sawFog && sawController;
+	}
+
 	struct ModuleRange
 	{
 		uintptr_t base = 0;
@@ -426,7 +461,7 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 {
 	static bool s_Logged = false;
 
-	if ( m_FogParamsResolved )
+	if ( m_FogParamsResolved && m_FogControllerResolved )
 		return;
 
 	auto* schema = GetSchemaOffset();
@@ -440,8 +475,25 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 	schema->TryGetOffset( "fogparams_t" , "maxdensityLerpTo" , m_FogMaxDensityLerpOffset );
 	schema->TryGetOffset( "fogparams_t" , "skyboxFogFactor" , m_FogSkyboxFactorOffset );
 	schema->TryGetOffset( "fogparams_t" , "skyboxFogFactorLerpTo" , m_FogSkyboxFactorLerpOffset );
-	schema->TryGetOffset( "C_FogController" , "m_fog" , m_FogControllerFogOffset );
-	schema->TryGetOffset( "C_FogController" , "m_iChangedVariables" , m_FogChangedVariablesOffset );
+	if ( !m_FogControllerFogOffset )
+	{
+		static const char* controllerClasses[] =
+		{
+			"C_FogController" ,
+			"C_EnvFogController" ,
+			"C_FogControllerBase" ,
+			nullptr
+		};
+
+		for ( int index = 0; controllerClasses[index]; ++index )
+		{
+			if ( schema->TryGetOffset( controllerClasses[index] , "m_fog" , m_FogControllerFogOffset ) )
+			{
+				schema->TryGetOffset( controllerClasses[index] , "m_iChangedVariables" , m_FogChangedVariablesOffset );
+				break;
+			}
+		}
+	}
 
 	if ( !m_FogEnableOffset )
 		m_FogEnableOffset = 0x64;
@@ -459,7 +511,7 @@ auto CAndromedaClient::ResolveFogOffsets() -> void
 	m_FogParamsResolved = m_FogEnableOffset > 0 && m_FogMaxDensityOffset > 0;
 	m_FogControllerResolved = m_FogControllerFogOffset > 0 && m_FogParamsResolved;
 
-	if ( !s_Logged )
+	if ( !s_Logged || m_FogControllerResolved )
 	{
 		DEV_LOG( "[fog] schema secondary: params=%d controller=%d enable=0x%X dens=0x%X ctrl_fog=0x%X\n" ,
 			m_FogParamsResolved ? 1 : 0 , m_FogControllerResolved ? 1 : 0 ,
@@ -911,6 +963,58 @@ auto CAndromedaClient::OnRender() -> void
 	ImGui::GetForegroundDrawList()->AddText( ImVec2( 1.f , 1.f ) , IM_COL32( 255 , 255 , 0 , 255 ) , XorStr( CHEAT_NAME ) );
 }
 
+auto CAndromedaClient::DiscoverFogControllers() -> void
+{
+	constexpr int kEntitiesPerTick = 96;
+	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
+
+	if ( !entitySystem )
+		return;
+
+	const int highest = (std::min)( entitySystem->GetHighestEntityIndex() , MAX_TOTAL_ENTITIES - 1 );
+	if ( highest < 0 )
+		return;
+
+	const ULONGLONG now = GetTickCount64();
+
+	if ( m_FogScanCursor > highest )
+	{
+		if ( now < m_NextFogRescanTick )
+			return;
+
+		m_FogScanCursor = 0;
+	}
+
+	const int end = (std::min)( m_FogScanCursor + kEntitiesPerTick , highest + 1 );
+
+	for ( int index = m_FogScanCursor; index < end; ++index )
+	{
+		auto* entity = entitySystem->GetBaseEntity<CEntityInstance>( index );
+		if ( !entity )
+			continue;
+
+		const char* className = entity->GetSchemaClassName();
+		bool isFogController = LooksLikeFogControllerName( className );
+
+		if ( !isFogController )
+		{
+			if ( auto* identity = entity->pEntityIdentity() )
+			{
+				isFogController = LooksLikeFogControllerName( identity->DesingerName().String() ) ||
+					LooksLikeFogControllerName( identity->Name().String() );
+			}
+		}
+
+		if ( isFogController )
+			RegisterFogController( entity );
+	}
+
+	m_FogScanCursor = end;
+
+	if ( m_FogScanCursor > highest )
+		m_NextFogRescanTick = now + 5000;
+}
+
 auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserCmd ) -> void
 {
 	GetAndromedaGUI()->ProcessHotkeys();
@@ -933,6 +1037,10 @@ auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserC
 	// Skip hero/Lua work until we have a real usercmd (match fully loaded).
 	if ( !pCUserCmd )
 		return;
+
+	// Pick up fog controllers that existed before the entity hook was installed.
+	// Work is bounded so map startup remains smooth.
+	DiscoverFogControllers();
 
 	m_InvokerController.OnCreateMove( pCDOTAInput , pCUserCmd );
 	m_MeepoController.OnCreateMove( pCDOTAInput , pCUserCmd );
