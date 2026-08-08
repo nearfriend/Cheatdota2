@@ -214,11 +214,10 @@ bool CMeepoController::ResolveLocalHero()
 		static int s_nControllerFailCount = 0;
 		if (s_nControllerFailCount++ < 3)
 		{
-			DEV_LOG("[meepo] ResolveLocalHero: Controller is null (Demo mode?) - trying entity search fallback\n");
+			DEV_LOG("[meepo] ResolveLocalHero: Controller is not ready yet\n");
 		}
 
-		// FALLBACK FOR DEMO MODE: Search for hero by iterating entities
-		return ResolveHeroByEntitySearch();
+		return false;
 	}
 
 	const auto heroHandle = pController->m_hAssignedHero();
@@ -230,8 +229,15 @@ bool CMeepoController::ResolveLocalHero()
 			DEV_LOG("[meepo] ResolveLocalHero: Hero handle is invalid\n");
 		}
 		m_pHero = nullptr;
+		m_HeroClassificationComplete = false;
 		return false;
 	}
+
+	if (m_HeroClassificationComplete && m_LastHeroHandle == heroHandle.m_Index)
+		return m_pHero != nullptr;
+
+	m_LastHeroHandle = heroHandle.m_Index;
+	m_HeroClassificationComplete = true;
 
 	m_pHero = static_cast<C_DOTA_BaseNPC_Hero*>(
 		SDK::Interfaces::GameEntitySystem()->GetBaseEntityFromHandle(heroHandle)

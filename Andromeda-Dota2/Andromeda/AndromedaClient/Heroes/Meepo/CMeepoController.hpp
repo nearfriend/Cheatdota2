@@ -44,6 +44,8 @@ private:
 
 private:
 	C_DOTA_BaseNPC_Hero* m_pHero = nullptr;
+	uint32_t m_LastHeroHandle = 0xFFFFFFFFu;
+	bool m_HeroClassificationComplete = false;
 	std::vector<MeepoAbilityInfo> m_Abilities;
 
 	uint32_t m_vecAbilitiesOffset = BaseNPCOffsets::m_vecAbilities;

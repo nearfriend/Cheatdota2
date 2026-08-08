@@ -87,6 +87,7 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 
 	static CHandle s_CachedHandle{ INVALID_EHANDLE_INDEX };
 	static int s_CachedSlot = -1;
+	static ULONGLONG s_LastSearchTick = 0;
 
 	if ( s_CachedHandle.IsValid() && s_CachedSlot == localPlayerSlot )
 	{
@@ -94,7 +95,14 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 			return static_cast<C_DOTAPlayerController*>( pCached );
 	}
 
-	const int highestIndex = pGES->GetHighestEntityIndex();
+	// During map startup the controller may not exist yet. A full entity walk on
+	// every CreateMove call causes sustained stutter, so retry at most once/sec.
+	const ULONGLONG now = GetTickCount64();
+	if ( s_LastSearchTick != 0 && now - s_LastSearchTick < 1000 )
+		return nullptr;
+	s_LastSearchTick = now;
+
+	const int highestIndex = (std::min)( pGES->GetHighestEntityIndex() , MAX_TOTAL_ENTITIES - 1 );
 
 	for ( int idx = 0; idx <= highestIndex; ++idx )
 	{

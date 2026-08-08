@@ -10,8 +10,6 @@
 
 #include <Dota2/Hook/Hook_GetProtoCDOTAGameAccountPlus.hpp>
 
-#include <Dota2/Hook/Hook_OnAddEntity.hpp>
-#include <Dota2/Hook/Hook_OnRemoveEntity.hpp>
 #include <Dota2/Hook/Hook_OnCreateMove.hpp>
 
 #include <AndromedaClient/CAndromedaGUI.hpp>
@@ -308,8 +306,6 @@ auto CHook_Loader::InstallSecondHook() -> bool
 	m_Hooks =
 	{
 		{ { XorStr( "Hook::GetProtoCDOTAGameAccountPlus" ) , XorStr( "48 83 EC ? 48 8B 89 ? ? ? ? 48 85 C9 74 ? BA ? ? ? ? E8 ? ? ? ? 48 85 C0 74 ? 8B 48 ? 85 C9 74 ? 48 8B 40 ? 4C 8D 0D" ) , CLIENT_DLL } , &Hook_GetProtoCDOTAGameAccountPlus , reinterpret_cast<LPVOID*>( &GetProtoCDOTAGameAccountPlus_o ) , true , true } ,
-		{ { XorStr( "Hook::OnAddEntity" ) , XorStr( "48 89 74 24 ? 57 48 83 EC ? 41 B9 ? ? ? ? 41 8B C0 41 23 C1 48 8B F2 41 83 F8 ? 48 8B F9 44 0F 45 C8 41 81 F9 ? ? ? ? 73 ? FF 81" ) , CLIENT_DLL } , &Hook_OnAddEntity , reinterpret_cast<LPVOID*>( &OnAddEntity_o ) , true , false } ,
-		{ { XorStr( "Hook::OnRemoveEntity" ) , XorStr( "48 89 74 24 ? 57 48 83 EC ? 41 B9 ? ? ? ? 41 8B C0 41 23 C1 48 8B F2 41 83 F8 ? 48 8B F9 44 0F 45 C8 41 81 F9 ? ? ? ? 73 ? FF 89" ) , CLIENT_DLL } , &Hook_OnRemoveEntity , reinterpret_cast<LPVOID*>( &OnRemoveEntity_o ) , true , false } ,
 		{ { XorStr( "Hook::OnCreateMove" ) , XorStr( "85 D2 0F 85 ? ? ? ? 48 8B C4 44 88 40" ) , CLIENT_DLL } , &Hook_OnCreateMove , reinterpret_cast<LPVOID*>( &OnCreateMove_o ) , true , false } ,
 	};
 

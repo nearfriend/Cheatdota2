@@ -35,6 +35,8 @@ private:
 
 private:
 	C_DOTA_BaseNPC_Hero* m_pHero = nullptr;
+	uint32_t m_LastHeroHandle = 0xFFFFFFFFu;
+	bool m_HeroClassificationComplete = false;
 	uint32_t m_AbilityArrayOffset = 0;
 	bool m_OffsetsReady = false;
 	bool m_LoggedAbilities = false;

@@ -6,7 +6,6 @@
 #include <Dota2/SDK/Types/CEntityData.hpp>
 #include <Dota2/SDK/Types/CHandle.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
-#include <Dota2/Hook/Hook_OnAddEntity.hpp>
 
 #include <AndromedaClient/GUI/CAndromedaMenu.hpp>
 #include <AndromedaClient/Settings/Settings.hpp>
@@ -915,10 +914,6 @@ auto CAndromedaClient::OnRender() -> void
 auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserCmd ) -> void
 {
 	GetAndromedaGUI()->ProcessHotkeys();
-
-	// Entity creation can spike into the thousands during match entry. Process
-	// only a small batch after Dota's original CreateMove has returned.
-	ProcessPendingEntityAdds( 8 );
 
 	static int s_nCallCount = 0;
 	s_nCallCount++;

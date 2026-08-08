@@ -81,12 +81,27 @@ bool CInvokerController::ResolveLocalHero()
 	if ( !heroHandle.IsValid() )
 	{
 		m_pHero = nullptr;
+		m_HeroClassificationComplete = false;
 		return false;
 	}
 
-	m_pHero = static_cast<C_DOTA_BaseNPC_Hero*>( SDK::Interfaces::GameEntitySystem()->GetBaseEntityFromHandle( heroHandle ) );
+	if ( m_HeroClassificationComplete && m_LastHeroHandle == heroHandle.m_Index )
+		return m_pHero != nullptr;
+
+	m_LastHeroHandle = heroHandle.m_Index;
+	m_HeroClassificationComplete = true;
+
+	auto* hero = static_cast<C_DOTA_BaseNPC_Hero*>( SDK::Interfaces::GameEntitySystem()->GetBaseEntityFromHandle( heroHandle ) );
+
+	if ( !HeroNameContains( hero , kInvokerHeroName ) )
+	{
+		m_pHero = nullptr;
+		return false;
+	}
+
+	m_pHero = hero;
 	
-	// Log hero address for Cheat Engine (to find m_hAbilities offset)
+	// Log once when the assigned hero handle changes, not once per game tick.
 	if ( m_pHero )
 		DEV_LOG( "[CHEAT_ENGINE] Hero address: %p\n" , m_pHero );
 	
