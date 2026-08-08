@@ -111,7 +111,7 @@ public:
 class C_DOTAPlayerController : public CBasePlayerController
 {
 public:
-	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_iPlayerID" , m_iPlayerID , int32_t );
+	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_nPlayerID" , m_nPlayerID , int32_t );
 	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_hAssignedHero" , m_hAssignedHero , CHandle ); // C_DOTA_BaseNPC_Hero
 };
 

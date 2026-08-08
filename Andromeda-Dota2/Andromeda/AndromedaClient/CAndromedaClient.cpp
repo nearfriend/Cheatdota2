@@ -110,7 +110,7 @@ namespace
 				if ( !className || std::strcmp( className , "C_DOTAPlayerController" ) != 0 )
 					continue;
 
-				const int playerId = controller->m_iPlayerID();
+				const int playerId = controller->m_nPlayerID();
 				if ( playerId < 0 || playerId >= static_cast<int>( controllerHandles.size() ) )
 					continue;
 
