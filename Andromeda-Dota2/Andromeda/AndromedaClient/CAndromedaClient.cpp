@@ -19,12 +19,205 @@
 #include <cctype>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <cfloat>
+#include <cstdio>
 
 static CAndromedaClient g_CAndromedaClient{};
 static CHeroDataLoader g_HeroDataLoader{};
 
 namespace
 {
+	struct HeroVitals
+	{
+		int playerId = -1;
+		uint8_t team = 0;
+		int health = 0;
+		int maxHealth = 0;
+		float mana = 0.f;
+		float maxMana = 0.f;
+	};
+
+	struct HeroVitalsOffsets
+	{
+		uint32_t health = 0;
+		uint32_t maxHealth = 0;
+		uint32_t mana = 0;
+		uint32_t maxMana = 0;
+		bool resolved = false;
+	};
+
+	auto ResolveHeroVitalsOffsets() -> const HeroVitalsOffsets&
+	{
+		static HeroVitalsOffsets offsets{};
+
+		if ( offsets.resolved )
+			return offsets;
+
+		auto* schema = GetSchemaOffset();
+		if ( !schema )
+			return offsets;
+
+		offsets.resolved =
+			schema->TryGetOffset( "C_BaseEntity" , "m_iHealth" , offsets.health ) &&
+			schema->TryGetOffset( "C_BaseEntity" , "m_iMaxHealth" , offsets.maxHealth ) &&
+			schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_flMana" , offsets.mana ) &&
+			schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_flMaxMana" , offsets.maxMana );
+
+		return offsets;
+	}
+
+	template <typename T>
+	auto ReadEntityField( const CEntityInstance* entity , uint32_t offset ) -> T
+	{
+		return *reinterpret_cast<const T*>( reinterpret_cast<uintptr_t>( entity ) + offset );
+	}
+
+	auto CollectInPlayHeroVitals() -> std::array<HeroVitals , 10>
+	{
+		std::array<HeroVitals , 10> result{};
+		auto* entitySystem = SDK::Interfaces::GameEntitySystem();
+		const auto& offsets = ResolveHeroVitalsOffsets();
+
+		if ( !entitySystem || !offsets.resolved )
+			return result;
+
+		// Player controllers are the authoritative roster. Cache their handles so
+		// the full entity walk happens only once per second, not once per frame.
+		static auto controllerHandles = []
+		{
+			std::array<CHandle , 10> handles{};
+			for ( auto& handle : handles )
+				handle.m_Index = INVALID_EHANDLE_INDEX;
+			return handles;
+		}();
+		static ULONGLONG nextControllerRefresh = 0;
+		const ULONGLONG now = GetTickCount64();
+
+		if ( now >= nextControllerRefresh )
+		{
+			for ( auto& handle : controllerHandles )
+				handle.m_Index = INVALID_EHANDLE_INDEX;
+
+			const int highest = (std::min)( entitySystem->GetHighestEntityIndex() , MAX_TOTAL_ENTITIES - 1 );
+			for ( int index = 0; index <= highest; ++index )
+			{
+				auto* controller = entitySystem->GetBaseEntity<C_DOTAPlayerController>( index );
+				if ( !controller )
+					continue;
+
+				const char* className = controller->GetSchemaClassName();
+				if ( !className || std::strcmp( className , "C_DOTAPlayerController" ) != 0 )
+					continue;
+
+				const int playerId = controller->m_iPlayerID();
+				if ( playerId < 0 || playerId >= static_cast<int>( controllerHandles.size() ) )
+					continue;
+
+				if ( auto* identity = controller->pEntityIdentity() )
+					controllerHandles[playerId] = identity->Handle();
+			}
+
+			nextControllerRefresh = now + 1000;
+		}
+
+		for ( int playerId = 0; playerId < static_cast<int>( controllerHandles.size() ); ++playerId )
+		{
+			const CHandle controllerHandle = controllerHandles[playerId];
+			if ( !controllerHandle.IsValid() )
+				continue;
+
+			auto* controller = static_cast<C_DOTAPlayerController*>( entitySystem->GetBaseEntityFromHandle( controllerHandle ) );
+			if ( !controller )
+				continue;
+
+			const CHandle heroHandle = controller->m_hAssignedHero();
+			if ( !heroHandle.IsValid() )
+				continue;
+
+			auto* hero = static_cast<C_DOTA_BaseNPC_Hero*>( entitySystem->GetBaseEntityFromHandle( heroHandle ) );
+			if ( !hero )
+				continue;
+
+			auto& vitals = result[playerId];
+			vitals.playerId = playerId;
+			vitals.team = hero->m_iTeamNum();
+			vitals.health = (std::max)( 0 , ReadEntityField<int>( hero , offsets.health ) );
+			vitals.maxHealth = (std::max)( 0 , ReadEntityField<int>( hero , offsets.maxHealth ) );
+			vitals.mana = (std::max)( 0.f , ReadEntityField<float>( hero , offsets.mana ) );
+			vitals.maxMana = (std::max)( 0.f , ReadEntityField<float>( hero , offsets.maxMana ) );
+		}
+
+		return result;
+	}
+
+	auto DrawVitalsBar( ImDrawList* drawList , const ImVec2& min , const ImVec2& size ,
+		float value , float maximum , ImU32 fillColor ) -> void
+	{
+		const ImVec2 bottomRight( min.x + size.x , min.y + size.y );
+		drawList->AddRectFilled( min , bottomRight , IM_COL32( 12 , 14 , 20 , 230 ) );
+
+		const float ratio = maximum > 0.f ? std::clamp( value / maximum , 0.f , 1.f ) : 0.f;
+		if ( ratio > 0.f )
+			drawList->AddRectFilled( ImVec2( min.x + 1.f , min.y + 1.f ) ,
+				ImVec2( min.x + 1.f + ( size.x - 2.f ) * ratio , bottomRight.y - 1.f ) , fillColor );
+
+		drawList->AddRect( min , bottomRight , IM_COL32( 4 , 5 , 8 , 255 ) );
+
+		char text[16]{};
+		std::snprintf( text , sizeof( text ) , "%d" , static_cast<int>( std::round( value ) ) );
+		const float fontSize = (std::max)( 8.f , size.y * 0.82f );
+		const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA( fontSize , FLT_MAX , 0.f , text );
+		const ImVec2 textPos( min.x + ( size.x - textSize.x ) * 0.5f , min.y + ( size.y - textSize.y ) * 0.5f );
+
+		// A one-pixel outline keeps the values readable over both empty and full bars.
+		drawList->AddText( ImGui::GetFont() , fontSize , ImVec2( textPos.x + 1.f , textPos.y + 1.f ) , IM_COL32( 0 , 0 , 0 , 235 ) , text );
+		drawList->AddText( ImGui::GetFont() , fontSize , textPos , IM_COL32( 245 , 245 , 245 , 255 ) , text );
+	}
+
+	auto DrawHeroVitalsOverlay() -> void
+	{
+		const auto heroes = CollectInPlayHeroVitals();
+		const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+		if ( display.x <= 0.f || display.y <= 0.f )
+			return;
+
+		// These proportions follow Dota's centered top-bar layout and scale with
+		// resolution: five portraits, a scoreboard gap, then five portraits.
+		const float portraitWidth = display.x * 0.03275f;
+		const float teamWidth = portraitWidth * 5.f;
+		const float scoreboardGap = display.x * 0.107f;
+		const float portraitBottom = display.y * 0.1155f;
+		const float barHeight = (std::max)( 7.f , display.y * 0.0095f );
+		const float barTop = portraitBottom + 1.f;
+		const float leftStart = display.x * 0.5f - scoreboardGap * 0.5f - teamWidth;
+		const float rightStart = display.x * 0.5f + scoreboardGap * 0.5f;
+		ImDrawList* drawList = ImGui::GetForegroundDrawList();
+		int radiantSlot = 0;
+		int direSlot = 0;
+
+		for ( const auto& hero : heroes )
+		{
+			if ( hero.playerId < 0 || hero.maxHealth <= 0 )
+				continue;
+
+			float x = 0.f;
+			if ( hero.team == 2 && radiantSlot < 5 )
+				x = leftStart + portraitWidth * radiantSlot++;
+			else if ( hero.team == 3 && direSlot < 5 )
+				x = rightStart + portraitWidth * direSlot++;
+			else
+				continue;
+
+			const ImVec2 barSize( portraitWidth , barHeight );
+			DrawVitalsBar( drawList , ImVec2( x , barTop ) , barSize ,
+				static_cast<float>( hero.health ) , static_cast<float>( hero.maxHealth ) , IM_COL32( 205 , 55 , 55 , 255 ) );
+			DrawVitalsBar( drawList , ImVec2( x , barTop + barHeight ) , barSize ,
+				hero.mana , hero.maxMana , IM_COL32( 65 , 112 , 205 , 255 ) );
+		}
+	}
+
 	auto LooksLikeFogControllerName( const char* name ) -> bool
 	{
 		if ( !name || !name[0] )
@@ -1085,6 +1278,8 @@ auto CAndromedaClient::OnRender() -> void
 
 	if ( GetAndromedaGUI()->IsVisible() )
 		GetAndromedaMenu()->OnRenderMenu();
+
+	DrawHeroVitalsOverlay();
 
 	// Use the existing ImGui draw list. Initializing FW1FontWrapper lazily from
 	// Present performs synchronous D3D/DirectWrite work on Dota's render thread.
