@@ -30,6 +30,7 @@ namespace
 {
 	struct HeroVitals
 	{
+		const char* name = "unknown";
 		int playerId = -1;
 		uint8_t team = 0;
 		int health = 0;
@@ -140,6 +141,13 @@ namespace
 				continue;
 
 			auto& vitals = result[playerId];
+			if ( auto* identity = hero->pEntityIdentity() )
+			{
+				const char* designerName = identity->DesingerName().String();
+				const char* entityName = identity->Name().String();
+				vitals.name = designerName && designerName[0] ? designerName :
+					( entityName && entityName[0] ? entityName : "unknown" );
+			}
 			vitals.playerId = playerId;
 			vitals.team = hero->m_iTeamNum();
 			vitals.health = (std::max)( 0 , ReadEntityField<int>( hero , offsets.health ) );
@@ -149,6 +157,26 @@ namespace
 		}
 
 		return result;
+	}
+
+	auto LogHeroVitals( const std::array<HeroVitals , 10>& heroes ) -> void
+	{
+		static ULONGLONG nextLogTick = 0;
+		const ULONGLONG now = GetTickCount64();
+
+		if ( now < nextLogTick )
+			return;
+
+		nextLogTick = now + 1000;
+
+		for ( const auto& hero : heroes )
+		{
+			if ( hero.playerId < 0 || hero.maxHealth <= 0 )
+				continue;
+
+			DEV_LOG( "[hero-vitals] %s | HP %d/%d | Mana %.0f/%.0f\n" ,
+				hero.name , hero.health , hero.maxHealth , hero.mana , hero.maxMana );
+		}
 	}
 
 	auto DrawVitalsBar( ImDrawList* drawList , const ImVec2& min , const ImVec2& size ,
@@ -178,6 +206,7 @@ namespace
 	auto DrawHeroVitalsOverlay() -> void
 	{
 		const auto heroes = CollectInPlayHeroVitals();
+		LogHeroVitals( heroes );
 		const ImVec2 display = ImGui::GetIO().DisplaySize;
 
 		if ( display.x <= 0.f || display.y <= 0.f )
