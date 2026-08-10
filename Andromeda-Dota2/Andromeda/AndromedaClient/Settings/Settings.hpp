@@ -19,6 +19,22 @@ namespace Settings
 		inline auto MenuAlpha = 200;
 		inline auto MenuAlphaMin = 0.85f;
 	}
+	namespace InfoOverlay
+	{
+		inline bool TopOverlayEnabled = true;
+		inline bool ShowOnAllies = true;
+		inline bool ShowDangerousAbilityTimer = true;
+		inline bool TopOverlayElements[6] = { true, true, true, true, true, true };
+
+		inline bool SidePanelsEnabled = false;
+		inline bool ShowItems = true;
+		inline bool ShowNetworth = true;
+		inline bool ScanGlyphInfo = true;
+
+		inline bool WardTrackerEnabled = false;
+		inline int WardShowMode = 2;
+		inline int WardWorldRenderMode = 2;
+	}
 	namespace DotaPlus
 	{
 		inline auto Enable = true;

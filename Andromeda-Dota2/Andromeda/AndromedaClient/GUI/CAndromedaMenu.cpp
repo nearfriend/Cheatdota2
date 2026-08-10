@@ -26,9 +26,9 @@
 
 static CAndromedaMenu g_CAndromedaMenu{};
 
-static constexpr ImU32 kAccentColor = IM_COL32( 168 , 85 , 247 , 255 );
-static constexpr ImU32 kAccentTextColor = IM_COL32( 201 , 151 , 252 , 255 );
-static constexpr ImU32 kAccentTrackColor = IM_COL32( 78 , 43 , 110 , 255 );
+static constexpr ImU32 kAccentColor = IM_COL32( 218 , 51 , 62 , 255 );
+static constexpr ImU32 kAccentTextColor = IM_COL32( 235 , 77 , 87 , 255 );
+static constexpr ImU32 kAccentTrackColor = IM_COL32( 93 , 31 , 38 , 255 );
 
 struct GuiTexture
 {
@@ -306,7 +306,8 @@ enum class ReferenceIcon
 {
 	Info, Aggro, Camera, Heroes, Overlay, Bell, Offscreen, Radius, Hidden,
 	Visible, Ward, Sparkles, Tools, Code, Cloud, Globe, Gear, Save, Mouse,
-	Distance, Smooth, Duration, Speed
+	Distance, Smooth, Duration, Speed, Check, Allies, Warning, Choose,
+	Items, Network, Glyph
 };
 
 static void DrawReferenceIcon( ImDrawList* dl , const ImVec2& c , ReferenceIcon icon , ImU32 color , float s = 1.f )
@@ -451,6 +452,43 @@ static void DrawReferenceIcon( ImDrawList* dl , const ImVec2& c , ReferenceIcon 
 		dl->AddLine( ImVec2( c.x - 8.f * s , c.y + 5.f * s ) , ImVec2( c.x - 2.f * s , c.y - 6.f * s ) , color , 2.f * s );
 		dl->AddLine( ImVec2( c.x - 2.f * s , c.y - 6.f * s ) , ImVec2( c.x + 1.f * s , c.y ) , color , 2.f * s );
 		dl->AddLine( ImVec2( c.x + 1.f * s , c.y ) , ImVec2( c.x + 8.f * s , c.y - 1.f * s ) , color , 2.f * s );
+		break;
+	case ReferenceIcon::Check:
+		dl->AddLine( ImVec2( c.x - 7.f * s , c.y ) , ImVec2( c.x - 2.f * s , c.y + 5.f * s ) , color , 2.f * s );
+		dl->AddLine( ImVec2( c.x - 2.f * s , c.y + 5.f * s ) , ImVec2( c.x + 8.f * s , c.y - 6.f * s ) , color , 2.f * s );
+		break;
+	case ReferenceIcon::Allies:
+		dl->AddCircleFilled( ImVec2( c.x - 2.f * s , c.y - 4.f * s ) , 3.5f * s , color );
+		dl->AddTriangleFilled( ImVec2( c.x - 8.f * s , c.y + 7.f * s ) , ImVec2( c.x + 4.f * s , c.y + 7.f * s ) , ImVec2( c.x - 2.f * s , c.y ) , color );
+		dl->AddLine( ImVec2( c.x + 5.f * s , c.y - 5.f * s ) , ImVec2( c.x + 9.f * s , c.y - 1.f * s ) , color , 1.7f * s );
+		dl->AddLine( ImVec2( c.x + 9.f * s , c.y - 5.f * s ) , ImVec2( c.x + 5.f * s , c.y - 1.f * s ) , color , 1.7f * s );
+		break;
+	case ReferenceIcon::Warning:
+		dl->AddCircleFilled( c , 7.f * s , color , 18 );
+		dl->AddLine( ImVec2( c.x , c.y - 4.f * s ) , ImVec2( c.x , c.y + 1.5f * s ) , IM_COL32( 16 , 17 , 19 , 255 ) , 1.5f * s );
+		dl->AddCircleFilled( ImVec2( c.x , c.y + 4.f * s ) , 1.f * s , IM_COL32( 16 , 17 , 19 , 255 ) );
+		break;
+	case ReferenceIcon::Choose:
+		dl->AddCircle( ImVec2( c.x - 4.f * s , c.y - 4.f * s ) , 2.5f * s , color , 10 , 1.5f * s );
+		dl->AddCircle( ImVec2( c.x + 5.f * s , c.y - 2.f * s ) , 2.5f * s , color , 10 , 1.5f * s );
+		dl->AddCircle( ImVec2( c.x - 1.f * s , c.y + 5.f * s ) , 2.5f * s , color , 10 , 1.5f * s );
+		dl->AddLine( ImVec2( c.x - 2.f * s , c.y - 3.f * s ) , ImVec2( c.x + 3.f * s , c.y - 2.f * s ) , color , 1.5f * s );
+		dl->AddLine( ImVec2( c.x + 3.f * s , c.y ) , ImVec2( c.x , c.y + 3.f * s ) , color , 1.5f * s );
+		break;
+	case ReferenceIcon::Items:
+		dl->AddRect( ImVec2( c.x - 6.f * s , c.y - 5.f * s ) , ImVec2( c.x + 6.f * s , c.y + 7.f * s ) , color , 2.f * s , 0 , 1.5f * s );
+		dl->AddLine( ImVec2( c.x - 3.f * s , c.y - 5.f * s ) , ImVec2( c.x - 2.f * s , c.y - 8.f * s ) , color , 1.5f * s );
+		dl->AddLine( ImVec2( c.x - 2.f * s , c.y - 8.f * s ) , ImVec2( c.x + 2.f * s , c.y - 8.f * s ) , color , 1.5f * s );
+		dl->AddLine( ImVec2( c.x + 2.f * s , c.y - 8.f * s ) , ImVec2( c.x + 3.f * s , c.y - 5.f * s ) , color , 1.5f * s );
+		break;
+	case ReferenceIcon::Network:
+		for ( int i = 0; i < 3; ++i )
+			dl->AddRectFilled( ImVec2( c.x - 8.f * s , c.y + ( i * 4.f - 6.f ) * s ) , ImVec2( c.x + ( 7.f - i * 3.f ) * s , c.y + ( i * 4.f - 4.f ) * s ) , color , 1.f * s );
+		break;
+	case ReferenceIcon::Glyph:
+		dl->AddCircle( c , 7.f * s , color , 18 , 1.5f * s );
+		dl->AddLine( ImVec2( c.x - 6.f * s , c.y + 5.f * s ) , ImVec2( c.x + 6.f * s , c.y - 5.f * s ) , color , 1.5f * s );
+		dl->AddCircleFilled( c , 2.f * s , color );
 		break;
 	}
 }
@@ -695,6 +733,103 @@ static bool DrawSwitchRow( const char* label , const char* id , bool& value , Re
 	return clicked;
 }
 
+static bool DrawSettingsSwitchRow( const char* label , const char* id , bool& value , ReferenceIcon icon , bool showGear = false )
+{
+	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+	const float rowWidth = ImGui::GetContentRegionAvail().x;
+	const float rowHeight = 38.f;
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	const ImU32 textColor = ImGui::GetColorU32( ImGuiCol_Text );
+	const ImU32 iconColor = value ? kAccentColor : ImGui::GetColorU32( ImGuiCol_TextDisabled );
+
+	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 10.f ) , textColor , label );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 18.f ) , icon , iconColor , 0.65f );
+
+	const ImVec2 switchPos( rowPos.x + rowWidth - 31.f , rowPos.y + 9.f );
+	if ( showGear )
+	{
+		ImGui::SetCursorScreenPos( ImVec2( switchPos.x - 28.f , rowPos.y + 5.f ) );
+		ImGui::PushID( id );
+		ImGui::InvisibleButton( "##gear" , ImVec2( 22.f , 26.f ) );
+		if ( ImGui::IsItemHovered() )
+			ImGui::SetTooltip( "%s settings" , label );
+		ImGui::PopID();
+		DrawReferenceIcon( drawList , ImVec2( switchPos.x - 17.f , rowPos.y + 18.f ) , ReferenceIcon::Gear , ImGui::GetColorU32( ImGuiCol_TextDisabled ) , 0.58f );
+	}
+
+	ImGui::SetCursorScreenPos( switchPos );
+	ImGui::InvisibleButton( id , ImVec2( 30.f , 18.f ) );
+	const bool clicked = ImGui::IsItemClicked();
+	if ( clicked )
+		value = !value;
+
+	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? kAccentTrackColor : IM_COL32( 38 , 40 , 45 , 255 ) , 9.f );
+	const float knobX = value ? switchPos.x + 21.f : switchPos.x + 9.f;
+	drawList->AddCircleFilled( ImVec2( knobX , switchPos.y + 9.f ) , 7.5f , value ? kAccentColor : IM_COL32( 142 , 144 , 151 , 255 ) );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
+	return clicked;
+}
+
+static void DrawSettingsComboRow( const char* label , const char* id , int& value , const char* const* items , int itemCount , ReferenceIcon icon , bool showGear = false )
+{
+	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+	const float rowWidth = ImGui::GetContentRegionAvail().x;
+	const float rowHeight = 43.f;
+	const float comboWidth = 122.f;
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 11.f ) , ImGui::GetColorU32( ImGuiCol_Text ) , label );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 19.f ) , icon , kAccentColor , 0.65f );
+
+	const float comboX = rowPos.x + rowWidth - comboWidth;
+	if ( showGear )
+		DrawReferenceIcon( drawList , ImVec2( comboX - 13.f , rowPos.y + 19.f ) , ReferenceIcon::Gear , ImGui::GetColorU32( ImGuiCol_TextDisabled ) , 0.55f );
+	ImGui::SetCursorScreenPos( ImVec2( comboX , rowPos.y + 4.f ) );
+	ImGui::SetNextItemWidth( comboWidth );
+	ImGui::Combo( id , &value , items , itemCount );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
+}
+
+static void DrawTopOverlayElementsRow()
+{
+	static const char* elementNames[] = { "MP/HP Bars", "Ultimates", "Rune Timers", "Creep Stat", "Buyback", "Team NetWorth" };
+	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+	const float rowWidth = ImGui::GetContentRegionAvail().x;
+	const float rowHeight = 43.f;
+	const float comboWidth = 132.f;
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	drawList->AddText( ImVec2( rowPos.x + 27.f , rowPos.y + 11.f ) , ImGui::GetColorU32( ImGuiCol_Text ) , "What to Show" );
+	DrawReferenceIcon( drawList , ImVec2( rowPos.x + 9.f , rowPos.y + 19.f ) , ReferenceIcon::Choose , kAccentColor , 0.65f );
+
+	const float comboX = rowPos.x + rowWidth - comboWidth;
+	DrawReferenceIcon( drawList , ImVec2( comboX - 13.f , rowPos.y + 19.f ) , ReferenceIcon::Gear , ImGui::GetColorU32( ImGuiCol_TextDisabled ) , 0.55f );
+	const char* preview = "None";
+	for ( int i = 0; i < IM_ARRAYSIZE( elementNames ); ++i )
+	{
+		if ( Settings::InfoOverlay::TopOverlayElements[i] )
+		{
+			preview = elementNames[i];
+			break;
+		}
+	}
+
+	ImGui::SetCursorScreenPos( ImVec2( comboX , rowPos.y + 4.f ) );
+	ImGui::SetNextItemWidth( comboWidth );
+	if ( ImGui::BeginCombo( "##topOverlayElements" , preview ) )
+	{
+		for ( int i = 0; i < IM_ARRAYSIZE( elementNames ); ++i )
+		{
+			bool& selected = Settings::InfoOverlay::TopOverlayElements[i];
+			if ( ImGui::Selectable( elementNames[i] , selected , ImGuiSelectableFlags_DontClosePopups ) )
+				selected = !selected;
+		}
+		ImGui::EndCombo();
+	}
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
+}
+
 static bool DrawSliderRow( const char* label , const char* id , float& value , float minValue , float maxValue , const char* valueFormat , ReferenceIcon icon )
 {
 	const ImVec2 rowPos = ImGui::GetCursorScreenPos();
@@ -753,7 +888,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 	if ( ImGui::Begin( "##AndromedaReferenceMenu" , nullptr , flags ) )
 	{
 		static int selectedCategory = 2;
-		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = {};
+		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = { 0, 0, 3 };
 
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
 		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
@@ -812,7 +947,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::SetCursorPos( ImVec2( mainContentMargin , 20.f ) );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
-		ImGui::TextColored( ImVec4( 0.66f , 0.33f , 0.97f , 1.f ) , "%s" , page.label );
+		ImGui::TextColored( ImVec4( 0.92f , 0.30f , 0.34f , 1.f ) , "%s" , page.label );
 
 		static char search[64] = {};
 		const float headerControlsWidth = 28.f + 4.f + 28.f + 7.f + 190.f;
@@ -833,53 +968,88 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
 		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
+		const bool infoOverlayPage = selectedCategory == 2 && selectedItem == 3;
 		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
-		ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , cameraPage ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
-		ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
-		ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
-		if ( cameraPage )
+		if ( infoOverlayPage )
 		{
-			DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
-			const ImVec2 disabledAreaStart = ImGui::GetCursorScreenPos();
-			const float disabledAreaWidth = ImGui::GetContentRegionAvail().x;
-			ImGui::BeginDisabled( !Settings::Camera::Enable );
-			if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 10000.f , "%.0f" , ReferenceIcon::Distance ) )
-				GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
-			DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom , ReferenceIcon::Smooth );
-			DrawSliderRow( "Smoothness Duration" , "##smoothDuration" , Settings::Camera::SmoothnessDuration , 0.1f , 3.0f , "%.2f sec" , ReferenceIcon::Duration );
+			const float cardGap = 12.f;
+			const float columnWidth = ( settingsCardWidth - cardGap ) * 0.5f;
+			const float topCardHeight = 185.f;
 
-			const ImVec2 comboRow = ImGui::GetCursorScreenPos();
-			const float comboWidth = ImGui::GetContentRegionAvail().x;
-			ImDrawList* drawList = ImGui::GetWindowDrawList();
-			drawList->AddText( ImVec2( comboRow.x + 27.f , comboRow.y + 9.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , "Zoom using Wheel" );
-			DrawReferenceIcon( drawList , ImVec2( comboRow.x + 9.f , comboRow.y + 17.f ) , ReferenceIcon::Mouse , kAccentColor , 0.65f );
-			ImGui::SetCursorScreenPos( ImVec2( comboRow.x + comboWidth - 120.f , comboRow.y + 3.f ) );
-			const char* wheelModes[] = { "Wheel", "Disabled" };
-			ImGui::SetNextItemWidth( 120.f );
-			ImGui::Combo( "##wheelMode" , &Settings::Camera::ZoomUsingWheel , wheelModes , IM_ARRAYSIZE( wheelModes ) );
-			drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
-			ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
-			DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" , ReferenceIcon::Speed );
+			ImGui::BeginChild( "##topOverlayCard" , ImVec2( columnWidth , topCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Top Overlay Settings" );
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+			DrawSettingsSwitchRow( "Enable" , "##topOverlayEnable" , Settings::InfoOverlay::TopOverlayEnabled , ReferenceIcon::Check );
+			ImGui::BeginDisabled( !Settings::InfoOverlay::TopOverlayEnabled );
+			DrawSettingsSwitchRow( "Show On Allies" , "##showOnAllies" , Settings::InfoOverlay::ShowOnAllies , ReferenceIcon::Allies );
+			DrawSettingsSwitchRow( "Show Dangerous Ability Timer" , "##dangerousAbilityTimer" , Settings::InfoOverlay::ShowDangerousAbilityTimer , ReferenceIcon::Warning );
+			DrawTopOverlayElementsRow();
 			ImGui::EndDisabled();
+			ImGui::EndChild();
 
-			if ( !Settings::Camera::Enable )
-			{
-				const float disabledAreaEndY = ImGui::GetCursorScreenPos().y;
-				ImGui::GetWindowDrawList()->AddRectFilled(
-					disabledAreaStart,
-					ImVec2( disabledAreaStart.x + disabledAreaWidth , disabledAreaEndY ),
-					IM_COL32( 8 , 9 , 10 , 112 ) );
-			}
+			ImGui::SameLine( 0.f , cardGap );
+			ImGui::BeginChild( "##sidePanelsCard" , ImVec2( columnWidth , topCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Side Panels Settings" );
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+			DrawSettingsSwitchRow( "Enable" , "##sidePanelsEnable" , Settings::InfoOverlay::SidePanelsEnabled , ReferenceIcon::Check );
+			ImGui::BeginDisabled( !Settings::InfoOverlay::SidePanelsEnabled );
+			DrawSettingsSwitchRow( "Items" , "##sidePanelItems" , Settings::InfoOverlay::ShowItems , ReferenceIcon::Items , true );
+			DrawSettingsSwitchRow( "Networth" , "##sidePanelNetworth" , Settings::InfoOverlay::ShowNetworth , ReferenceIcon::Network , true );
+			DrawSettingsSwitchRow( "Scan Glyph Info" , "##scanGlyphInfo" , Settings::InfoOverlay::ScanGlyphInfo , ReferenceIcon::Glyph , true );
+			ImGui::EndDisabled();
+			ImGui::EndChild();
+
+			ImGui::SetCursorPos( ImVec2( mainContentMargin , 67.f + topCardHeight + cardGap ) );
+			ImGui::BeginChild( "##wardTrackerCard" , ImVec2( settingsCardWidth , 160.f ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Ward Tracker Settings" );
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+			DrawSettingsSwitchRow( "Enable" , "##wardTrackerEnable" , Settings::InfoOverlay::WardTrackerEnabled , ReferenceIcon::Check , true );
+			ImGui::BeginDisabled( !Settings::InfoOverlay::WardTrackerEnabled );
+			static const char* wardShowModes[] = { "Panel" , "On Map" , "Panel, On Map" };
+			static const char* wardWorldRenderModes[] = { "Timer" , "Image" , "Timer, Image" };
+			DrawSettingsComboRow( "Show" , "##wardShowMode" , Settings::InfoOverlay::WardShowMode , wardShowModes , IM_ARRAYSIZE( wardShowModes ) , ReferenceIcon::Visible );
+			DrawSettingsComboRow( "World Render" , "##wardWorldRenderMode" , Settings::InfoOverlay::WardWorldRenderMode , wardWorldRenderModes , IM_ARRAYSIZE( wardWorldRenderModes ) , ReferenceIcon::Radius );
+			ImGui::EndDisabled();
+			ImGui::EndChild();
 		}
 		else
 		{
-			ImGui::Spacing();
-			ImGui::TextColored( ImVec4( 0.76f , 0.77f , 0.80f , 1.f ) , "%s" , page.label );
-			ImGui::TextDisabled( "This module has no configurable options yet." );
-		}
+			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , cameraPage ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
-		ImGui::EndChild();
+			if ( cameraPage )
+			{
+				DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
+				ImGui::BeginDisabled( !Settings::Camera::Enable );
+				if ( DrawSliderRow( "Camera Distance" , "##cameraDistanceReference" , Settings::Camera::Distance , 1200.f , 10000.f , "%.0f" , ReferenceIcon::Distance ) )
+					GetAndromedaClient()->SetCameraDistance( Settings::Camera::Distance );
+				DrawSwitchRow( "Smooth Zoom" , "##smoothZoom" , Settings::Camera::SmoothZoom , ReferenceIcon::Smooth );
+				DrawSliderRow( "Smoothness Duration" , "##smoothDuration" , Settings::Camera::SmoothnessDuration , 0.1f , 3.0f , "%.2f sec" , ReferenceIcon::Duration );
+
+				const ImVec2 comboRow = ImGui::GetCursorScreenPos();
+				const float comboWidth = ImGui::GetContentRegionAvail().x;
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				drawList->AddText( ImVec2( comboRow.x + 27.f , comboRow.y + 9.f ) , IM_COL32( 205 , 207 , 214 , 255 ) , "Zoom using Wheel" );
+				DrawReferenceIcon( drawList , ImVec2( comboRow.x + 9.f , comboRow.y + 17.f ) , ReferenceIcon::Mouse , kAccentColor , 0.65f );
+				ImGui::SetCursorScreenPos( ImVec2( comboRow.x + comboWidth - 120.f , comboRow.y + 3.f ) );
+				const char* wheelModes[] = { "Wheel", "Disabled" };
+				ImGui::SetNextItemWidth( 120.f );
+				ImGui::Combo( "##wheelMode" , &Settings::Camera::ZoomUsingWheel , wheelModes , IM_ARRAYSIZE( wheelModes ) );
+				drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+				ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
+				DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" , ReferenceIcon::Speed );
+				ImGui::EndDisabled();
+			}
+			else
+			{
+				ImGui::Spacing();
+				ImGui::TextColored( ImVec4( 0.76f , 0.77f , 0.80f , 1.f ) , "%s" , page.label );
+				ImGui::TextDisabled( "This module has no configurable options yet." );
+			}
+			ImGui::EndChild();
+		}
 		ImGui::PopStyleVar( 2 );
 		ImGui::PopStyleColor( 2 );
 		ImGui::EndChild();
