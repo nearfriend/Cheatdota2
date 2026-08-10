@@ -385,9 +385,13 @@ auto CShcemaOffset::VerifyCriticalOffsets() const -> bool
 		{ "C_DOTABaseAbility" , "m_iLevel" , "Ability level" },
 		{ "C_DOTABaseAbility" , "m_fCooldown" , "Ability cooldown" },
 		{ "C_DOTABaseAbility" , "m_iManaCost" , "Ability mana cost" },
+		{ "C_BaseEntity" , "m_iHealth" , "Hero current health" },
+		{ "C_BaseEntity" , "m_iMaxHealth" , "Hero max health" },
+		{ "C_BaseEntity" , "m_iTeamNum" , "Hero team" },
 		{ "C_DOTA_BaseNPC" , "m_flMana" , "Hero current mana" },
 		{ "C_DOTA_BaseNPC" , "m_flMaxMana" , "Hero max mana" },
 		{ "C_DOTA_BaseNPC" , "m_vecAbilities" , "Ability handle array" },
+		{ "C_DOTAPlayerController" , "m_hAssignedHero" , "Assigned hero handle" },
 	};
 
 	bool allFound = true;
@@ -407,6 +411,15 @@ auto CShcemaOffset::VerifyCriticalOffsets() const -> bool
 			         crit.className , crit.propertyName , crit.description );
 			allFound = false;
 		}
+	}
+
+	const bool hasPlayerId = TryGetOffset( "C_DOTAPlayerController" , "m_nPlayerID" , offset ) ||
+		TryGetOffset( "C_DOTAPlayerController" , "m_iPlayerID" , offset );
+	if ( hasPlayerId )
+		DEV_LOG( "  [OK] C_DOTAPlayerController::playerID = 0x%04X (Player roster slot)\n" , offset );
+	else
+	{
+		DEV_LOG( "%s" , "  [WARN] C_DOTAPlayerController player ID not found; roster will use controller order\n" );
 	}
 
 	DEV_LOG( "[schema] Verification %s\n\n" , allFound ? "PASSED" : "FAILED" );

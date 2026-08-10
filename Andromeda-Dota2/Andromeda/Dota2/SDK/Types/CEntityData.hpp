@@ -111,7 +111,19 @@ public:
 class C_DOTAPlayerController : public CBasePlayerController
 {
 public:
-	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_nPlayerID" , m_nPlayerID , int32_t );
+	auto GetPlayerID() -> int32_t
+	{
+		uint32_t offset = 0;
+		auto* schema = GetSchemaOffset();
+
+		if ( !schema ||
+			( !schema->TryGetOffset( "C_DOTAPlayerController" , "m_nPlayerID" , offset ) &&
+			  !schema->TryGetOffset( "C_DOTAPlayerController" , "m_iPlayerID" , offset ) ) )
+			return -1;
+
+		return *reinterpret_cast<int32_t*>( reinterpret_cast<uintptr_t>( this ) + offset );
+	}
+
 	SCHEMA_OFFSET( "C_DOTAPlayerController" , "m_hAssignedHero" , m_hAssignedHero , CHandle ); // C_DOTA_BaseNPC_Hero
 };
 

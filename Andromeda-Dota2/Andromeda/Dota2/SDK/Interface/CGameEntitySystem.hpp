@@ -121,7 +121,7 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 		if ( !className || std::strcmp( className , "C_DOTAPlayerController" ) != 0 )
 			continue;
 
-		if ( pController->m_nPlayerID() != localPlayerSlot )
+		if ( pController->GetPlayerID() != localPlayerSlot )
 			continue;
 
 		if ( auto* pIdentity = pController->pEntityIdentity() )
