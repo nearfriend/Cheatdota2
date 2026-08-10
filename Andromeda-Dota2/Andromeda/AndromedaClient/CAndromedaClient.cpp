@@ -432,6 +432,11 @@ namespace
 
 	auto DrawHeroVitalsOverlay() -> void
 	{
+		// The master Info Overlay switch owns all HP/Mana bars. Avoid collecting
+		// hero data as well as drawing it while the feature is disabled.
+		if ( !Settings::InfoOverlay::TopOverlayEnabled )
+			return;
+
 		const auto snapshot = CollectInPlayHeroVitals();
 		LogHeroVitals( snapshot );
 		const auto& heroes = snapshot.heroes;
@@ -462,10 +467,21 @@ namespace
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
 		int radiantFallbackSlot = 0;
 		int direFallbackSlot = 0;
+		uint8_t localTeam = 0;
+		const auto& offsets = ResolveHeroVitalsOffsets();
+		if ( offsets.resolved )
+		{
+			if ( auto* localController = CGameEntitySystem::GetLocalPlayerController() )
+				localTeam = ReadEntityField<uint8_t>( localController , offsets.team );
+		}
 
 		for ( const auto& hero : heroes )
 		{
 			if ( hero.playerId < 0 || hero.maxHealth <= 0 )
+				continue;
+			// Show On Allies is a child of the master switch. The early return above
+			// handles the parent state; this filter handles the child state.
+			if ( !Settings::InfoOverlay::ShowOnAllies && localTeam >= 2 && localTeam <= 3 && hero.team == localTeam )
 				continue;
 
 			int portraitSlot = -1;
