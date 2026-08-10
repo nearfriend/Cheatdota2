@@ -452,7 +452,10 @@ namespace
 		const float barHeight = (std::max)( 9.f , display.y * 0.0105f );
 		// Pull the bars up to the portrait edge. The previous +1 anchor left a
 		// visible strip of world/HUD background between the two elements.
-		const float portraitOverlapCorrection = (std::max)( 3.f , display.y * 0.005f );
+		// The compact top-bar artwork ends substantially above the old estimated
+		// portraitBottom coordinate. Account for that built-in HUD padding so the
+		// first bar begins directly beneath the visible portrait frame.
+		const float portraitOverlapCorrection = (std::max)( 16.f , display.y * 0.0225f );
 		const float barTop = portraitBottom - portraitOverlapCorrection;
 		const float leftStart = display.x * 0.5f - scoreboardGap * 0.5f - teamWidth;
 		const float rightStart = display.x * 0.5f + scoreboardGap * 0.5f;
