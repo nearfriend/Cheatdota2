@@ -495,13 +495,16 @@ namespace
 			else if ( hero.team == 3 )
 			{
 				groupStart = rightStart;
-				// The top bar displays Dire team slots left to right as well. Mirroring
-				// them here puts otherwise correct vitals under the opposite portrait.
 				portraitSlot = hero.teamSlot >= 0 ? hero.teamSlot :
 					( hero.playerId >= 5 && hero.playerId < 10 ? hero.playerId - 5 : direFallbackSlot++ );
 			}
 			else
 				continue;
+
+			// Dota keeps the local team's lobby-slot order but mirrors the enemy
+			// portraits. Apply the same perspective transform to the vitals bars.
+			if ( portraitSlot >= 0 && localTeam >= 2 && localTeam <= 3 && hero.team != localTeam )
+				portraitSlot = 4 - portraitSlot;
 
 			if ( portraitSlot < 0 || portraitSlot >= 5 )
 				continue;
