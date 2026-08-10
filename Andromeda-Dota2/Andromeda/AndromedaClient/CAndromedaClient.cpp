@@ -229,7 +229,8 @@ namespace
 		{
 			for ( int record = 0; record < mappings.recordCount; ++record )
 			{
-				if ( mappings.selectedHeroes[record].IsValid() && mappings.selectedHeroes[record] == heroHandle )
+				if ( mappings.slotsByRecord[record] >= 0 && mappings.selectedHeroes[record].IsValid() &&
+					mappings.selectedHeroes[record] == heroHandle )
 					return mappings.slotsByRecord[record];
 			}
 		}
@@ -560,6 +561,12 @@ namespace
 			// portraits. Apply the same perspective transform to the vitals bars.
 			if ( portraitSlot >= 0 && localTeam >= 2 && localTeam <= 3 && hero.team != localTeam )
 				portraitSlot = 4 - portraitSlot;
+
+			// From the Dire perspective Dota's Radiant portrait row starts one
+			// member earlier than the mirrored player-resource sequence. Rotate the
+			// computed slot right once so 1,2,3,4,0 becomes 0,1,2,3,4 on screen.
+			if ( portraitSlot >= 0 && localTeam == 3 && hero.team == 2 )
+				portraitSlot = ( portraitSlot + 1 ) % 5;
 
 			if ( portraitSlot < 0 || portraitSlot >= 5 )
 				continue;
