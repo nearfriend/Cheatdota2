@@ -54,15 +54,25 @@ namespace
 		uint32_t heroPlayerId = 0;
 		uint32_t playerTeamData = 0;
 		uint32_t teamSlot = 0;
+		uint32_t selectedHero = 0;
 		uint32_t isIllusion = 0;
 		uint32_t isClone = 0;
 		bool hasPlayerId = false;
 		bool hasPlayerOwnerId = false;
 		bool hasHeroPlayerId = false;
 		bool hasTeamSlotMapping = false;
+		bool hasSelectedHero = false;
 		bool hasIsIllusion = false;
 		bool hasIsClone = false;
 		bool resolved = false;
+	};
+
+	struct PlayerTeamSlotMappings
+	{
+		std::array<int , 24> slotsByPlayerId{};
+		std::array<int , 24> slotsByRecord{};
+		std::array<CHandle , 24> selectedHeroes{};
+		int recordCount = 0;
 	};
 
 	struct HeroVitalsSnapshot
@@ -134,6 +144,7 @@ namespace
 		offsets.hasHeroPlayerId = schema->TryGetOffset( "C_DOTA_BaseNPC_Hero" , "m_iPlayerID" , offsets.heroPlayerId );
 		const bool hasPlayerTeamData = schema->TryGetOffset( "C_DOTA_PlayerResource" , "m_vecPlayerTeamData" , offsets.playerTeamData );
 		const bool hasTeamSlot = schema->TryGetOffset( "PlayerResourcePlayerTeamData_t" , "m_iTeamSlot" , offsets.teamSlot );
+		offsets.hasSelectedHero = schema->TryGetOffset( "PlayerResourcePlayerTeamData_t" , "m_hSelectedHero" , offsets.selectedHero );
 		offsets.hasTeamSlotMapping = hasPlayerTeamData && hasTeamSlot;
 		offsets.hasIsIllusion = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsIllusion" , offsets.isIllusion );
 		offsets.hasIsClone = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsClone" , offsets.isClone );
@@ -142,11 +153,12 @@ namespace
 		static bool logged = false;
 		if ( !logged )
 		{
-			DEV_LOG( "[hero-vitals] schema health=%d(0x%X) maxHealth=%d(0x%X) mana=%d(0x%X) maxMana=%d(0x%X) team=%d(0x%X) assignedHero=%d(0x%X) playerId=%d(0x%X) heroPlayerId=%d(0x%X) teamData=%d(0x%X) teamSlot=%d(0x%X) illusion=%d(0x%X) clone=%d(0x%X)\n" ,
+			DEV_LOG( "[hero-vitals] schema health=%d(0x%X) maxHealth=%d(0x%X) mana=%d(0x%X) maxMana=%d(0x%X) team=%d(0x%X) assignedHero=%d(0x%X) playerId=%d(0x%X) heroPlayerId=%d(0x%X) teamData=%d(0x%X) teamSlot=%d(0x%X) selectedHero=%d(0x%X) illusion=%d(0x%X) clone=%d(0x%X)\n" ,
 				hasHealth , offsets.health , hasMaxHealth , offsets.maxHealth , hasMana , offsets.mana ,
 				hasMaxMana , offsets.maxMana , hasTeam , offsets.team , hasAssignedHero , offsets.assignedHero ,
 				offsets.hasPlayerId , offsets.playerId , offsets.hasHeroPlayerId , offsets.heroPlayerId ,
 				hasPlayerTeamData , offsets.playerTeamData , hasTeamSlot , offsets.teamSlot ,
+				offsets.hasSelectedHero , offsets.selectedHero ,
 				offsets.hasIsIllusion , offsets.isIllusion , offsets.hasIsClone , offsets.isClone );
 			logged = true;
 		}
@@ -155,33 +167,58 @@ namespace
 	}
 
 	auto ResolvePlayerTeamSlots( CEntityInstance* playerResource , const HeroVitalsOffsets& offsets )
-		-> std::array<int , 24>
+		-> PlayerTeamSlotMappings
 	{
-		std::array<int , 24> slots{};
-		slots.fill( -1 );
+		PlayerTeamSlotMappings mappings{};
+		mappings.slotsByPlayerId.fill( -1 );
+		mappings.slotsByRecord.fill( -1 );
+		for ( auto& handle : mappings.selectedHeroes )
+			handle.m_Index = INVALID_EHANDLE_INDEX;
 		if ( !playerResource || !offsets.hasTeamSlotMapping )
-			return slots;
+			return mappings;
 
 		static const int teamDataStride = FindSchemaClassSize( "PlayerResourcePlayerTeamData_t" );
 		if ( teamDataStride <= 0 || teamDataStride > 0x1000 )
-			return slots;
+			return mappings;
 
 		// C_UtlVectorEmbeddedNetworkVar<T> stores its CUtlVector<T> in the final
 		// 0x18 bytes of its 0x68-byte wrapper (at +0x50).
 		const uintptr_t vector = reinterpret_cast<uintptr_t>( playerResource ) + offsets.playerTeamData + 0x50;
 		const int count = *reinterpret_cast<const int*>( vector );
 		const auto* data = *reinterpret_cast<const uint8_t* const*>( vector + 0x8 );
-		if ( count <= 0 || count > static_cast<int>( slots.size() ) || !data )
-			return slots;
+		if ( count <= 0 || count > static_cast<int>( mappings.slotsByRecord.size() ) || !data )
+			return mappings;
+		mappings.recordCount = count;
 
 		for ( int playerId = 0; playerId < count; ++playerId )
 		{
 			const int slot = *reinterpret_cast<const int32_t*>( data + playerId * teamDataStride + offsets.teamSlot );
 			if ( slot >= 0 && slot < 5 )
-				slots[playerId] = slot;
+			{
+				mappings.slotsByPlayerId[playerId] = slot;
+				mappings.slotsByRecord[playerId] = slot;
+			}
+			if ( offsets.hasSelectedHero )
+				mappings.selectedHeroes[playerId] = *reinterpret_cast<const CHandle*>(
+					data + playerId * teamDataStride + offsets.selectedHero );
 		}
 
-		return slots;
+		return mappings;
+	}
+
+	auto ResolveHeroTeamSlot( const PlayerTeamSlotMappings& mappings , CHandle heroHandle , int playerId ) -> int
+	{
+		if ( heroHandle.IsValid() )
+		{
+			for ( int record = 0; record < mappings.recordCount; ++record )
+			{
+				if ( mappings.selectedHeroes[record].IsValid() && mappings.selectedHeroes[record] == heroHandle )
+					return mappings.slotsByRecord[record];
+			}
+		}
+
+		return playerId >= 0 && playerId < static_cast<int>( mappings.slotsByPlayerId.size() ) ?
+			mappings.slotsByPlayerId[playerId] : -1;
 	}
 
 	template <typename T>
@@ -191,7 +228,8 @@ namespace
 	}
 
 	auto StoreHeroVitals( HeroVitalsSnapshot& snapshot , C_DOTA_BaseNPC_Hero* hero ,
-		int preferredPlayerId , const std::array<int , 24>& teamSlots , const HeroVitalsOffsets& offsets ) -> bool
+		CHandle heroHandle , int preferredPlayerId , const PlayerTeamSlotMappings& teamSlots ,
+		const HeroVitalsOffsets& offsets ) -> bool
 	{
 		if ( !hero )
 			return false;
@@ -237,8 +275,7 @@ namespace
 		}
 
 		vitals.playerId = preferredPlayerId >= 0 ? preferredPlayerId : resultIndex;
-		vitals.teamSlot = vitals.playerId >= 0 && vitals.playerId < static_cast<int>( teamSlots.size() ) ?
-			teamSlots[vitals.playerId] : -1;
+		vitals.teamSlot = ResolveHeroTeamSlot( teamSlots , heroHandle , vitals.playerId );
 		vitals.team = team;
 		vitals.health = (std::max)( 0 , ReadEntityField<int>( hero , offsets.health ) );
 		vitals.maxHealth = maxHealth;
@@ -350,14 +387,15 @@ namespace
 			++snapshot.assignedHeroCount;
 
 			const int playerId = offsets.hasPlayerId ? ReadEntityField<int32_t>( controller , offsets.playerId ) : -1;
-			StoreHeroVitals( snapshot , hero , playerId , teamSlots , offsets );
+			StoreHeroVitals( snapshot , hero , heroHandle , playerId , teamSlots , offsets );
 		}
 
 		// Some Dota builds do not expose controllers through the client entity
 		// chunks. Fall back to real hero entities and reject illusions/clones.
 		for ( int heroIndex = 0; heroIndex < cachedFallbackHeroCount; ++heroIndex )
 		{
-			auto* hero = static_cast<C_DOTA_BaseNPC_Hero*>( entitySystem->GetBaseEntityFromHandle( fallbackHeroHandles[heroIndex] ) );
+			const CHandle heroHandle = fallbackHeroHandles[heroIndex];
+			auto* hero = static_cast<C_DOTA_BaseNPC_Hero*>( entitySystem->GetBaseEntityFromHandle( heroHandle ) );
 			if ( !hero )
 				continue;
 			if ( offsets.hasIsIllusion && ReadEntityField<bool>( hero , offsets.isIllusion ) )
@@ -367,7 +405,7 @@ namespace
 
 			const int playerId = offsets.hasHeroPlayerId ? ReadEntityField<int32_t>( hero , offsets.heroPlayerId ) :
 				( offsets.hasPlayerOwnerId ? ReadEntityField<int32_t>( hero , offsets.playerOwnerId ) : -1 );
-			StoreHeroVitals( snapshot , hero , playerId , teamSlots , offsets );
+			StoreHeroVitals( snapshot , hero , heroHandle , playerId , teamSlots , offsets );
 		}
 
 		return snapshot;
