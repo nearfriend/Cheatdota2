@@ -48,7 +48,13 @@ namespace
 		uint32_t team = 0;
 		uint32_t assignedHero = 0;
 		uint32_t playerId = 0;
+		uint32_t playerOwnerId = 0;
+		uint32_t isIllusion = 0;
+		uint32_t isClone = 0;
 		bool hasPlayerId = false;
+		bool hasPlayerOwnerId = false;
+		bool hasIsIllusion = false;
+		bool hasIsClone = false;
 		bool resolved = false;
 	};
 
@@ -57,8 +63,22 @@ namespace
 		std::array<HeroVitals , 10> heroes{};
 		int controllerCount = 0;
 		int assignedHeroCount = 0;
+		int fallbackHeroCount = 0;
+		int scannedEntityCount = 0;
+		int allocatedChunkCount = 0;
 		bool offsetsReady = false;
 	};
+
+	auto LooksLikePlayerControllerName( const char* name ) -> bool
+	{
+		return name && std::strstr( name , "DOTAPlayerController" ) != nullptr;
+	}
+
+	auto LooksLikeHeroEntityName( const char* name ) -> bool
+	{
+		return name && ( std::strstr( name , "DOTA_Unit_Hero" ) != nullptr ||
+			std::strcmp( name , "C_DOTA_BaseNPC_Hero" ) == 0 );
+	}
 
 	auto ResolveHeroVitalsOffsets() -> const HeroVitalsOffsets&
 	{
@@ -79,15 +99,19 @@ namespace
 		const bool hasAssignedHero = schema->TryGetOffset( "C_DOTAPlayerController" , "m_hAssignedHero" , offsets.assignedHero );
 		offsets.hasPlayerId = schema->TryGetOffset( "C_DOTAPlayerController" , "m_nPlayerID" , offsets.playerId ) ||
 			schema->TryGetOffset( "C_DOTAPlayerController" , "m_iPlayerID" , offsets.playerId );
+		offsets.hasPlayerOwnerId = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_nPlayerOwnerID" , offsets.playerOwnerId );
+		offsets.hasIsIllusion = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsIllusion" , offsets.isIllusion );
+		offsets.hasIsClone = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsClone" , offsets.isClone );
 		offsets.resolved = hasHealth && hasMaxHealth && hasMana && hasMaxMana && hasTeam && hasAssignedHero;
 
 		static bool logged = false;
 		if ( !logged )
 		{
-			DEV_LOG( "[hero-vitals] schema health=%d(0x%X) maxHealth=%d(0x%X) mana=%d(0x%X) maxMana=%d(0x%X) team=%d(0x%X) assignedHero=%d(0x%X) playerId=%d(0x%X)\n" ,
+			DEV_LOG( "[hero-vitals] schema health=%d(0x%X) maxHealth=%d(0x%X) mana=%d(0x%X) maxMana=%d(0x%X) team=%d(0x%X) assignedHero=%d(0x%X) playerId=%d(0x%X) ownerId=%d(0x%X) illusion=%d(0x%X) clone=%d(0x%X)\n" ,
 				hasHealth , offsets.health , hasMaxHealth , offsets.maxHealth , hasMana , offsets.mana ,
 				hasMaxMana , offsets.maxMana , hasTeam , offsets.team , hasAssignedHero , offsets.assignedHero ,
-				offsets.hasPlayerId , offsets.playerId );
+				offsets.hasPlayerId , offsets.playerId , offsets.hasPlayerOwnerId , offsets.playerOwnerId ,
+				offsets.hasIsIllusion , offsets.isIllusion , offsets.hasIsClone , offsets.isClone );
 			logged = true;
 		}
 
@@ -100,6 +124,61 @@ namespace
 		return *reinterpret_cast<const T*>( reinterpret_cast<uintptr_t>( entity ) + offset );
 	}
 
+	auto StoreHeroVitals( HeroVitalsSnapshot& snapshot , C_DOTA_BaseNPC_Hero* hero ,
+		int preferredPlayerId , const HeroVitalsOffsets& offsets ) -> bool
+	{
+		if ( !hero )
+			return false;
+
+		const uint8_t team = ReadEntityField<uint8_t>( hero , offsets.team );
+		const int maxHealth = ReadEntityField<int>( hero , offsets.maxHealth );
+		if ( ( team != 2 && team != 3 ) || maxHealth <= 0 || maxHealth > 1000000 )
+			return false;
+
+		if ( preferredPlayerId >= 0 )
+		{
+			for ( const auto& existing : snapshot.heroes )
+			{
+				if ( existing.playerId == preferredPlayerId )
+					return false;
+			}
+		}
+
+		int resultIndex = preferredPlayerId >= 0 && preferredPlayerId < static_cast<int>( snapshot.heroes.size() ) ? preferredPlayerId : -1;
+		if ( resultIndex < 0 || snapshot.heroes[resultIndex].playerId >= 0 )
+		{
+			resultIndex = -1;
+			for ( int index = 0; index < static_cast<int>( snapshot.heroes.size() ); ++index )
+			{
+				if ( snapshot.heroes[index].playerId < 0 )
+				{
+					resultIndex = index;
+					break;
+				}
+			}
+		}
+
+		if ( resultIndex < 0 )
+			return false;
+
+		auto& vitals = snapshot.heroes[resultIndex];
+		if ( auto* identity = hero->pEntityIdentity() )
+		{
+			const char* designerName = identity->DesingerName().String();
+			const char* entityName = identity->Name().String();
+			vitals.name = designerName && designerName[0] ? designerName :
+				( entityName && entityName[0] ? entityName : "unknown" );
+		}
+
+		vitals.playerId = preferredPlayerId >= 0 ? preferredPlayerId : resultIndex;
+		vitals.team = team;
+		vitals.health = (std::max)( 0 , ReadEntityField<int>( hero , offsets.health ) );
+		vitals.maxHealth = maxHealth;
+		vitals.mana = (std::max)( 0.f , ReadEntityField<float>( hero , offsets.mana ) );
+		vitals.maxMana = (std::max)( 0.f , ReadEntityField<float>( hero , offsets.maxMana ) );
+		return true;
+	}
+
 	auto CollectInPlayHeroVitals() -> HeroVitalsSnapshot
 	{
 		HeroVitalsSnapshot snapshot{};
@@ -110,8 +189,8 @@ namespace
 		if ( !entitySystem || !offsets.resolved )
 			return snapshot;
 
-		// Player controllers are the authoritative roster. Cache their handles so
-		// the full entity walk happens only once per second, not once per frame.
+		// Player controllers are the authoritative roster. Walk the allocated
+		// chunks directly because GetHighestEntityIndex is build-dependent in Dota.
 		static auto controllerHandles = []
 		{
 			std::array<CHandle , 24> handles{};
@@ -119,7 +198,17 @@ namespace
 				handle.m_Index = INVALID_EHANDLE_INDEX;
 			return handles;
 		}();
+		static auto fallbackHeroHandles = []
+		{
+			std::array<CHandle , 64> handles{};
+			for ( auto& handle : handles )
+				handle.m_Index = INVALID_EHANDLE_INDEX;
+			return handles;
+		}();
 		static int cachedControllerCount = 0;
+		static int cachedFallbackHeroCount = 0;
+		static int cachedScannedEntityCount = 0;
+		static int cachedAllocatedChunkCount = 0;
 		static ULONGLONG nextControllerRefresh = 0;
 		const ULONGLONG now = GetTickCount64();
 
@@ -127,26 +216,44 @@ namespace
 		{
 			for ( auto& handle : controllerHandles )
 				handle.m_Index = INVALID_EHANDLE_INDEX;
+			for ( auto& handle : fallbackHeroHandles )
+				handle.m_Index = INVALID_EHANDLE_INDEX;
 			cachedControllerCount = 0;
+			cachedFallbackHeroCount = 0;
+			cachedScannedEntityCount = 0;
+			cachedAllocatedChunkCount = 0;
 
-			const int highest = (std::min)( entitySystem->GetHighestEntityIndex() , MAX_TOTAL_ENTITIES - 1 );
-			for ( int index = 0; index <= highest; ++index )
+			for ( int chunkIndex = 0; chunkIndex < MAX_ENTITY_LISTS; ++chunkIndex )
 			{
-				auto* controller = entitySystem->GetBaseEntity<C_DOTAPlayerController>( index );
-				if ( !controller )
+				auto* chunk = entitySystem->m_pIdentityChunks[chunkIndex];
+				if ( !chunk )
 					continue;
+				++cachedAllocatedChunkCount;
 
-				const char* className = controller->GetSchemaClassName();
-				if ( !className || std::strcmp( className , "C_DOTAPlayerController" ) != 0 )
-					continue;
+				for ( int entryIndex = 0; entryIndex < MAX_ENTITIES_IN_LIST; ++entryIndex )
+				{
+					auto* identity = &chunk->m_pIdentities[entryIndex];
+					auto* entity = identity->pBaseEntity();
+					if ( !entity )
+						continue;
+					++cachedScannedEntityCount;
 
-				if ( auto* identity = controller->pEntityIdentity(); identity && cachedControllerCount < static_cast<int>( controllerHandles.size() ) )
-					controllerHandles[cachedControllerCount++] = identity->Handle();
+					const char* className = entity->GetSchemaClassName();
+					if ( LooksLikePlayerControllerName( className ) && cachedControllerCount < static_cast<int>( controllerHandles.size() ) )
+						controllerHandles[cachedControllerCount++] = identity->Handle();
+					else if ( ( LooksLikeHeroEntityName( className ) ||
+						std::strstr( identity->DesingerName().String() , "npc_dota_hero_" ) != nullptr ) &&
+						cachedFallbackHeroCount < static_cast<int>( fallbackHeroHandles.size() ) )
+						fallbackHeroHandles[cachedFallbackHeroCount++] = identity->Handle();
+				}
 			}
 
 			nextControllerRefresh = now + 1000;
 		}
 		snapshot.controllerCount = cachedControllerCount;
+		snapshot.fallbackHeroCount = cachedFallbackHeroCount;
+		snapshot.scannedEntityCount = cachedScannedEntityCount;
+		snapshot.allocatedChunkCount = cachedAllocatedChunkCount;
 
 		for ( int controllerIndex = 0; controllerIndex < cachedControllerCount; ++controllerIndex )
 		{
@@ -167,38 +274,24 @@ namespace
 				continue;
 			++snapshot.assignedHeroCount;
 
-			int playerId = offsets.hasPlayerId ? ReadEntityField<int32_t>( controller , offsets.playerId ) : -1;
-			int resultIndex = playerId >= 0 && playerId < static_cast<int>( snapshot.heroes.size() ) ? playerId : -1;
-			if ( resultIndex < 0 || snapshot.heroes[resultIndex].playerId >= 0 )
-			{
-				resultIndex = -1;
-				for ( int index = 0; index < static_cast<int>( snapshot.heroes.size() ); ++index )
-				{
-					if ( snapshot.heroes[index].playerId < 0 )
-					{
-						resultIndex = index;
-						break;
-					}
-				}
-			}
+			const int playerId = offsets.hasPlayerId ? ReadEntityField<int32_t>( controller , offsets.playerId ) : -1;
+			StoreHeroVitals( snapshot , hero , playerId , offsets );
+		}
 
-			if ( resultIndex < 0 )
+		// Some Dota builds do not expose controllers through the client entity
+		// chunks. Fall back to real hero entities and reject illusions/clones.
+		for ( int heroIndex = 0; heroIndex < cachedFallbackHeroCount; ++heroIndex )
+		{
+			auto* hero = static_cast<C_DOTA_BaseNPC_Hero*>( entitySystem->GetBaseEntityFromHandle( fallbackHeroHandles[heroIndex] ) );
+			if ( !hero )
+				continue;
+			if ( offsets.hasIsIllusion && ReadEntityField<bool>( hero , offsets.isIllusion ) )
+				continue;
+			if ( offsets.hasIsClone && ReadEntityField<bool>( hero , offsets.isClone ) )
 				continue;
 
-			auto& vitals = snapshot.heroes[resultIndex];
-			if ( auto* identity = hero->pEntityIdentity() )
-			{
-				const char* designerName = identity->DesingerName().String();
-				const char* entityName = identity->Name().String();
-				vitals.name = designerName && designerName[0] ? designerName :
-					( entityName && entityName[0] ? entityName : "unknown" );
-			}
-			vitals.playerId = playerId >= 0 ? playerId : resultIndex;
-			vitals.team = ReadEntityField<uint8_t>( hero , offsets.team );
-			vitals.health = (std::max)( 0 , ReadEntityField<int>( hero , offsets.health ) );
-			vitals.maxHealth = (std::max)( 0 , ReadEntityField<int>( hero , offsets.maxHealth ) );
-			vitals.mana = (std::max)( 0.f , ReadEntityField<float>( hero , offsets.mana ) );
-			vitals.maxMana = (std::max)( 0.f , ReadEntityField<float>( hero , offsets.maxMana ) );
+			const int playerId = offsets.hasPlayerOwnerId ? ReadEntityField<int32_t>( hero , offsets.playerOwnerId ) : -1;
+			StoreHeroVitals( snapshot , hero , playerId , offsets );
 		}
 
 		return snapshot;
@@ -226,8 +319,9 @@ namespace
 		}
 
 		if ( loggedHeroes == 0 )
-			DEV_LOG( "[hero-vitals] no active heroes: offsets=%d controllers=%d assignedHeroes=%d\n" ,
-				snapshot.offsetsReady , snapshot.controllerCount , snapshot.assignedHeroCount );
+			DEV_LOG( "[hero-vitals] no active heroes: offsets=%d chunks=%d entities=%d controllers=%d assignedHeroes=%d heroCandidates=%d\n" ,
+				snapshot.offsetsReady , snapshot.allocatedChunkCount , snapshot.scannedEntityCount ,
+				snapshot.controllerCount , snapshot.assignedHeroCount , snapshot.fallbackHeroCount );
 	}
 
 	auto DrawVitalsBar( ImDrawList* drawList , const ImVec2& min , const ImVec2& size ,
