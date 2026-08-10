@@ -416,12 +416,17 @@ namespace
 
 		char text[16]{};
 		std::snprintf( text , sizeof( text ) , "%d" , static_cast<int>( std::round( value ) ) );
-		const float fontSize = (std::max)( 8.f , size.y * 0.82f );
+		const float fontSize = (std::max)( 9.f , size.y * 0.94f );
 		const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA( fontSize , FLT_MAX , 0.f , text );
 		const ImVec2 textPos( min.x + ( size.x - textSize.x ) * 0.5f , min.y + ( size.y - textSize.y ) * 0.5f );
 
-		// A one-pixel outline keeps the values readable over both empty and full bars.
-		drawList->AddText( ImGui::GetFont() , fontSize , ImVec2( textPos.x + 1.f , textPos.y + 1.f ) , IM_COL32( 0 , 0 , 0 , 235 ) , text );
+		// Outline every side of the glyphs so the values remain readable over
+		// both the bright filled portion and the nearly black empty portion.
+		const ImU32 outlineColor = IM_COL32( 0 , 0 , 0 , 255 );
+		drawList->AddText( ImGui::GetFont() , fontSize , ImVec2( textPos.x - 1.f , textPos.y ) , outlineColor , text );
+		drawList->AddText( ImGui::GetFont() , fontSize , ImVec2( textPos.x + 1.f , textPos.y ) , outlineColor , text );
+		drawList->AddText( ImGui::GetFont() , fontSize , ImVec2( textPos.x , textPos.y - 1.f ) , outlineColor , text );
+		drawList->AddText( ImGui::GetFont() , fontSize , ImVec2( textPos.x , textPos.y + 1.f ) , outlineColor , text );
 		drawList->AddText( ImGui::GetFont() , fontSize , textPos , IM_COL32( 245 , 245 , 245 , 255 ) , text );
 	}
 
@@ -444,8 +449,11 @@ namespace
 		// this HUD layout. Keep the vitals attached to that edge, not the old
 		// lower screen-relative estimate that left a large vertical gap.
 		const float portraitBottom = display.y * 0.0625f;
-		const float barHeight = (std::max)( 7.f , display.y * 0.0095f );
-		const float barTop = portraitBottom + 1.f;
+		const float barHeight = (std::max)( 9.f , display.y * 0.0105f );
+		// Pull the bars up to the portrait edge. The previous +1 anchor left a
+		// visible strip of world/HUD background between the two elements.
+		const float portraitOverlapCorrection = (std::max)( 3.f , display.y * 0.005f );
+		const float barTop = portraitBottom - portraitOverlapCorrection;
 		const float leftStart = display.x * 0.5f - scoreboardGap * 0.5f - teamWidth;
 		const float rightStart = display.x * 0.5f + scoreboardGap * 0.5f;
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
