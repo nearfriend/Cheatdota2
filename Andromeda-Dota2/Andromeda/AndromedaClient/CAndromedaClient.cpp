@@ -189,18 +189,35 @@ namespace
 		if ( count <= 0 || count > static_cast<int>( mappings.slotsByRecord.size() ) || !data )
 			return mappings;
 		mappings.recordCount = count;
+		std::array<int , 24> rawSlots{};
+		rawSlots.fill( -1 );
+		bool sawZeroSlot = false;
+		bool sawFiveSlot = false;
+
+		for ( int record = 0; record < count; ++record )
+		{
+			rawSlots[record] = *reinterpret_cast<const int32_t*>( data + record * teamDataStride + offsets.teamSlot );
+			if ( offsets.hasSelectedHero )
+				mappings.selectedHeroes[record] = *reinterpret_cast<const CHandle*>(
+					data + record * teamDataStride + offsets.selectedHero );
+			const bool activeRecord = !offsets.hasSelectedHero || mappings.selectedHeroes[record].IsValid();
+			sawZeroSlot = sawZeroSlot || ( activeRecord && rawSlots[record] == 0 );
+			sawFiveSlot = sawFiveSlot || ( activeRecord && rawSlots[record] == 5 );
+		}
+
+		// Some builds expose lobby slots as 1..5 while the Panorama portrait
+		// indices are always 0..4. Detect that representation from the complete
+		// record set instead of blindly shifting every build.
+		const int slotBase = sawFiveSlot && !sawZeroSlot ? 1 : 0;
 
 		for ( int playerId = 0; playerId < count; ++playerId )
 		{
-			const int slot = *reinterpret_cast<const int32_t*>( data + playerId * teamDataStride + offsets.teamSlot );
+			const int slot = rawSlots[playerId] - slotBase;
 			if ( slot >= 0 && slot < 5 )
 			{
 				mappings.slotsByPlayerId[playerId] = slot;
 				mappings.slotsByRecord[playerId] = slot;
 			}
-			if ( offsets.hasSelectedHero )
-				mappings.selectedHeroes[playerId] = *reinterpret_cast<const CHandle*>(
-					data + playerId * teamDataStride + offsets.selectedHero );
 		}
 
 		return mappings;
