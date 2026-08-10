@@ -450,7 +450,7 @@ namespace
 		const float rightStart = display.x * 0.5f + scoreboardGap * 0.5f;
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
 		int radiantFallbackSlot = 0;
-		int direFallbackSlot = 4;
+		int direFallbackSlot = 0;
 
 		for ( const auto& hero : heroes )
 		{
@@ -468,10 +468,10 @@ namespace
 			else if ( hero.team == 3 )
 			{
 				groupStart = rightStart;
-				// Dire portraits face the scoreboard: player IDs 5..9 are displayed
-				// from right to left, unlike Radiant's left-to-right order.
-				portraitSlot = hero.teamSlot >= 0 ? 4 - hero.teamSlot :
-					( hero.playerId >= 5 && hero.playerId < 10 ? 9 - hero.playerId : direFallbackSlot-- );
+				// The top bar displays Dire team slots left to right as well. Mirroring
+				// them here puts otherwise correct vitals under the opposite portrait.
+				portraitSlot = hero.teamSlot >= 0 ? hero.teamSlot :
+					( hero.playerId >= 5 && hero.playerId < 10 ? hero.playerId - 5 : direFallbackSlot++ );
 			}
 			else
 				continue;
