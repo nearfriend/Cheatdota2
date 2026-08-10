@@ -313,8 +313,9 @@ namespace
 			if ( hero.playerId < 0 || hero.maxHealth <= 0 )
 				continue;
 
-			DEV_LOG( "[hero-vitals] %s | HP %d/%d | Mana %.0f/%.0f\n" ,
-				hero.name , hero.health , hero.maxHealth , hero.mana , hero.maxMana );
+			DEV_LOG( "[hero-vitals] slot=%d team=%u %s | HP %d/%d | Mana %.0f/%.0f\n" ,
+				hero.playerId , static_cast<unsigned>( hero.team ) , hero.name ,
+				hero.health , hero.maxHealth , hero.mana , hero.maxMana );
 			++loggedHeroes;
 		}
 
@@ -363,29 +364,46 @@ namespace
 		const float portraitWidth = display.x * 0.03275f;
 		const float teamWidth = portraitWidth * 5.f;
 		const float scoreboardGap = display.x * 0.107f;
-		const float portraitBottom = display.y * 0.1155f;
+		// Dota's compact top bar ends at roughly 1/16 of the render height for
+		// this HUD layout. Keep the vitals attached to that edge, not the old
+		// lower screen-relative estimate that left a large vertical gap.
+		const float portraitBottom = display.y * 0.0625f;
 		const float barHeight = (std::max)( 7.f , display.y * 0.0095f );
 		const float barTop = portraitBottom + 1.f;
 		const float leftStart = display.x * 0.5f - scoreboardGap * 0.5f - teamWidth;
 		const float rightStart = display.x * 0.5f + scoreboardGap * 0.5f;
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
-		int radiantSlot = 0;
-		int direSlot = 0;
+		int radiantFallbackSlot = 0;
+		int direFallbackSlot = 4;
 
 		for ( const auto& hero : heroes )
 		{
 			if ( hero.playerId < 0 || hero.maxHealth <= 0 )
 				continue;
 
-			float x = 0.f;
-			if ( hero.team == 2 && radiantSlot < 5 )
-				x = leftStart + portraitWidth * radiantSlot++;
-			else if ( hero.team == 3 && direSlot < 5 )
-				x = rightStart + portraitWidth * direSlot++;
+			int portraitSlot = -1;
+			float groupStart = 0.f;
+			if ( hero.team == 2 )
+			{
+				groupStart = leftStart;
+				portraitSlot = hero.playerId >= 0 && hero.playerId < 5 ? hero.playerId : radiantFallbackSlot++;
+			}
+			else if ( hero.team == 3 )
+			{
+				groupStart = rightStart;
+				// Dire portraits face the scoreboard: player IDs 5..9 are displayed
+				// from right to left, unlike Radiant's left-to-right order.
+				portraitSlot = hero.playerId >= 5 && hero.playerId < 10 ? 9 - hero.playerId : direFallbackSlot--;
+			}
 			else
 				continue;
 
-			const ImVec2 barSize( portraitWidth , barHeight );
+			if ( portraitSlot < 0 || portraitSlot >= 5 )
+				continue;
+
+			const float barInset = 1.f;
+			const float x = groupStart + portraitWidth * portraitSlot + barInset;
+			const ImVec2 barSize( portraitWidth - barInset * 2.f , barHeight );
 			DrawVitalsBar( drawList , ImVec2( x , barTop ) , barSize ,
 				static_cast<float>( hero.health ) , static_cast<float>( hero.maxHealth ) , IM_COL32( 205 , 55 , 55 , 255 ) );
 			DrawVitalsBar( drawList , ImVec2( x , barTop + barHeight ) , barSize ,
