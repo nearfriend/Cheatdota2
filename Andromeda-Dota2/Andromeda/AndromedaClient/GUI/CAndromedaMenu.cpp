@@ -162,6 +162,30 @@ static std::string VkToName( int vk )
 	if ( vk <= 0 )
 		return "None";
 
+	switch ( vk )
+	{
+	case VK_MBUTTON:
+		return "Middle Mouse";
+	case VK_XBUTTON1:
+		return "Mouse4";
+	case VK_XBUTTON2:
+		return "Mouse5";
+	case VK_MENU:
+		return "Alt";
+	case VK_LMENU:
+		return "Left Alt";
+	case VK_RMENU:
+		return "Right Alt";
+	case VK_SHIFT:
+		return "Shift";
+	case VK_CONTROL:
+		return "Ctrl";
+	case VK_SPACE:
+		return "Space";
+	default:
+		break;
+	}
+
 	UINT scan = MapVirtualKeyA( static_cast<UINT>( vk ) , MAPVK_VK_TO_VSC );
 	LONG lParam = static_cast<LONG>( scan ) << 16;
 
@@ -967,8 +991,11 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
+		const bool killStealerPage = selectedCategory == 0 && selectedItem == 8;
+		const bool lastHitPage = selectedCategory == 3 && selectedItem == 7;
 		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
 		const bool infoOverlayPage = selectedCategory == 2 && selectedItem == 3;
+		const bool visibleByEnemyPage = selectedCategory == 2 && selectedItem == 8;
 		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
 
 		if ( infoOverlayPage )
@@ -1015,11 +1042,40 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , cameraPage ? 322.f : 180.f ) , true , ImGuiWindowFlags_NoScrollbar );
+			const float settingsCardHeight = killStealerPage ? 420.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : 180.f ) );
+			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
 			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
-			if ( cameraPage )
+			if ( killStealerPage )
+			{
+				DrawSwitchRow( "Enable" , "##killStealerEnable" , Settings::KillStealer::Enable , ReferenceIcon::Aggro );
+				ImGui::BeginDisabled( !Settings::KillStealer::Enable );
+				DrawSwitchRow( "Use Abilities" , "##killStealerAbilities" , Settings::KillStealer::UseAbilities , ReferenceIcon::Sparkles );
+				DrawSwitchRow( "Use Items" , "##killStealerItems" , Settings::KillStealer::UseItems , ReferenceIcon::Items );
+				DrawSwitchRow( "Use Auto Attack" , "##killStealerAttack" , Settings::KillStealer::UseAutoAttack , ReferenceIcon::Mouse );
+				DrawSwitchRow( "Quick Cast Mode" , "##killStealerQuickCast" , Settings::KillStealer::QuickCast , ReferenceIcon::Speed );
+				DrawSwitchRow( "Draw Killable Markers" , "##killStealerMarkers" , Settings::KillStealer::DrawKillableMarkers , ReferenceIcon::Visible );
+				DrawSwitchRow( "Debug Logs" , "##killStealerDebug" , Settings::KillStealer::DrawDebugInfo , ReferenceIcon::Code );
+				DrawSliderRow( "Health Buffer" , "##killStealerHealthBuffer" , Settings::KillStealer::HealthBuffer , 0.f , 250.f , "%.0f hp" , ReferenceIcon::Warning );
+				ImGui::EndDisabled();
+				ImGui::Spacing();
+				ImGui::TextDisabled( "Debug mode writes [kill-stealer] target and damage lines to debug.log." );
+				ImGui::TextDisabled( "Ability hotkeys assume default Q/W/E/D/F/R and Dota quick-cast settings." );
+			}
+			else if ( lastHitPage )
+			{
+				DrawSwitchRow( "Enable" , "##lastHitEnable" , Settings::LastHitAssistant::Enable , ReferenceIcon::Info );
+				ImGui::BeginDisabled( !Settings::LastHitAssistant::Enable );
+				DrawSliderRow( "Health Buffer" , "##lastHitHealthBuffer" , Settings::LastHitAssistant::HealthBuffer , 0.f , 250.f , "%.0f hp" , ReferenceIcon::Warning );
+				DrawSliderRow( "Detect Range" , "##lastHitDetectRange" , Settings::LastHitAssistant::DetectRange , 150.f , 1600.f , "%.0f" , ReferenceIcon::Radius );
+				ImGui::EndDisabled();
+				ImGui::Spacing();
+				ImGui::TextDisabled( "When enabled, Last Hit Helper is always active." );
+				ImGui::TextDisabled( "The circle shows enemy creep scan range around your hero." );
+				ImGui::TextDisabled( "Gold stars mark enemy creeps killable by one attack. Visual-only, no input is sent." );
+			}
+			else if ( cameraPage )
 			{
 				DrawSwitchRow( "Enable" , "##cameraEnable" , Settings::Camera::Enable , ReferenceIcon::Camera );
 				ImGui::BeginDisabled( !Settings::Camera::Enable );
@@ -1041,6 +1097,13 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
 				DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" , ReferenceIcon::Speed );
 				ImGui::EndDisabled();
+			}
+			else if ( visibleByEnemyPage )
+			{
+				DrawSwitchRow( "Visible By Enemy" , "##visibleByEnemyEnable" , Settings::VisibleByEnemy::Enable , ReferenceIcon::Visible );
+				ImGui::Spacing();
+				ImGui::TextDisabled( "Shows an eye next to your health bar when True Sight detects you." );
+				ImGui::TextDisabled( "Triggers from enemy Gem of True Sight, Sentry Wards, or Towers." );
 			}
 			else
 			{

@@ -364,3 +364,14 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+#GUI
+gui.ini
+
+#x64
+x64/
+
+#Assets
+Assets/
+
+.opencodex

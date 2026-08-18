@@ -46,6 +46,12 @@
     <Filter Include="Andromeda\AndromedaClient\GUI">
       <UniqueIdentifier>{1f72fb26-9ff0-480d-a780-ac7fde2ec585}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Andromeda\AndromedaClient\Data">
+      <UniqueIdentifier>{8aa8c74d-bf18-49a0-b32a-fc94b7030198}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Andromeda\AndromedaClient\Features">
+      <UniqueIdentifier>{933059f9-86e8-4e64-95c4-c4480fb4e49a}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Andromeda\AndromedaClient\Settings">
       <UniqueIdentifier>{8310cc7a-28f9-4062-81fe-50ef2f6908d8}</UniqueIdentifier>
     </Filter>
@@ -134,6 +140,15 @@
     </ClCompile>
     <ClCompile Include="Andromeda\AndromedaClient\CAndromedaGUI.cpp">
       <Filter>Andromeda\AndromedaClient</Filter>
+    </ClCompile>
+    <ClCompile Include="Andromeda\AndromedaClient\Data\AbilityDamageData.cpp">
+      <Filter>Andromeda\AndromedaClient\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="Andromeda\AndromedaClient\Features\CKillStealer.cpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClCompile>
+    <ClCompile Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.cpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClCompile>
     <ClCompile Include="Andromeda\AndromedaClient\Fonts\CFont.cpp">
       <Filter>Andromeda\AndromedaClient\Fonts</Filter>
@@ -511,6 +526,15 @@
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\CAndromedaGUI.hpp">
       <Filter>Andromeda\AndromedaClient</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\AndromedaClient\Data\AbilityDamageData.hpp">
+      <Filter>Andromeda\AndromedaClient\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\AndromedaClient\Features\CKillStealer.hpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.hpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\Fonts\CFont.hpp">
       <Filter>Andromeda\AndromedaClient\Fonts</Filter>

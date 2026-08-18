@@ -287,10 +287,15 @@ LRESULT WINAPI CAndromedaGUI::GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam
 	if ( uMsg == WM_MOUSEWHEEL )
 		GetAndromedaGUI()->AddMouseWheelDelta( static_cast<short>( GET_WHEEL_DELTA_WPARAM( wParam ) ) );
 
-	if ( GetAndromedaGUI()->m_bInit && GetAndromedaGUI()->IsVisible() )
+	if ( GetAndromedaGUI()->m_bInit )
 	{
 		// ImGui returns non-zero when it consumed the message — don't forward those to the game.
-		if ( ImGui_ImplWin32_WndProcHandler( hwnd , uMsg , wParam , lParam ) )
+		const bool handled = ImGui_ImplWin32_WndProcHandler( hwnd , uMsg , wParam , lParam ) != 0;
+		const bool mouseMessage = uMsg == WM_MOUSEMOVE || uMsg == WM_MOUSEWHEEL ||
+			uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONDOWN ||
+			uMsg == WM_RBUTTONUP || uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP;
+		if ( handled && ( GetAndromedaGUI()->IsVisible() ||
+			( mouseMessage && ImGui::GetIO().WantCaptureMouse ) ) )
 			return true;
 	}
 

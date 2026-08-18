@@ -26,7 +26,7 @@ namespace Settings
 		inline bool ShowDangerousAbilityTimer = true;
 		inline bool TopOverlayElements[6] = { true, true, true, true, true, true };
 
-		inline bool SidePanelsEnabled = false;
+		inline bool SidePanelsEnabled = true;
 		inline bool ShowItems = true;
 		inline bool ShowNetworth = true;
 		inline bool ScanGlyphInfo = true;
@@ -35,9 +35,31 @@ namespace Settings
 		inline int WardShowMode = 2;
 		inline int WardWorldRenderMode = 2;
 	}
+	namespace VisibleByEnemy
+	{
+		inline bool Enable = true;
+	}
 	namespace DotaPlus
 	{
 		inline auto Enable = true;
+	}
+	namespace KillStealer
+	{
+		inline bool Enable = false;
+		inline bool UseAbilities = true;
+		inline bool UseItems = true;
+		inline bool UseAutoAttack = true;
+		inline bool DrawKillableMarkers = true;
+		inline bool DrawDebugInfo = false;
+		inline bool QuickCast = true;
+		inline float HealthBuffer = 1.f;
+		inline int AttackKey = 'A';
+	}
+	namespace LastHitAssistant
+	{
+		inline bool Enable = false;
+		inline float HealthBuffer = 120.f;
+		inline float DetectRange = 950.f; // Sniper-style max lane scan range.
 	}
 	namespace Heroes
 	{

@@ -7,6 +7,8 @@
 
 #include <AndromedaClient/Heroes/Invoker/CInvokerController.hpp>
 #include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
+#include <AndromedaClient/Features/CKillStealer.hpp>
+#include <AndromedaClient/Features/CLastHitAssistant.hpp>
 
 #include <array>
 #include <atomic>
@@ -107,6 +109,8 @@ private:
 	ULONGLONG m_NextFogRescanTick = 0;
 
 private:
+	CKillStealer m_KillStealer;
+	CLastHitAssistant m_LastHitAssistant;
 	CInvokerController m_InvokerController;
 	CMeepoController m_MeepoController;
 };
