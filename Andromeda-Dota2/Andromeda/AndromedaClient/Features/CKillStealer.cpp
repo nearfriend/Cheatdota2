@@ -644,7 +644,7 @@ namespace
 				if (heroEntity)
 				{
 					HeroCandidate hero{};
-					if (BuildHeroCandidate(heroEntity, heroHandle, nullptr, offsets, false, hero))
+					if (BuildHeroCandidate(entitySystem, heroEntity, nullptr, heroHandle, "", offsets, false, hero))
 					{
 						outLocal = hero;
 						DEV_LOG("[kill-stealer] local-hero-resolved controller=1 assignedHero=%s\n", hero.name.c_str());
