@@ -743,7 +743,7 @@ namespace
 	auto LooksLikeLaneCreepByStats(C_BaseEntity *entity, const LastHitOffsets &offsets,
 								   int health, int maxHealth, uint8_t team) -> bool
 	{
-		if (!entity || health <= 0)
+		if (!entity || health <= 5)
 			return false;
 		if (LooksLikeExcludedLaneTarget(entity))
 			return false;
