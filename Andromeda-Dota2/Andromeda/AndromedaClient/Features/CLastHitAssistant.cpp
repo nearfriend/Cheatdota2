@@ -745,8 +745,6 @@ namespace
 	{
 		if (!entity || health <= 0)
 			return false;
-		if (team != 2 && team != 3)
-			return false;
 		if (LooksLikeExcludedLaneTarget(entity))
 			return false;
 		if (LooksLikeLaneCreepByName(entity))
@@ -1115,8 +1113,6 @@ auto CLastHitAssistant::OnRender() -> void
 
 			if (health <= 5 || maxHealth <= 0)
 				continue;
-			if (team != 2 && team != 3)
-				continue;
 			++totalAlive;
 
 			if (LooksLikeExcludedLaneTarget(ent))
@@ -1173,7 +1169,7 @@ auto CLastHitAssistant::OnRender() -> void
 
 				ImVec2 screen{};
 				Vector3 markerOrigin = origin;
-				markerOrigin.m_z += 90.f;
+				markerOrigin.m_z += 140.f;
 				if (!Math::WorldToScreen(markerOrigin, screen) && !Math::WorldToScreen(origin, screen))
 				{
 					++skippedByProjection;
@@ -1183,10 +1179,6 @@ auto CLastHitAssistant::OnRender() -> void
 				const ImU32 fillColor = IM_COL32(255, 221, 32, 245);
 				const ImU32 outlineColor = IM_COL32(255, 246, 154, 255);
 				DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
-
-				char hpStr[32];
-				snprintf(hpStr, sizeof(hpStr), "%d/%d", health, maxHealth);
-				drawList->AddText(screen + ImVec2(0, -12), IM_COL32(255, 255, 255, 255), hpStr);
 				++drawnUniversal;
 			}
 		}
@@ -1217,7 +1209,7 @@ auto CLastHitAssistant::OnRender() -> void
 	{
 		ImVec2 screen{};
 		Vector3 markerOrigin = candidate.origin;
-		markerOrigin.m_z += 90.f;
+		markerOrigin.m_z += 140.f;
 		if (!Math::WorldToScreen(markerOrigin, screen) && !Math::WorldToScreen(candidate.origin, screen))
 		{
 			++candidateOffscreen;
@@ -1227,11 +1219,6 @@ auto CLastHitAssistant::OnRender() -> void
 
 		DrawStarMarker(drawList, screen, 9.f, IM_COL32(255, 221, 32, 245),
 					   IM_COL32(255, 246, 154, 255));
-
-		// Display the bot's current HP next to the marker
-		char hpStr[32];
-		snprintf(hpStr, sizeof(hpStr), "%d/%d", candidate.health, candidate.maxHealth);
-		drawList->AddText(screen + ImVec2(0, -12), IM_COL32(255, 255, 255, 255), hpStr);
 	}
 
 	// #region agent log
