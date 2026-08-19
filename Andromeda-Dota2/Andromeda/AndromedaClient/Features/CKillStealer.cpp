@@ -448,7 +448,7 @@ namespace
 						   hasAbilityCooldown && hasAbilityMana;
 
 		static ULONGLONG lastLogTick = 0;
-		if (offsets.resolved || !lastLogTick || now - lastLogTick >= 5000)
+		if (offsets.resolved || !lastLogTick || now - lastLogTick >= 300000)
 		{
 			DEV_LOG("[kill-stealer] offsets ready=%d hp=0x%X max=0x%X team=0x%X mana=0x%X abilities=0x%X inv=%d(0x%X+0x%X) ability(level=0x%X cd=0x%X mana=0x%X range=0x%X active=%d/0x%X) origin=0x%X+0x%X armor=%d/0x%X resist=%d/0x%X amp=%d/0x%X damage=0x%X+0x%X range=%d/0x%X player=%d/0x%X owner=%d/0x%X\n",
 					offsets.resolved ? 1 : 0, offsets.health, offsets.maxHealth, offsets.team,
@@ -1213,7 +1213,7 @@ auto CKillStealer::OnRender() -> void
 
 	if (m_HeroHandles.empty())
 	{
-		if (now - m_LastDebugLogTick >= 1000)
+		if (now - m_LastDebugLogTick >= 3000)
 		{
 			LogDebugSnapshot(nullptr, {}, {}, m_HeroHandles.size(), m_LastScanEntities,
 							 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
@@ -1231,7 +1231,7 @@ auto CKillStealer::OnRender() -> void
 	HeroCandidate localHero{};
 	if (!ResolveLocalHero(entitySystem, offsets, heroes, localHero))
 	{
-		if (now - m_LastDebugLogTick >= 1000)
+		if (now - m_LastDebugLogTick >= 3000)
 		{
 			LogDebugSnapshot(nullptr, heroes, {}, m_HeroHandles.size(), m_LastScanEntities,
 							 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
@@ -1251,7 +1251,7 @@ auto CKillStealer::OnRender() -> void
 
 	if (enemies.empty())
 	{
-		if (now - m_LastDebugLogTick >= 1000)
+		if (now - m_LastDebugLogTick >= 3000)
 		{
 			LogDebugSnapshot(&localHero, enemies, {}, m_HeroHandles.size(), m_LastScanEntities,
 							 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
@@ -1264,7 +1264,7 @@ auto CKillStealer::OnRender() -> void
 	const auto tools = CollectTools(entitySystem, localHero, offsets);
 	DrawMarkers(localHero, enemies, tools);
 
-	if (now - m_LastDebugLogTick >= 1000)
+	if (now - m_LastDebugLogTick >= 3000)
 	{
 		LogDebugSnapshot(&localHero, enemies, tools, m_HeroHandles.size(), m_LastScanEntities,
 						 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);

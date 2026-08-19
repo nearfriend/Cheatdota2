@@ -1111,48 +1111,48 @@ auto CLastHitAssistant::OnRender() -> void
 				const int maxHealth = ReadField<int>(ent, offsets.maxHealth);
 				const uint8_t team = ReadField<uint8_t>(ent, offsets.team);
 
-			if (health <= 5 || maxHealth <= 0)
-				continue;
-			++totalAlive;
+				if (health <= 5 || maxHealth <= 0)
+					continue;
+				++totalAlive;
 
-			if (LooksLikeExcludedLaneTarget(ent))
-				continue;
-			++passedExclude;
+				if (LooksLikeExcludedLaneTarget(ent))
+					continue;
+				++passedExclude;
 
-			if (LooksLikeHeroEntity(ent))
-				continue;
+				if (LooksLikeHeroEntity(ent))
+					continue;
 
-			// Diagnostic: log rejected entities to understand filter failures
-			const bool passedLaneCreep = LooksLikeLaneCreepByStats(ent, offsets, health, maxHealth, team);
-			if (!passedLaneCreep)
-			{
-				static ULONGLONG lastRejectLogTick = 0;
-				static int rejectLogCount = 0;
-				const ULONGLONG nowReject = GetTickCount64();
-				if (!lastRejectLogTick || nowReject - lastRejectLogTick >= 5000)
+				// Diagnostic: log rejected entities to understand filter failures
+				const bool passedLaneCreep = LooksLikeLaneCreepByStats(ent, offsets, health, maxHealth, team);
+				if (!passedLaneCreep)
 				{
-					lastRejectLogTick = nowReject;
-					rejectLogCount = 0;
+					static ULONGLONG lastRejectLogTick = 0;
+					static int rejectLogCount = 0;
+					const ULONGLONG nowReject = GetTickCount64();
+					if (!lastRejectLogTick || nowReject - lastRejectLogTick >= 5000)
+					{
+						lastRejectLogTick = nowReject;
+						rejectLogCount = 0;
+					}
+					if (rejectLogCount < 12)
+					{
+						const char *designerName = EntityDesignerOrName(ent);
+						const char *className = ent->GetSchemaClassName();
+						const bool nameMatch = LooksLikeLaneCreepByName(ent);
+						const bool excluded = LooksLikeExcludedLaneTarget(ent);
+						const bool playerOwned = IsPlayerControlledUnit(ent, offsets);
+						char rejectData[512]{};
+						std::snprintf(rejectData, sizeof(rejectData),
+									  "{\"designer\":\"%s\",\"class\":\"%s\",\"hp\":%d,\"maxHp\":%d,\"team\":%u,\"nameMatch\":%d,\"excluded\":%d,\"playerOwned\":%d}",
+									  designerName ? designerName : "", className ? className : "",
+									  health, maxHealth, static_cast<unsigned int>(team),
+									  nameMatch ? 1 : 0, excluded ? 1 : 0, playerOwned ? 1 : 0);
+						AgentDbgLog("diag", "filter", "CLastHitAssistant.cpp:universal", "rejected-entity", rejectData);
+						++rejectLogCount;
+					}
+					continue;
 				}
-				if (rejectLogCount < 12)
-				{
-					const char *designerName = EntityDesignerOrName(ent);
-					const char *className = ent->GetSchemaClassName();
-					const bool nameMatch = LooksLikeLaneCreepByName(ent);
-					const bool excluded = LooksLikeExcludedLaneTarget(ent);
-					const bool playerOwned = IsPlayerControlledUnit(ent, offsets);
-					char rejectData[512]{};
-					std::snprintf(rejectData, sizeof(rejectData),
-								  "{\"designer\":\"%s\",\"class\":\"%s\",\"hp\":%d,\"maxHp\":%d,\"team\":%u,\"nameMatch\":%d,\"excluded\":%d,\"playerOwned\":%d}",
-								  designerName ? designerName : "", className ? className : "",
-								  health, maxHealth, static_cast<unsigned int>(team),
-								  nameMatch ? 1 : 0, excluded ? 1 : 0, playerOwned ? 1 : 0);
-					AgentDbgLog("diag", "filter", "CLastHitAssistant.cpp:universal", "rejected-entity", rejectData);
-					++rejectLogCount;
-				}
-				continue;
-			}
-			++passedStats;
+				++passedStats;
 
 				if (static_cast<float>(health) > lethalHealth)
 				{
@@ -1233,6 +1233,54 @@ auto CLastHitAssistant::OnRender() -> void
 						  static_cast<int>(candidates.size()), candidateProjected, candidateOffscreen);
 			AgentDbgLog("pre-fix", "B,C", "CLastHitAssistant.cpp:OnRender", "candidate-pass", data);
 			lastCandidateLogTick = now;
+		}
+	}
+
+	// Auto-attack for last-hit starred creeps
+	if (Settings::LastHitAssistant::EnableAutoAttack && !candidates.empty())
+	{
+		static ULONGLONG lastAutoAttackTick = 0;
+		const ULONGLONG now = GetTickCount64();
+
+		if (now - lastAutoAttackTick >= 500)
+		{
+			// Find the first killable candidate (starred creep) - use the first one in the sorted list
+			// Candidates are sorted by: killable first, then by urgency (lowest health/lethalHealth first)
+			const auto &target = candidates[0];
+
+			// World-to-screen the target position for aim
+			ImVec2 screenPos{};
+			Vector3 aimPoint = target.origin;
+			aimPoint.m_z += 80.f; // Aim at head level
+
+			if (Math::WorldToScreen(aimPoint, screenPos))
+			{
+				// Move cursor to the target position
+				POINT prevPos{};
+				GetCursorPos(&prevPos);
+				SetCursorPos(static_cast<int>(screenPos.x), static_cast<int>(screenPos.y));
+
+				// Send attack key press ('A')
+				INPUT inputs[2]{};
+				inputs[0].type = INPUT_KEYBOARD;
+				inputs[0].ki.wVk = 'A';
+				inputs[1] = inputs[0];
+				inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+				SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT));
+
+				// Send left click
+				INPUT clickInputs[2]{};
+				clickInputs[0].type = INPUT_MOUSE;
+				clickInputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+				clickInputs[1].type = INPUT_MOUSE;
+				clickInputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+				SendInput(static_cast<UINT>(std::size(clickInputs)), clickInputs, sizeof(INPUT));
+
+				// Restore cursor position
+				SetCursorPos(prevPos.x, prevPos.y);
+			}
+
+			lastAutoAttackTick = now;
 		}
 	}
 	// #endregion

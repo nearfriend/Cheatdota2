@@ -24,7 +24,7 @@ namespace Settings
 		inline bool TopOverlayEnabled = true;
 		inline bool ShowOnAllies = true;
 		inline bool ShowDangerousAbilityTimer = true;
-		inline bool TopOverlayElements[6] = { true, true, true, true, true, true };
+		inline bool TopOverlayElements[6] = {true, true, true, true, true, true};
 
 		inline bool SidePanelsEnabled = true;
 		inline bool ShowItems = true;
@@ -58,6 +58,7 @@ namespace Settings
 	namespace LastHitAssistant
 	{
 		inline bool Enable = false;
+		inline bool EnableAutoAttack = true;
 		inline float HealthBuffer = 120.f;
 		inline float DetectRange = 950.f; // Sniper-style max lane scan range.
 	}
