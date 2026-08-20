@@ -1246,7 +1246,20 @@ auto CLastHitAssistant::OnRender() -> void
 		{
 			// Find the first killable candidate (starred creep) - use the first one in the sorted list
 			// Candidates are sorted by: killable first, then by urgency (lowest health/lethalHealth first)
-			const auto &target = candidates[0];
+			auto target = candidates[0];
+			// Ensure the target has the star marker (health <= lethalHealth)
+			// If not, fall back to finding the first killable candidate with the star marker
+			if (static_cast<float>(target.health) > target.lethalHealth)
+			{
+				for (const auto &c : candidates)
+				{
+					if (static_cast<float>(c.health) <= c.lethalHealth)
+					{
+						target = c;
+						break;
+					}
+				}
+			}
 
 			// World-to-screen the target position for aim
 			ImVec2 screenPos{};
