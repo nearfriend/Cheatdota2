@@ -114,13 +114,8 @@ namespace
 		AbilityDamageType damageType = AbilityDamageType::Magical;
 		bool noTarget = false;
 		bool unitTarget = false;
-	};
-
-	struct KillDecision
-	{
-		const HeroCandidate *target = nullptr;
-		const KillTool *tool = nullptr;
-		float effectiveDamage = 0.f;
+		bool pointTarget = false;
+		uint32_t delayMs = 0;
 	};
 
 	struct HeroScanStats
@@ -804,144 +799,37 @@ namespace
 		return castRange;
 	}
 
-	auto DagonDamage(const std::string &itemName) -> float
+	auto FindDamageEntry(const std::string &name) -> const AbilityDamageEntry *
 	{
-		if (itemName == "item_dagon")
-			return 400.f;
-		if (itemName == "item_dagon_2")
-			return 500.f;
-		if (itemName == "item_dagon_3")
-			return 600.f;
-		if (itemName == "item_dagon_4")
-			return 700.f;
-		if (itemName == "item_dagon_5")
-			return 800.f;
-		return 0.f;
+		auto *data = GetAbilityDamageData();
+		if (!data)
+			return nullptr;
+
+		if (const auto *entry = data->Find(name))
+			return entry;
+
+		const std::string lowered = ToLower(name);
+		if (lowered != name)
+			return data->Find(lowered);
+
+		return nullptr;
 	}
 
-	auto CollectTools(CGameEntitySystem *entitySystem, const HeroCandidate &localHero,
-					  const KillStealerOffsets &offsets) -> std::vector<KillTool>
+	auto PreferredSlotForAbility(const std::string &name) -> int
 	{
-		std::vector<KillTool> tools;
-		static constexpr std::array<WORD, 6> kAbilityKeys = {'Q', 'W', 'E', 'D', 'F', 'R'};
-		static constexpr std::array<WORD, 6> kItemKeys = {'Z', 'X', 'C', 'V', 'B', 'N'};
+		auto *data = GetAbilityDamageData();
+		if (!data)
+			return -1;
 
-		if (Settings::KillStealer::UseAbilities)
-		{
-			std::vector<CHandle> abilityHandles;
-			const auto *field = reinterpret_cast<const void *>(reinterpret_cast<uintptr_t>(localHero.entity) + offsets.abilities);
-			if (ReadHandleVector(field, 48, abilityHandles))
-			{
-				int fallbackSlot = 0;
-				for (const auto &handle : abilityHandles)
-				{
-					CEntityIdentity *identity = nullptr;
-					auto *ability = EntityFromHandle(entitySystem, handle, &identity);
-					if (!ability)
-						continue;
+		const int direct = data->PreferredSlot(name);
+		if (direct >= 0)
+			return direct;
 
-					const std::string abilityName = EntityName(ability, identity);
-					const auto *data = GetAbilityDamageData()->Find(abilityName);
-					if (!data || !data->IsUsableDamage() || (!data->unitTarget && !data->noTarget))
-						continue;
+		const std::string lowered = ToLower(name);
+		if (lowered != name)
+			return data->PreferredSlot(lowered);
 
-					const int level = ReadField<int>(ability, offsets.abilityLevel, 0);
-					if (level <= 0)
-						continue;
-
-					if (offsets.hasAbilityActivated && !ReadField<bool>(ability, offsets.abilityActivated, true))
-						continue;
-
-					const float cooldown = ReadField<float>(ability, offsets.abilityCooldown, 0.f);
-					if (std::isfinite(cooldown) && cooldown > 0.15f)
-						continue;
-
-					int manaCost = ReadField<int>(ability, offsets.abilityManaCost, data->ManaForLevel(level));
-					if (manaCost <= 0)
-						manaCost = data->ManaForLevel(level);
-					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
-						continue;
-
-					const float rawDamage = data->DamageForLevel(level);
-					if (rawDamage <= 0.f)
-						continue;
-
-					int preferredSlot = GetAbilityDamageData()->PreferredSlot(abilityName);
-					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
-						preferredSlot = fallbackSlot;
-					++fallbackSlot;
-					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
-						continue;
-
-					KillTool tool{};
-					tool.kind = KillToolKind::Ability;
-					tool.name = abilityName;
-					tool.rawDamage = rawDamage;
-					tool.castRange = data->noTarget ? 25000.f : ReadCastRange(ability, offsets, data->castRange);
-					tool.manaCost = manaCost;
-					tool.key = kAbilityKeys[preferredSlot];
-					tool.damageType = data->damageType;
-					tool.noTarget = data->noTarget;
-					tool.unitTarget = data->unitTarget;
-					tools.push_back(tool);
-				}
-			}
-		}
-
-		if (Settings::KillStealer::UseItems)
-		{
-			std::vector<CHandle> itemHandles;
-			if (ReadInventoryHandles(localHero.entity, offsets, itemHandles))
-			{
-				const int slotLimit = (std::min)(static_cast<int>(itemHandles.size()), static_cast<int>(kItemKeys.size()));
-				for (int slot = 0; slot < slotLimit; ++slot)
-				{
-					CEntityIdentity *identity = nullptr;
-					auto *item = EntityFromHandle(entitySystem, itemHandles[slot], &identity);
-					if (!item)
-						continue;
-
-					const std::string itemName = EntityName(item, identity);
-					const float damage = DagonDamage(itemName);
-					if (damage <= 0.f)
-						continue;
-
-					const float cooldown = ReadField<float>(item, offsets.abilityCooldown, 0.f);
-					if (std::isfinite(cooldown) && cooldown > 0.15f)
-						continue;
-
-					const int manaCost = ReadField<int>(item, offsets.abilityManaCost, 125);
-					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
-						continue;
-
-					KillTool tool{};
-					tool.kind = KillToolKind::Item;
-					tool.name = itemName;
-					tool.rawDamage = damage;
-					tool.castRange = 600.f;
-					tool.manaCost = manaCost;
-					tool.key = kItemKeys[slot];
-					tool.damageType = AbilityDamageType::Magical;
-					tool.unitTarget = true;
-					tools.push_back(tool);
-				}
-			}
-		}
-
-		if (Settings::KillStealer::UseAutoAttack && localHero.attackDamage > 0.f && Settings::KillStealer::AttackKey > 0)
-		{
-			KillTool tool{};
-			tool.kind = KillToolKind::Attack;
-			tool.name = "auto_attack";
-			tool.rawDamage = localHero.attackDamage;
-			tool.castRange = localHero.attackRange + 75.f;
-			tool.key = static_cast<WORD>(Settings::KillStealer::AttackKey);
-			tool.damageType = AbilityDamageType::Physical;
-			tool.unitTarget = true;
-			tools.push_back(tool);
-		}
-
-		return tools;
+		return -1;
 	}
 
 	auto Distance2D(const Vector3 &left, const Vector3 &right) -> float
@@ -951,37 +839,13 @@ namespace
 		return std::sqrt(dx * dx + dy * dy);
 	}
 
-	auto FindKillDecision(const HeroCandidate &localHero, const std::vector<HeroCandidate> &enemies,
-						  const std::vector<KillTool> &tools) -> KillDecision
+	auto ProjectTargetScreen(const Vector3 &origin, ImVec2 &out) -> bool
 	{
-		KillDecision best{};
-		float bestScore = 999999.f;
-
-		for (const auto &enemy : enemies)
-		{
-			const float distance = Distance2D(localHero.origin, enemy.origin);
-			for (const auto &tool : tools)
-			{
-				if (!tool.noTarget && distance > tool.castRange + 75.f)
-					continue;
-
-				const float effective = EffectiveDamage(tool, localHero, enemy);
-				if (effective <= 0.f || static_cast<float>(enemy.health) > effective + Settings::KillStealer::HealthBuffer)
-					continue;
-
-				const float score = static_cast<float>(enemy.health) + distance * 0.01f +
-									(tool.kind == KillToolKind::Attack ? 60.f : 0.f);
-				if (score < bestScore)
-				{
-					bestScore = score;
-					best.target = &enemy;
-					best.tool = &tool;
-					best.effectiveDamage = effective;
-				}
-			}
-		}
-
-		return best;
+		Vector3 targetPoint = origin;
+		targetPoint.m_z += 80.f;
+		if (Math::WorldToScreen(targetPoint, out))
+			return true;
+		return Math::WorldToScreen(origin, out);
 	}
 
 	auto WindowReadyForInput() -> HWND
@@ -1029,47 +893,326 @@ namespace
 		return SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT)) == std::size(inputs);
 	}
 
-	auto CastTool(const KillTool &tool, const HeroCandidate &target) -> bool
+	auto ToPlanAction(const KillTool &tool) -> CKillStealer::KillPlanAction
 	{
-		const HWND window = WindowReadyForInput();
-		if (!window || tool.key == 0)
+		CKillStealer::KillPlanAction action{};
+		switch (tool.kind)
+		{
+		case KillToolKind::Item:
+			action.kind = CKillStealer::KillPlanAction::Kind::Item;
+			break;
+		case KillToolKind::Attack:
+			action.kind = CKillStealer::KillPlanAction::Kind::Attack;
+			break;
+		case KillToolKind::Ability:
+		default:
+			action.kind = CKillStealer::KillPlanAction::Kind::Ability;
+			break;
+		}
+
+		action.name = tool.name;
+		action.key = static_cast<uint16_t>(tool.key);
+		action.delayMs = tool.delayMs;
+		action.noTarget = tool.noTarget;
+		action.unitTarget = tool.unitTarget;
+		action.pointTarget = tool.pointTarget;
+		return action;
+	}
+
+	auto CollectTools(CGameEntitySystem *entitySystem, const HeroCandidate &localHero,
+					  const KillStealerOffsets &offsets) -> std::vector<KillTool>
+	{
+		std::vector<KillTool> tools;
+		static constexpr std::array<WORD, 6> kAbilityKeys = {'Q', 'W', 'E', 'D', 'F', 'R'};
+		static constexpr std::array<WORD, 6> kItemKeys = {'Z', 'X', 'C', 'V', 'B', 'N'};
+
+		if (Settings::KillStealer::UseAbilities)
+		{
+			std::vector<CHandle> abilityHandles;
+			const auto *field = reinterpret_cast<const void *>(reinterpret_cast<uintptr_t>(localHero.entity) + offsets.abilities);
+			if (ReadHandleVector(field, 48, abilityHandles))
+			{
+				int fallbackSlot = 0;
+				for (const auto &handle : abilityHandles)
+				{
+					CEntityIdentity *identity = nullptr;
+					auto *ability = EntityFromHandle(entitySystem, handle, &identity);
+					if (!ability)
+						continue;
+
+					const std::string abilityName = EntityName(ability, identity);
+					const auto *data = FindDamageEntry(abilityName);
+					if (!data || !data->IsUsableDamage() ||
+						(!data->unitTarget && !data->noTarget && !data->pointTarget))
+						continue;
+
+					const int level = ReadField<int>(ability, offsets.abilityLevel, 0);
+					if (level <= 0)
+						continue;
+
+					if (offsets.hasAbilityActivated && !ReadField<bool>(ability, offsets.abilityActivated, true))
+						continue;
+
+					const float cooldown = ReadField<float>(ability, offsets.abilityCooldown, 0.f);
+					if (std::isfinite(cooldown) && cooldown > 0.15f)
+						continue;
+
+					int manaCost = ReadField<int>(ability, offsets.abilityManaCost, data->ManaForLevel(level));
+					if (manaCost <= 0)
+						manaCost = data->ManaForLevel(level);
+					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
+						continue;
+
+					const float rawDamage = data->DamageForLevel(level);
+					if (rawDamage <= 0.f)
+						continue;
+
+					int preferredSlot = PreferredSlotForAbility(abilityName);
+					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
+						preferredSlot = fallbackSlot;
+					++fallbackSlot;
+					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
+						continue;
+
+					KillTool tool{};
+					tool.kind = KillToolKind::Ability;
+					tool.name = abilityName;
+					tool.rawDamage = rawDamage;
+					tool.castRange = data->noTarget ? 25000.f : ReadCastRange(ability, offsets, data->castRange);
+					tool.manaCost = manaCost;
+					tool.key = kAbilityKeys[preferredSlot];
+					tool.damageType = data->damageType;
+					tool.noTarget = data->noTarget;
+					tool.unitTarget = data->unitTarget;
+					tool.pointTarget = data->pointTarget;
+					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
+					tools.push_back(tool);
+				}
+			}
+		}
+
+		if (Settings::KillStealer::UseItems)
+		{
+			std::vector<CHandle> itemHandles;
+			if (ReadInventoryHandles(localHero.entity, offsets, itemHandles))
+			{
+				const int slotLimit = (std::min)(static_cast<int>(itemHandles.size()), static_cast<int>(kItemKeys.size()));
+				for (int slot = 0; slot < slotLimit; ++slot)
+				{
+					CEntityIdentity *identity = nullptr;
+					auto *item = EntityFromHandle(entitySystem, itemHandles[slot], &identity);
+					if (!item)
+						continue;
+
+					const std::string itemName = EntityName(item, identity);
+					const auto *data = FindDamageEntry(itemName);
+					if (!data || !data->IsUsableDamage() ||
+						(!data->unitTarget && !data->noTarget && !data->pointTarget))
+						continue;
+
+					const int level = (std::max)(1, ReadField<int>(item, offsets.abilityLevel, 1));
+					const float cooldown = ReadField<float>(item, offsets.abilityCooldown, 0.f);
+					if (std::isfinite(cooldown) && cooldown > 0.15f)
+						continue;
+
+					int manaCost = ReadField<int>(item, offsets.abilityManaCost, data->ManaForLevel(level));
+					if (manaCost <= 0)
+						manaCost = data->ManaForLevel(level);
+					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
+						continue;
+
+					const float rawDamage = data->DamageForLevel(level);
+					if (rawDamage <= 0.f)
+						continue;
+
+					KillTool tool{};
+					tool.kind = KillToolKind::Item;
+					tool.name = itemName;
+					tool.rawDamage = rawDamage;
+					tool.castRange = data->noTarget ? 25000.f : ReadCastRange(item, offsets, data->castRange);
+					tool.manaCost = manaCost;
+					tool.key = kItemKeys[slot];
+					tool.damageType = data->damageType;
+					tool.noTarget = data->noTarget;
+					tool.unitTarget = data->unitTarget;
+					tool.pointTarget = data->pointTarget;
+					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
+					tools.push_back(tool);
+				}
+			}
+		}
+
+		if (Settings::KillStealer::UseAutoAttack && localHero.attackDamage > 0.f && Settings::KillStealer::AttackKey > 0)
+		{
+			KillTool tool{};
+			tool.kind = KillToolKind::Attack;
+			tool.name = "auto_attack";
+			tool.rawDamage = localHero.attackDamage;
+			tool.castRange = localHero.attackRange + 75.f;
+			tool.key = static_cast<WORD>(Settings::KillStealer::AttackKey);
+			tool.damageType = AbilityDamageType::Physical;
+			tool.unitTarget = true;
+			tool.delayMs = 220u;
+			tools.push_back(tool);
+		}
+
+		return tools;
+	}
+
+	struct KillPlanEvaluation
+	{
+		size_t actionCount = 0;
+		float totalDamage = 0.f;
+		float totalDelay = 0.f;
+	};
+
+	auto BuildKillPlan(const HeroCandidate &localHero, const HeroCandidate &target, const std::vector<KillTool> &tools,
+					   uint32_t now, CKillStealer::KillPlanState &outPlan, KillPlanEvaluation &outEvaluation) -> bool
+	{
+		outPlan = {};
+		outEvaluation = {};
+
+		const float threshold = static_cast<float>(target.health) + Settings::KillStealer::HealthBuffer;
+		const float distance = Distance2D(localHero.origin, target.origin);
+
+		std::vector<size_t> usableIndices;
+		usableIndices.reserve(tools.size());
+		for (size_t index = 0; index < tools.size(); ++index)
+		{
+			const auto &tool = tools[index];
+			if (!tool.noTarget && distance > tool.castRange + 75.f)
+				continue;
+			usableIndices.push_back(index);
+		}
+
+		if (usableIndices.empty())
+			return false;
+		if (usableIndices.size() >= 31)
 			return false;
 
-		if (tool.noTarget)
-			return SendKeyPress(tool.key);
+		struct BestSubset
+		{
+			uint32_t mask = 0;
+			size_t actionCount = 0;
+			float totalDamage = 0.f;
+			float totalDelay = 0.f;
+		};
+
+		BestSubset best{};
+		bool found = false;
+		const uint32_t subsetLimit = 1u << static_cast<uint32_t>(usableIndices.size());
+		for (uint32_t mask = 1; mask < subsetLimit; ++mask)
+		{
+			float totalDamage = 0.f;
+			float totalDelay = 0.f;
+			size_t actionCount = 0;
+
+			for (size_t bit = 0; bit < usableIndices.size(); ++bit)
+			{
+				if (!(mask & (1u << static_cast<uint32_t>(bit))))
+					continue;
+
+				const auto &tool = tools[usableIndices[bit]];
+				totalDamage += EffectiveDamage(tool, localHero, target);
+				totalDelay += static_cast<float>(tool.delayMs);
+				++actionCount;
+			}
+
+			if (totalDamage < threshold)
+				continue;
+
+			const float currentOverkill = totalDamage - threshold;
+			const float bestOverkill = best.totalDamage - threshold;
+			const bool better =
+				!found ||
+				actionCount < best.actionCount ||
+				(actionCount == best.actionCount && currentOverkill < bestOverkill - 0.01f) ||
+				(actionCount == best.actionCount && std::abs(currentOverkill - bestOverkill) <= 0.01f &&
+				 totalDelay < best.totalDelay - 0.01f);
+
+			if (better)
+			{
+				best.mask = mask;
+				best.actionCount = actionCount;
+				best.totalDamage = totalDamage;
+				best.totalDelay = totalDelay;
+				found = true;
+			}
+		}
+
+		if (!found)
+			return false;
+
+		std::vector<size_t> selectedIndices;
+		for (size_t bit = 0; bit < usableIndices.size(); ++bit)
+		{
+			if (best.mask & (1u << static_cast<uint32_t>(bit)))
+				selectedIndices.push_back(usableIndices[bit]);
+		}
+
+		std::sort(selectedIndices.begin(), selectedIndices.end(), [&](size_t leftIndex, size_t rightIndex)
+		{
+			const float leftDamage = EffectiveDamage(tools[leftIndex], localHero, target);
+			const float rightDamage = EffectiveDamage(tools[rightIndex], localHero, target);
+			if (std::abs(leftDamage - rightDamage) > 0.01f)
+				return leftDamage > rightDamage;
+			if (tools[leftIndex].noTarget != tools[rightIndex].noTarget)
+				return tools[leftIndex].noTarget;
+			if (tools[leftIndex].delayMs != tools[rightIndex].delayMs)
+				return tools[leftIndex].delayMs < tools[rightIndex].delayMs;
+			return leftIndex < rightIndex;
+		});
+
+		outPlan.targetHandle = target.handle.m_Index;
+		outPlan.nextActionTick = now;
+		outPlan.expiresAt = now + 2500u;
+		outPlan.actionIndex = 0;
+		outPlan.actions.clear();
+		outPlan.actions.reserve(selectedIndices.size());
+		for (const size_t index : selectedIndices)
+			outPlan.actions.push_back(ToPlanAction(tools[index]));
+
+		outEvaluation.actionCount = best.actionCount;
+		outEvaluation.totalDamage = best.totalDamage;
+		outEvaluation.totalDelay = best.totalDelay;
+		return !outPlan.actions.empty();
+	}
+
+	auto FindHeroByHandle(const std::vector<HeroCandidate> &heroes, uint32_t handle) -> const HeroCandidate *
+	{
+		for (const auto &hero : heroes)
+		{
+			if (hero.handle.m_Index == handle)
+				return &hero;
+		}
+		return nullptr;
+	}
+
+	auto CastPlanAction(const CKillStealer::KillPlanAction &action, const HeroCandidate &target) -> bool
+	{
+		const HWND window = WindowReadyForInput();
+		if (!window || action.key == 0)
+			return false;
+
+		if (action.noTarget)
+			return SendKeyPress(static_cast<WORD>(action.key));
 
 		ImVec2 screen{};
-		Vector3 aimPoint = target.origin;
-		aimPoint.m_z += 80.f;
-		if (!Math::WorldToScreen(aimPoint, screen))
-		{
-			aimPoint = target.origin;
-			if (!Math::WorldToScreen(aimPoint, screen))
-				return false;
-		}
+		if (!ProjectTargetScreen(target.origin, screen))
+			return false;
 
 		POINT previous{};
 		if (!MoveCursorToClientPoint(window, screen, previous))
 			return false;
 
-		bool sent = false;
-		if (tool.kind == KillToolKind::Attack)
-		{
-			sent = SendKeyPress(tool.key) && SendLeftClick();
-		}
-		else
-		{
-			sent = SendKeyPress(tool.key);
-			if (sent && !Settings::KillStealer::QuickCast)
-				sent = SendLeftClick();
-		}
-
+		const bool needsClick = action.kind == CKillStealer::KillPlanAction::Kind::Attack || !Settings::KillStealer::QuickCast;
+		const bool sent = SendKeyPress(static_cast<WORD>(action.key)) && (!needsClick || SendLeftClick());
 		SetCursorPos(previous.x, previous.y);
 		return sent;
 	}
 
 	auto DrawMarkers(const HeroCandidate &localHero, const std::vector<HeroCandidate> &enemies,
-					 const std::vector<KillTool> &tools) -> void
+					 const std::vector<KillTool> &tools, uint32_t now) -> void
 	{
 		if (!Settings::KillStealer::DrawKillableMarkers || !ImGui::GetCurrentContext())
 			return;
@@ -1077,22 +1220,9 @@ namespace
 		auto *drawList = ImGui::GetForegroundDrawList();
 		for (const auto &enemy : enemies)
 		{
-			const float distance = Distance2D(localHero.origin, enemy.origin);
-			const KillTool *bestTool = nullptr;
-			float bestDamage = 0.f;
-			for (const auto &tool : tools)
-			{
-				if (!tool.noTarget && distance > tool.castRange + 75.f)
-					continue;
-				const float effective = EffectiveDamage(tool, localHero, enemy);
-				if (effective > bestDamage)
-				{
-					bestDamage = effective;
-					bestTool = &tool;
-				}
-			}
-
-			if (!bestTool || static_cast<float>(enemy.health) > bestDamage + Settings::KillStealer::HealthBuffer)
+			CKillStealer::KillPlanState plan{};
+			[[maybe_unused]] KillPlanEvaluation evaluation{};
+			if (!BuildKillPlan(localHero, enemy, tools, now, plan, evaluation))
 				continue;
 
 			Vector3 marker = enemy.origin;
@@ -1103,7 +1233,7 @@ namespace
 
 			drawList->AddCircleFilled(screen, 13.f, IM_COL32(218, 51, 62, 215), 24);
 			drawList->AddCircle(screen, 16.f, IM_COL32(255, 235, 210, 235), 28, 2.f);
-			const char *label = bestTool->kind == KillToolKind::Attack ? "AA" : "KS";
+			const char *label = plan.actions.size() == 1 && plan.actions.front().kind == CKillStealer::KillPlanAction::Kind::Attack ? "AA" : "KS";
 			const ImVec2 size = ImGui::CalcTextSize(label);
 			drawList->AddText(ImVec2(screen.x - size.x * 0.5f, screen.y - size.y * 0.5f),
 							  IM_COL32(255, 255, 255, 255), label);
@@ -1111,7 +1241,7 @@ namespace
 	}
 
 	auto LogDebugSnapshot(const HeroCandidate *localHero, const std::vector<HeroCandidate> &enemies,
-						  const std::vector<KillTool> &tools, size_t cachedHandles, int scannedEntities,
+						  const std::vector<KillTool> &tools, uint32_t now, size_t cachedHandles, int scannedEntities,
 						  int scannedChunks, int scannedControllers, int scannedDirectHeroes) -> void
 	{
 		if (!Settings::KillStealer::DrawDebugInfo)
@@ -1145,26 +1275,41 @@ namespace
 			return;
 		}
 
-		float bestDamage = 0.f;
-		for (const auto &tool : tools)
-			bestDamage = (std::max)(bestDamage, EffectiveDamage(tool, *localHero, *target));
-
-		DEV_LOG("[kill-stealer] debug target=%s hp=%d/%d team=%u dist=%.0f armor=%.1f magic_resist=%.2f local=%s mana=%.0f spell_amp=%.2f tools=%zu best_damage=%.1f lethal=%d cached=%zu scanned=%d chunks=%d controllers=%d direct_heroes=%d\n",
-				target->name.c_str(), target->health, target->maxHealth, target->team, nearest,
-				target->armor, target->magicResistance, localHero->name.c_str(), localHero->mana,
-				localHero->spellAmp, tools.size(), bestDamage,
-				static_cast<float>(target->health) <= bestDamage + Settings::KillStealer::HealthBuffer ? 1 : 0,
-				cachedHandles, scannedEntities, scannedChunks, scannedControllers, scannedDirectHeroes);
-
+		float bestSingleDamage = 0.f;
 		for (const auto &tool : tools)
 		{
-			const float effective = EffectiveDamage(tool, *localHero, *target);
-			DEV_LOG("[kill-stealer] debug tool=%s kind=%d key=%c raw=%.1f effective=%.1f range=%.0f mana=%d lethal=%d\n",
-					tool.name.c_str(), static_cast<int>(tool.kind), tool.key ? static_cast<char>(tool.key) : '?',
-					tool.rawDamage, effective, tool.castRange, tool.manaCost,
-					static_cast<float>(target->health) <= effective + Settings::KillStealer::HealthBuffer ? 1 : 0);
+			if (!tool.noTarget && nearest > tool.castRange + 75.f)
+				continue;
+			bestSingleDamage = (std::max)(bestSingleDamage, EffectiveDamage(tool, *localHero, *target));
+		}
+
+		CKillStealer::KillPlanState plan{};
+		KillPlanEvaluation evaluation{};
+		const bool lethal = BuildKillPlan(*localHero, *target, tools, now, plan, evaluation);
+
+		DEV_LOG("[kill-stealer] debug target=%s hp=%d/%d team=%u dist=%.0f armor=%.1f magic_resist=%.2f local=%s mana=%.0f spell_amp=%.2f tools=%zu best_single=%.1f plan_actions=%zu plan_damage=%.1f plan_delay=%.0f lethal=%d cached=%zu scanned=%d chunks=%d controllers=%d direct_heroes=%d\n",
+				target->name.c_str(), target->health, target->maxHealth, target->team, nearest,
+				target->armor, target->magicResistance, localHero->name.c_str(), localHero->mana,
+				localHero->spellAmp, tools.size(), bestSingleDamage, evaluation.actionCount,
+				evaluation.totalDamage, evaluation.totalDelay, lethal ? 1 : 0,
+				cachedHandles, scannedEntities, scannedChunks, scannedControllers, scannedDirectHeroes);
+
+		if (lethal)
+		{
+			for (const auto &action : plan.actions)
+			{
+				DEV_LOG("[kill-stealer] debug plan-step name=%s kind=%d key=%c click=%d target=%d\n",
+						action.name.c_str(), static_cast<int>(action.kind),
+						action.key ? static_cast<char>(action.key) : '?', action.noTarget ? 0 : 1,
+						action.pointTarget || action.unitTarget ? 1 : 0);
+			}
 		}
 	}
+}
+
+auto CKillStealer::CancelPlan() -> void
+{
+	m_Plan = {};
 }
 
 auto CKillStealer::OnRender() -> void
@@ -1173,7 +1318,7 @@ auto CKillStealer::OnRender() -> void
 
 	if (!Settings::KillStealer::Enable)
 	{
-		m_LastTargetHandle = INVALID_EHANDLE_INDEX;
+		CancelPlan();
 		m_HeroHandles.clear();
 		m_NextHeroScanTick = 0;
 		m_NextHeroScanIndex = 0;
@@ -1198,7 +1343,10 @@ auto CKillStealer::OnRender() -> void
 	auto &offsets = ResolveOffsets();
 	auto *entitySystem = SDK::Interfaces::GameEntitySystem();
 	if (!entitySystem || !offsets.resolved)
+	{
+		CancelPlan();
 		return;
+	}
 
 	if (now >= m_NextHeroScanTick || m_HeroHandles.empty())
 	{
@@ -1213,9 +1361,10 @@ auto CKillStealer::OnRender() -> void
 
 	if (m_HeroHandles.empty())
 	{
+		CancelPlan();
 		if (now - m_LastDebugLogTick >= 3000)
 		{
-			LogDebugSnapshot(nullptr, {}, {}, m_HeroHandles.size(), m_LastScanEntities,
+			LogDebugSnapshot(nullptr, {}, {}, now, m_HeroHandles.size(), m_LastScanEntities,
 							 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
 			m_LastDebugLogTick = now;
 		}
@@ -1228,12 +1377,14 @@ auto CKillStealer::OnRender() -> void
 		m_HeroHandles.clear();
 		m_NextHeroScanIndex = 0;
 	}
+
 	HeroCandidate localHero{};
 	if (!ResolveLocalHero(entitySystem, offsets, heroes, localHero))
 	{
+		CancelPlan();
 		if (now - m_LastDebugLogTick >= 3000)
 		{
-			LogDebugSnapshot(nullptr, heroes, {}, m_HeroHandles.size(), m_LastScanEntities,
+			LogDebugSnapshot(nullptr, heroes, {}, now, m_HeroHandles.size(), m_LastScanEntities,
 							 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
 			m_LastDebugLogTick = now;
 		}
@@ -1251,45 +1402,117 @@ auto CKillStealer::OnRender() -> void
 
 	if (enemies.empty())
 	{
+		CancelPlan();
 		if (now - m_LastDebugLogTick >= 3000)
 		{
-			LogDebugSnapshot(&localHero, enemies, {}, m_HeroHandles.size(), m_LastScanEntities,
+			LogDebugSnapshot(&localHero, enemies, {}, now, m_HeroHandles.size(), m_LastScanEntities,
 							 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
 			m_LastDebugLogTick = now;
 		}
-		m_LastTargetHandle = INVALID_EHANDLE_INDEX;
 		return;
 	}
 
 	const auto tools = CollectTools(entitySystem, localHero, offsets);
-	DrawMarkers(localHero, enemies, tools);
+	DrawMarkers(localHero, enemies, tools, now);
 
 	if (now - m_LastDebugLogTick >= 3000)
 	{
-		LogDebugSnapshot(&localHero, enemies, tools, m_HeroHandles.size(), m_LastScanEntities,
+		LogDebugSnapshot(&localHero, enemies, tools, now, m_HeroHandles.size(), m_LastScanEntities,
 						 m_LastScanChunks, m_LastScanControllers, m_LastScanDirectHeroes);
 		m_LastDebugLogTick = now;
 	}
 
-	const KillDecision decision = FindKillDecision(localHero, enemies, tools);
-	if (!decision.target || !decision.tool)
+	auto advancePlan = [&](const std::vector<HeroCandidate> &enemyList) -> bool
 	{
-		m_LastTargetHandle = INVALID_EHANDLE_INDEX;
+		if (!m_Plan.active)
+			return false;
+
+		if (now >= m_Plan.expiresAt)
+		{
+			CancelPlan();
+			return false;
+		}
+
+		const auto *target = FindHeroByHandle(enemyList, m_Plan.targetHandle);
+		if (!target || target->health <= 0)
+		{
+			CancelPlan();
+			return false;
+		}
+
+		if (m_Plan.actionIndex >= m_Plan.actions.size())
+		{
+			CancelPlan();
+			return false;
+		}
+
+		if (now < m_Plan.nextActionTick)
+			return true;
+
+		const auto &action = m_Plan.actions[m_Plan.actionIndex];
+		if (!CastPlanAction(action, *target))
+		{
+			CancelPlan();
+			return false;
+		}
+
+		++m_Plan.actionIndex;
+		if (m_Plan.actionIndex >= m_Plan.actions.size())
+		{
+			CancelPlan();
+			return false;
+		}
+
+		m_Plan.nextActionTick = now + action.delayMs;
+		return true;
+	};
+
+	if (advancePlan(enemies))
+		return;
+
+	CKillStealer::KillPlanState bestPlan{};
+	KillPlanEvaluation bestEvaluation{};
+	const HeroCandidate *bestTarget = nullptr;
+	float bestDistance = 999999.f;
+	float bestOverkill = 999999.f;
+
+	for (const auto &enemy : enemies)
+	{
+		CKillStealer::KillPlanState candidatePlan{};
+		KillPlanEvaluation candidateEvaluation{};
+		if (!BuildKillPlan(localHero, enemy, tools, now, candidatePlan, candidateEvaluation))
+			continue;
+
+		const float distance = Distance2D(localHero.origin, enemy.origin);
+		const float overkill = candidateEvaluation.totalDamage - (static_cast<float>(enemy.health) + Settings::KillStealer::HealthBuffer);
+		const bool better =
+			!bestTarget ||
+			candidateEvaluation.actionCount < bestEvaluation.actionCount ||
+			(candidateEvaluation.actionCount == bestEvaluation.actionCount && overkill < bestOverkill - 0.01f) ||
+			(candidateEvaluation.actionCount == bestEvaluation.actionCount && std::abs(overkill - bestOverkill) <= 0.01f &&
+			 candidateEvaluation.totalDelay < bestEvaluation.totalDelay - 0.01f) ||
+			(candidateEvaluation.actionCount == bestEvaluation.actionCount && std::abs(overkill - bestOverkill) <= 0.01f &&
+			 std::abs(candidateEvaluation.totalDelay - bestEvaluation.totalDelay) <= 0.01f && distance < bestDistance - 0.01f);
+
+		if (better)
+		{
+			bestTarget = &enemy;
+			bestPlan = candidatePlan;
+			bestEvaluation = candidateEvaluation;
+			bestDistance = distance;
+			bestOverkill = overkill;
+		}
+	}
+
+	if (!bestTarget)
+	{
+		CancelPlan();
 		return;
 	}
 
-	const bool sameTarget = decision.target->handle.m_Index == m_LastTargetHandle;
-	const uint32_t delay = sameTarget ? 850u : 250u;
-	if (now - m_LastCastTick < delay)
-		return;
-
-	if (CastTool(*decision.tool, *decision.target))
-	{
-		DEV_LOG("[kill-stealer] cast target=%s hp=%d tool=%s raw=%.1f effective=%.1f key=%c\n",
-				decision.target->name.c_str(), decision.target->health,
-				decision.tool->name.c_str(), decision.tool->rawDamage,
-				decision.effectiveDamage, decision.tool->key ? static_cast<char>(decision.tool->key) : '?');
-		m_LastTargetHandle = decision.target->handle.m_Index;
-		m_LastCastTick = now;
-	}
+	m_Plan = bestPlan;
+	m_Plan.active = true;
+	m_Plan.nextActionTick = now;
+	if (!advancePlan(enemies))
+		CancelPlan();
 }
