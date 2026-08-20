@@ -1002,6 +1002,60 @@ namespace
 		return Math::WorldToScreen(origin, out);
 	}
 
+	auto ProjectStarTargetScreen(const Vector3 &origin, ImVec2 &out) -> bool
+	{
+		Vector3 markerOrigin = origin;
+		markerOrigin.m_z += 140.f;
+		if (Math::WorldToScreen(markerOrigin, out))
+			return true;
+		return Math::WorldToScreen(origin, out);
+	}
+
+	auto WindowReadyForInput() -> HWND
+	{
+		auto *gui = GetAndromedaGUI();
+		const HWND window = gui ? gui->m_hCS2Window : nullptr;
+		if (!window || GetForegroundWindow() != window || gui->IsVisible())
+			return nullptr;
+		return window;
+	}
+
+	auto MoveCursorToClientPoint(HWND window, const ImVec2 &screen, POINT &previousOut) -> bool
+	{
+		RECT client{};
+		if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0)
+			return false;
+
+		const int x = std::clamp(static_cast<int>(std::lround(screen.x)), 0, static_cast<int>(client.right) - 1);
+		const int y = std::clamp(static_cast<int>(std::lround(screen.y)), 0, static_cast<int>(client.bottom) - 1);
+		POINT target{x, y};
+		if (!ClientToScreen(window, &target))
+			return false;
+
+		GetCursorPos(&previousOut);
+		return SetCursorPos(target.x, target.y) != FALSE;
+	}
+
+	auto SendKeyPress(WORD key) -> bool
+	{
+		INPUT inputs[2]{};
+		inputs[0].type = INPUT_KEYBOARD;
+		inputs[0].ki.wVk = key;
+		inputs[1] = inputs[0];
+		inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+		return SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT)) == std::size(inputs);
+	}
+
+	auto SendLeftClick() -> bool
+	{
+		INPUT inputs[2]{};
+		inputs[0].type = INPUT_MOUSE;
+		inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+		inputs[1].type = INPUT_MOUSE;
+		inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+		return SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT)) == std::size(inputs);
+	}
+
 	auto DrawScreenRangeFallback(ImDrawList *drawList, const LocalHeroInfo &hero) -> void
 	{
 		ImVec2 center{};
@@ -1208,9 +1262,7 @@ auto CLastHitAssistant::OnRender() -> void
 	for (const auto &candidate : candidates)
 	{
 		ImVec2 screen{};
-		Vector3 markerOrigin = candidate.origin;
-		markerOrigin.m_z += 140.f;
-		if (!Math::WorldToScreen(markerOrigin, screen) && !Math::WorldToScreen(candidate.origin, screen))
+		if (!ProjectStarTargetScreen(candidate.origin, screen))
 		{
 			++candidateOffscreen;
 			continue;
@@ -1242,52 +1294,42 @@ auto CLastHitAssistant::OnRender() -> void
 		static ULONGLONG lastAutoAttackTick = 0;
 		const ULONGLONG now = GetTickCount64();
 
-		if (now - lastAutoAttackTick >= 500)
+		const HWND window = WindowReadyForInput();
+		if (window && now - lastAutoAttackTick >= 500)
 		{
-			// Find the first killable candidate (starred creep) - use the first one in the sorted list
-			// Candidates are sorted by: killable first, then by urgency (lowest health/lethalHealth first)
-			auto target = candidates[0];
-			// Ensure the target has the star marker (health <= lethalHealth)
-			// If not, fall back to finding the first killable candidate with the star marker
+			// Candidates are already sorted with killable creeps first.
+			// Pick the first candidate and keep the click aligned with the star marker.
+			CreepCandidate target = candidates[0];
 			if (static_cast<float>(target.health) > target.lethalHealth)
 			{
 				for (const auto &c : candidates)
 				{
 					if (static_cast<float>(c.health) <= c.lethalHealth)
 					{
+						// Rebind to the first truly starred target.
 						target = c;
 						break;
 					}
 				}
 			}
 
-			// World-to-screen the target position for aim
+			// Project the same point used by the star overlay.
 			ImVec2 screenPos{};
-			Vector3 aimPoint = target.origin;
-			aimPoint.m_z += 80.f; // Aim at head level
-
-			if (Math::WorldToScreen(aimPoint, screenPos))
+			if (ProjectStarTargetScreen(target.origin, screenPos))
 			{
-				// Move cursor to the target position
+				// Move cursor to the target position in client space.
 				POINT prevPos{};
-				GetCursorPos(&prevPos);
-				SetCursorPos(static_cast<int>(screenPos.x), static_cast<int>(screenPos.y));
+				if (!MoveCursorToClientPoint(window, screenPos, prevPos))
+				{
+					lastAutoAttackTick = now;
+					return;
+				}
 
 				// Send attack key press ('A')
-				INPUT inputs[2]{};
-				inputs[0].type = INPUT_KEYBOARD;
-				inputs[0].ki.wVk = 'A';
-				inputs[1] = inputs[0];
-				inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-				SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT));
+				SendKeyPress('A');
 
 				// Send left click
-				INPUT clickInputs[2]{};
-				clickInputs[0].type = INPUT_MOUSE;
-				clickInputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-				clickInputs[1].type = INPUT_MOUSE;
-				clickInputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-				SendInput(static_cast<UINT>(std::size(clickInputs)), clickInputs, sizeof(INPUT));
+				SendLeftClick();
 
 				// Restore cursor position
 				SetCursorPos(prevPos.x, prevPos.y);
