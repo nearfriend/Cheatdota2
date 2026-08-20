@@ -23,7 +23,6 @@ namespace
 {
 	constexpr ULONGLONG kScanIntervalMs = 100;
 	constexpr int kMaxScannedEntityIndex = MAX_TOTAL_ENTITIES - 1;
-	constexpr float kMinimumVisualLeadHp = 120.f;
 	constexpr size_t kMaxLoggedEnemyHp = 24;
 
 	struct LastHitOffsets
@@ -333,10 +332,9 @@ namespace
 			   EntityTextContains(entity, "BaseNPC");
 	}
 
-	auto DetectRangeForHero(float attackRange) -> float
+	auto DetectRangeForHero(float) -> float
 	{
-		const float configured = std::isfinite(Settings::LastHitAssistant::DetectRange) ? Settings::LastHitAssistant::DetectRange : 950.f;
-		return std::clamp((std::max)(attackRange, configured), 150.f, 1600.f);
+		return 700.f;
 	}
 
 	auto LastHitAssistantActive() -> bool
@@ -764,11 +762,11 @@ namespace
 		lastLogTick = now;
 
 		const float starThreshold = hero.entity ? static_cast<float>(hero.attackDamage) : 0.f;
-		DEV_LOG("[last-hit] %s local=%d fallback=%d team=%u damage=%d threshold=%.0f attack=%.0f detect=%.0f origin=(%.0f,%.0f,%.0f) scanned=%d lane=%d enemy=%d enemy_origin=%d enemy_in_range=%d enemy_killable=%d in_range=%d lethal=%d candidates=%d nearest=%.0f hp=%d/%d team=%u\n",
+		DEV_LOG("[last-hit] %s local=%d fallback=%d team=%u damage=%d threshold=%.0f attack=%.0f detect=%.0f origin=(%.0f,%.0f,%.0f) scanned=%d lane=%d allied=%d enemy=%d enemy_origin=%d enemy_in_range=%d enemy_killable=%d in_range=%d lethal=%d candidates=%d nearest=%.0f hp=%d/%d team=%u\n",
 				reason ? reason : "debug", hero.entity ? 1 : 0, hero.screenCenterFallback ? 1 : 0,
 				static_cast<unsigned int>(hero.team), hero.attackDamage, starThreshold, hero.attackRange, hero.detectRange,
 				hero.origin.m_x, hero.origin.m_y, hero.origin.m_z, stats.scanned, stats.laneLike,
-				stats.enemyLane, stats.enemyWithOrigin, stats.enemyInRange, stats.enemyKillable,
+				stats.alliedLane, stats.enemyLane, stats.enemyWithOrigin, stats.enemyInRange, stats.enemyKillable,
 				stats.inRange, stats.lethal, stats.candidates, stats.nearestDistance,
 				stats.nearestHealth, stats.nearestMaxHealth, static_cast<unsigned int>(stats.nearestTeam));
 
@@ -838,17 +836,17 @@ namespace
 					continue;
 				++stats.laneLike;
 
-				if (team == hero.team)
-				{
+				const bool allied = team == hero.team;
+				if (allied)
 					++stats.alliedLane;
-					continue;
-				}
-				++stats.enemyLane;
+				else
+					++stats.enemyLane;
 
 				Vector3 origin{};
 				if (!ReadOrigin(entity, offsets, origin))
 					continue;
-				++stats.enemyWithOrigin;
+				if (!allied)
+					++stats.enemyWithOrigin;
 
 				const float dx = origin.m_x - hero.origin.m_x;
 				const float dy = origin.m_y - hero.origin.m_y;
@@ -869,19 +867,22 @@ namespace
 				snapshot.team = team;
 				snapshot.inRange = distanceSq <= scanRangeSq;
 				snapshot.killable = static_cast<float>(health) <= lethalHealth;
-				enemyCreeps.push_back(snapshot);
+				if (!allied)
+					enemyCreeps.push_back(snapshot);
 
 				if (!snapshot.inRange)
 					continue;
-				++stats.enemyInRange;
+				if (!allied)
+					++stats.enemyInRange;
 				++stats.inRange;
 
-				if (!snapshot.killable)
+				if (static_cast<float>(health) > lethalHealth)
 					continue;
-				++stats.enemyKillable;
+				if (!allied)
+					++stats.enemyKillable;
 				++stats.lethal;
 
-				candidates.push_back({origin, health, maxHealth, lethalHealth, false, true});
+				candidates.push_back({origin, health, maxHealth, lethalHealth, allied, true});
 				++stats.candidates;
 			}
 		}
@@ -890,6 +891,8 @@ namespace
 				  {
 			if ( left.killable != right.killable )
 				return left.killable;
+			if (left.deny != right.deny)
+				return !left.deny;
 			const float leftUrgency = static_cast<float>( left.health ) / (std::max)( left.lethalHealth , 1.f );
 			const float rightUrgency = static_cast<float>( right.health ) / (std::max)( right.lethalHealth , 1.f );
 			return leftUrgency < rightUrgency; });
@@ -1007,6 +1010,15 @@ namespace
 		Vector3 markerOrigin = origin;
 		markerOrigin.m_z += 140.f;
 		if (Math::WorldToScreen(markerOrigin, out))
+			return true;
+		return Math::WorldToScreen(origin, out);
+	}
+
+	auto ProjectClickTargetScreen(const Vector3 &origin, ImVec2 &out) -> bool
+	{
+		Vector3 clickOrigin = origin;
+		clickOrigin.m_z += 80.f;
+		if (Math::WorldToScreen(clickOrigin, out))
 			return true;
 		return Math::WorldToScreen(origin, out);
 	}
@@ -1134,8 +1146,8 @@ auto CLastHitAssistant::OnRender() -> void
 	// Universal lane-creep overlay (no range circle).
 	// Draws star+HP for every low-HP lane creep on-screen, including allies.
 	//
-	// Low-HP condition matches the last-hit assistant lethal threshold:
-	// health <= (localHero.attackDamage + timingBuffer)
+	// Low-HP condition matches the one-attack threshold:
+	// health <= localHero.attackDamage
 	// ---------------------------------------------------------------
 	{
 		const float lethalHealth = static_cast<float>(hero.attackDamage);
@@ -1230,8 +1242,9 @@ auto CLastHitAssistant::OnRender() -> void
 					continue;
 				}
 
-				const ImU32 fillColor = IM_COL32(255, 221, 32, 245);
-				const ImU32 outlineColor = IM_COL32(255, 246, 154, 255);
+				const bool allied = team == hero.team;
+				const ImU32 fillColor = allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
+				const ImU32 outlineColor = allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
 				DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
 				++drawnUniversal;
 			}
@@ -1269,8 +1282,10 @@ auto CLastHitAssistant::OnRender() -> void
 		}
 		++candidateProjected;
 
-		DrawStarMarker(drawList, screen, 9.f, IM_COL32(255, 221, 32, 245),
-					   IM_COL32(255, 246, 154, 255));
+		const bool allied = candidate.deny;
+		const ImU32 fillColor = allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
+		const ImU32 outlineColor = allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
+		DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
 	}
 
 	// #region agent log
@@ -1313,9 +1328,9 @@ auto CLastHitAssistant::OnRender() -> void
 				}
 			}
 
-			// Project the same point used by the star overlay.
+			// Click the creep body, not the star anchor.
 			ImVec2 screenPos{};
-			if (ProjectStarTargetScreen(target.origin, screenPos))
+			if (ProjectClickTargetScreen(target.origin, screenPos))
 			{
 				// Move cursor to the target position in client space.
 				POINT prevPos{};

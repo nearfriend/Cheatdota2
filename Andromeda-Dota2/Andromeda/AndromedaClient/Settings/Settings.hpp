@@ -59,8 +59,6 @@ namespace Settings
 	{
 		inline bool Enable = false;
 		inline bool EnableAutoAttack = true;
-		inline float HealthBuffer = 120.f;
-		inline float DetectRange = 950.f; // Sniper-style max lane scan range.
 	}
 	namespace Heroes
 	{

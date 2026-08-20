@@ -1066,14 +1066,10 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			else if ( lastHitPage )
 			{
 				DrawSwitchRow( "Enable" , "##lastHitEnable" , Settings::LastHitAssistant::Enable , ReferenceIcon::Info );
-				ImGui::BeginDisabled( !Settings::LastHitAssistant::Enable );
-				DrawSliderRow( "Health Buffer" , "##lastHitHealthBuffer" , Settings::LastHitAssistant::HealthBuffer , 0.f , 250.f , "%.0f hp" , ReferenceIcon::Warning );
-				DrawSliderRow( "Detect Range" , "##lastHitDetectRange" , Settings::LastHitAssistant::DetectRange , 150.f , 1600.f , "%.0f" , ReferenceIcon::Radius );
-				ImGui::EndDisabled();
 				ImGui::Spacing();
 				ImGui::TextDisabled( "When enabled, Last Hit Helper is always active." );
-				ImGui::TextDisabled( "The circle shows enemy creep scan range around your hero." );
-				ImGui::TextDisabled( "Gold stars mark enemy creeps killable by one attack. Visual-only, no input is sent." );
+				ImGui::TextDisabled( "The circle shows a fixed 700 range around your hero." );
+				ImGui::TextDisabled( "Gold stars mark one-attack enemy last hits, and red stars mark one-attack allied denies." );
 			}
 			else if ( cameraPage )
 			{
