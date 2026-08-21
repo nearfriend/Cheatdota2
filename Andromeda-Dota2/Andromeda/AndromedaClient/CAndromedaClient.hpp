@@ -9,6 +9,7 @@
 #include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
 #include <AndromedaClient/Features/CKillStealer.hpp>
 #include <AndromedaClient/Features/CLastHitAssistant.hpp>
+#include <AndromedaClient/Features/CAutoCombo.hpp>
 
 #include <array>
 #include <atomic>
@@ -46,6 +47,8 @@ public:
 	auto UnregisterFogController( CEntityInstance* pEntity ) -> void;
 	CMeepoController& GetMeepoController() { return m_MeepoController; }
 	const CMeepoController& GetMeepoController() const { return m_MeepoController; }
+	CInvokerController& GetInvokerController() { return m_InvokerController; }
+	const CInvokerController& GetInvokerController() const { return m_InvokerController; }
 
 private:
 	auto ResolveFogOffsets() -> void;
@@ -108,11 +111,16 @@ private:
 	int m_FogScanCursor = 0;
 	ULONGLONG m_NextFogRescanTick = 0;
 
+public:
+	CAutoCombo& GetAutoCombo() { return m_AutoCombo; }
+	const CAutoCombo& GetAutoCombo() const { return m_AutoCombo; }
+
 private:
 	CKillStealer m_KillStealer;
 	CLastHitAssistant m_LastHitAssistant;
 	CInvokerController m_InvokerController;
 	CMeepoController m_MeepoController;
+	CAutoCombo m_AutoCombo;
 };
 
 auto GetAndromedaClient() -> CAndromedaClient*;

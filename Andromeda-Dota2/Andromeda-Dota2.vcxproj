@@ -164,6 +164,7 @@
     <ClCompile Include="Andromeda\AndromedaClient\Data\AbilityDamageData.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Features\CKillStealer.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.cpp" />
+    <ClCompile Include="Andromeda\AndromedaClient\Features\CAutoCombo.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Heroes\Invoker\CInvokerController.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Heroes\Meepo\CMeepoController.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.cpp" />
@@ -288,6 +289,7 @@
     <ClInclude Include="Andromeda\AndromedaClient\Data\AbilityDamageData.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Features\CKillStealer.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.hpp" />
+    <ClInclude Include="Andromeda\AndromedaClient\Features\CAutoCombo.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Fonts\CFont.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Fonts\CFontManager.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\GUI\CAndromedaMenu.hpp" />

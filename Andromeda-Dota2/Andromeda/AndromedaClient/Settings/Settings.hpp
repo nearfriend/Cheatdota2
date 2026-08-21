@@ -60,6 +60,19 @@ namespace Settings
 		inline bool Enable = false;
 		inline bool EnableAutoAttack = true;
 	}
+	namespace AutoCombo
+	{
+		// Generic, hero-agnostic burst combo (see CAutoCombo.cpp): fires every
+		// off-cooldown, affordable damage ability/item at TargetEntIndex on ComboKey.
+		inline bool Enable = false;
+		inline bool UseAbilities = true;
+		inline bool UseItems = true;
+		inline bool UseAutoAttack = false;
+		inline bool QuickCast = true;
+		inline int ComboKey = 0;
+		inline int TargetEntIndex = -1;
+		inline int AttackKey = 'A';
+	}
 	namespace Heroes
 	{
 		namespace Meepo

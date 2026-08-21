@@ -4044,6 +4044,7 @@ auto CAndromedaClient::OnRender() -> void
 
 	m_KillStealer.OnRender();
 	m_LastHitAssistant.OnRender();
+	m_AutoCombo.OnRender();
 
 	DrawHeroVitalsOverlay();
 	DrawHeroSidePanels();

@@ -1567,7 +1567,146 @@ auto CAndromedaMenu::OnRenderLegacyMenu() -> void
 				ImGui::Separator();
 				ImGui::Text( "Coming soon: detailed Meepo controls and automation." );
 
-				ImGui::Text( "Coming soon: detailed Meepo controls and automation." );
+				ImGui::Separator();
+				if ( headerFont ) ImGui::PushFont( headerFont );
+				ImGui::Text( "Invoker" );
+				if ( headerFont ) ImGui::PopFont();
+
+				auto* invokerLuaMgr = GetLuaManager();
+				std::string invokerLuaStatus = invokerLuaMgr ? invokerLuaMgr->GetStatus( "invoker" ) : "Lua disabled";
+				const bool invokerLuaOk = invokerLuaMgr && invokerLuaStatus.rfind( "Loaded" , 0 ) == 0;
+				ImVec4 invokerLuaCol = invokerLuaOk ? okCol : warnCol;
+
+				if ( ImGui::Button( "Reload Lua##invoker" ) && invokerLuaMgr )
+					invokerLuaMgr->ReloadHero( "invoker" );
+				ImGui::SameLine();
+				ImGui::TextColored( invokerLuaCol , "Lua: %s", invokerLuaStatus.c_str() );
+
+				ImGui::Text( "Combo key" );
+				ImGui::SameLine();
+				static bool capturingComboInvoker = false;
+				if ( ImGui::Button( capturingComboInvoker ? "Press key...##invoker" : "Bind combo##invoker" ) )
+					capturingComboInvoker = true;
+
+				ImGui::SameLine();
+				if ( ImGui::Button( "Clear##comboInvoker" ) )
+				{
+					Settings::Heroes::Invoker::ComboKey = 0;
+					capturingComboInvoker = false;
+				}
+
+				ImGui::SameLine();
+				ImGui::Text( "Current: %s", VkToName( Settings::Heroes::Invoker::ComboKey ).c_str() );
+				ImGui::SameLine();
+				ImGui::TextDisabled( "(fires on_combo in Lua)" );
+
+				if ( capturingComboInvoker )
+				{
+					for ( int vk = 1; vk <= 255; ++vk )
+					{
+						if ( GetAsyncKeyState( vk ) & 0x8000 )
+						{
+							Settings::Heroes::Invoker::ComboKey = vk;
+							capturingComboInvoker = false;
+							break;
+						}
+					}
+				}
+
+				ImGui::Text( "Target entindex" );
+				ImGui::SameLine();
+				static int targetInputInvoker = -1;
+				if ( targetInputInvoker < 0 )
+					targetInputInvoker = Settings::Heroes::Invoker::TargetEntIndex;
+				ImGui::SetNextItemWidth( 120.f );
+				if ( ImGui::InputInt( "##invoker.target" , &targetInputInvoker ) )
+				{
+					Settings::Heroes::Invoker::TargetEntIndex = targetInputInvoker;
+					if ( invokerLuaMgr )
+						invokerLuaMgr->SetComboTarget( "invoker" , targetInputInvoker );
+				}
+				ImGui::SameLine();
+				ImGui::TextDisabled( "Use entindex from ESP/console" );
+
+				static const char* invokerSpellNames[] =
+				{
+					"Cold Snap" , "Ghost Walk" , "Ice Wall" , "EMP" , "Tornado" ,
+					"Alacrity" , "Sun Strike" , "Forge Spirit" , "Chaos Meteor" , "Deafening Blast"
+				};
+				ImGui::Text( "Combo spell" );
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth( 180.f );
+				ImGui::Combo( "##invoker.comboSpell" , &Settings::Heroes::Invoker::ComboSpell , invokerSpellNames , IM_ARRAYSIZE( invokerSpellNames ) );
+				ImGui::SameLine();
+				ImGui::TextDisabled( "Cast on ComboKey via orb sequence + Invoke" );
+
+				if ( auto* pClient = GetAndromedaClient() )
+				{
+					const auto& invokerController = pClient->GetInvokerController();
+					ImGui::Text( "Status: %s", invokerController.GetComboStatus().c_str() );
+				}
+
+				ImGui::Separator();
+				if ( headerFont ) ImGui::PushFont( headerFont );
+				ImGui::Text( "Auto Combo (all heroes)" );
+				if ( headerFont ) ImGui::PopFont();
+				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable damage ability/item at the target." );
+				ImGui::TextDisabled( "Only abilities with known damage data are used - pure disables/buffs (Hex, stuns, etc.) are skipped." );
+
+				DrawSwitchRow( "Enable" , "##autoComboEnable" , Settings::AutoCombo::Enable , ReferenceIcon::Aggro );
+				ImGui::BeginDisabled( !Settings::AutoCombo::Enable );
+				DrawSwitchRow( "Use Abilities" , "##autoComboAbilities" , Settings::AutoCombo::UseAbilities , ReferenceIcon::Sparkles );
+				DrawSwitchRow( "Use Items" , "##autoComboItems" , Settings::AutoCombo::UseItems , ReferenceIcon::Items );
+				DrawSwitchRow( "Use Auto Attack" , "##autoComboAttack" , Settings::AutoCombo::UseAutoAttack , ReferenceIcon::Mouse );
+				DrawSwitchRow( "Quick Cast Mode" , "##autoComboQuickCast" , Settings::AutoCombo::QuickCast , ReferenceIcon::Speed );
+
+				ImGui::Text( "Combo key" );
+				ImGui::SameLine();
+				static bool capturingComboAuto = false;
+				if ( ImGui::Button( capturingComboAuto ? "Press key...##autoCombo" : "Bind combo##autoCombo" ) )
+					capturingComboAuto = true;
+
+				ImGui::SameLine();
+				if ( ImGui::Button( "Clear##comboAuto" ) )
+				{
+					Settings::AutoCombo::ComboKey = 0;
+					capturingComboAuto = false;
+				}
+
+				ImGui::SameLine();
+				ImGui::Text( "Current: %s", VkToName( Settings::AutoCombo::ComboKey ).c_str() );
+
+				if ( capturingComboAuto )
+				{
+					for ( int vk = 1; vk <= 255; ++vk )
+					{
+						if ( GetAsyncKeyState( vk ) & 0x8000 )
+						{
+							Settings::AutoCombo::ComboKey = vk;
+							capturingComboAuto = false;
+							break;
+						}
+					}
+				}
+
+				ImGui::Text( "Target entindex" );
+				ImGui::SameLine();
+				static int targetInputAutoCombo = -1;
+				if ( targetInputAutoCombo < 0 )
+					targetInputAutoCombo = Settings::AutoCombo::TargetEntIndex;
+				ImGui::SetNextItemWidth( 120.f );
+				if ( ImGui::InputInt( "##autoCombo.target" , &targetInputAutoCombo ) )
+					Settings::AutoCombo::TargetEntIndex = targetInputAutoCombo;
+				ImGui::SameLine();
+				ImGui::TextDisabled( "Use entindex from ESP/console" );
+
+				ImGui::EndDisabled();
+
+				if ( auto* pClient = GetAndromedaClient() )
+				{
+					const auto& autoCombo = pClient->GetAutoCombo();
+					ImGui::Text( "Status: %s", autoCombo.GetStatus().c_str() );
+				}
 
 
 			}
