@@ -116,6 +116,8 @@ namespace
 		ToolKind kind = ToolKind::Ability;
 		std::string name;
 		float castRange = 0.f;
+		float rawDamage = 0.f;
+		AbilityDamageType damageType = AbilityDamageType::Magical;
 		WORD key = 0;
 		bool noTarget = false;
 		bool unitTarget = false;
@@ -629,7 +631,8 @@ namespace
 					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
 						continue;
 
-					if (data->DamageForLevel(level) <= 0.f)
+					const float rawDamage = data->DamageForLevel(level);
+					if (rawDamage <= 0.f)
 						continue;
 
 					int preferredSlot = PreferredSlotForAbility(abilityName);
@@ -643,6 +646,8 @@ namespace
 					tool.kind = ToolKind::Ability;
 					tool.name = abilityName;
 					tool.castRange = data->noTarget ? 25000.f : ReadCastRange(ability, offsets, data->castRange);
+					tool.rawDamage = rawDamage;
+					tool.damageType = data->damageType;
 					tool.key = kAbilityKeys[preferredSlot];
 					tool.noTarget = data->noTarget;
 					tool.unitTarget = data->unitTarget;
@@ -687,13 +692,16 @@ namespace
 					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
 						continue;
 
-					if (!isEtherealBlade && data->DamageForLevel(level) <= 0.f)
+					const float rawDamage = isEtherealBlade ? 0.f : data->DamageForLevel(level);
+					if (!isEtherealBlade && rawDamage <= 0.f)
 						continue;
 
 					KillTool tool{};
 					tool.kind = ToolKind::Item;
 					tool.name = itemName;
 					tool.castRange = data->noTarget ? 25000.f : ReadCastRange(item, offsets, data->castRange);
+					tool.rawDamage = rawDamage;
+					tool.damageType = data->damageType;
 					tool.key = kItemKeys[slot];
 					tool.noTarget = data->noTarget;
 					tool.unitTarget = data->unitTarget;
@@ -711,6 +719,8 @@ namespace
 			tool.kind = ToolKind::Attack;
 			tool.name = "auto_attack";
 			tool.castRange = localHero.attackRange + 75.f;
+			tool.rawDamage = localHero.attackDamage;
+			tool.damageType = AbilityDamageType::Physical;
 			tool.key = static_cast<WORD>(Settings::KillStealer::AttackKey);
 			tool.unitTarget = true;
 			tool.delayMs = 220u;
@@ -728,15 +738,13 @@ namespace
 
 	// Ethereal Blade doubles the magic damage its target takes for its
 	// duration; `magicAmplified` is true when the chosen plan also includes it.
-	auto EffectiveDamage(const KillTool& tool, const HeroSnapshot& localHero, const HeroSnapshot& target,
-		const AbilityDamageType* damageType, float rawDamage, bool magicAmplified) -> float
+	auto EffectiveDamage(const KillTool& tool, const HeroSnapshot& localHero, const HeroSnapshot& target, bool magicAmplified) -> float
 	{
-		float damage = rawDamage;
+		float damage = tool.rawDamage;
 		if (tool.kind != ToolKind::Attack)
 			damage *= 1.f + localHero.spellAmp;
 
-		const AbilityDamageType type = damageType ? *damageType : AbilityDamageType::Magical;
-		switch (type)
+		switch (tool.damageType)
 		{
 		case AbilityDamageType::Pure:
 			return damage;
@@ -755,32 +763,6 @@ namespace
 		return std::sqrt(dx * dx + dy * dy);
 	}
 
-	// Per-tool cached damage lookup so BuildKillPlan (called for every enemy,
-	// possibly twice - once for the real plan, once for the marker overlay)
-	// doesn't repeatedly hit the AbilityDamageData hash map.
-	struct ToolDamageInfo
-	{
-		AbilityDamageType damageType = AbilityDamageType::Magical;
-		float rawDamage = 0.f;
-	};
-
-	auto LookupToolDamage(const KillTool& tool) -> ToolDamageInfo
-	{
-		ToolDamageInfo info{};
-		if (const auto* data = FindDamageEntry(tool.name))
-		{
-			info.damageType = data->damageType;
-			// Level isn't tracked on KillTool; DamageForLevel(1) undercounts for
-			// scaled abilities, so re-derive against the live entity would be
-			// ideal, but CollectTools already filtered by "usable now" and the
-			// greedy search only needs a consistent relative ordering plus a
-			// reasonable absolute threshold check - level 1 damage is a safe,
-			// conservative floor that won't claim a plan is lethal when it isn't.
-			info.rawDamage = data->DamageForLevel(1);
-		}
-		return info;
-	}
-
 	// Greedy-by-largest-effective-damage: provably optimal for "fewest tools to
 	// reach at least `threshold`" (a covering problem, not exact subset-sum) -
 	// if any k-tool combo reaches the threshold, the top-k highest-damage combo
@@ -796,16 +778,13 @@ namespace
 		const float distance = Distance2D(localHero.origin, target.origin);
 
 		std::vector<size_t> usable;
-		std::vector<ToolDamageInfo> damageInfo;
 		usable.reserve(tools.size());
-		damageInfo.reserve(tools.size());
 		for (size_t index = 0; index < tools.size(); ++index)
 		{
 			const auto& tool = tools[index];
 			if (!tool.noTarget && distance > tool.castRange + 75.f)
 				continue;
 			usable.push_back(index);
-			damageInfo.push_back(LookupToolDamage(tool));
 		}
 
 		if (usable.empty())
@@ -834,10 +813,10 @@ namespace
 
 			std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
 			{
-				const bool ampA = includeAmplifier && damageInfo[a].damageType == AbilityDamageType::Magical;
-				const bool ampB = includeAmplifier && damageInfo[b].damageType == AbilityDamageType::Magical;
-				return EffectiveDamage(tools[usable[a]], localHero, target, &damageInfo[a].damageType, damageInfo[a].rawDamage, ampA) >
-					   EffectiveDamage(tools[usable[b]], localHero, target, &damageInfo[b].damageType, damageInfo[b].rawDamage, ampB);
+				const bool ampA = includeAmplifier && tools[usable[a]].damageType == AbilityDamageType::Magical;
+				const bool ampB = includeAmplifier && tools[usable[b]].damageType == AbilityDamageType::Magical;
+				return EffectiveDamage(tools[usable[a]], localHero, target, ampA) >
+					   EffectiveDamage(tools[usable[b]], localHero, target, ampB);
 			});
 
 			std::vector<size_t> chosen;
@@ -849,8 +828,8 @@ namespace
 			{
 				if (total >= threshold)
 					break;
-				const bool amp = includeAmplifier && damageInfo[pos].damageType == AbilityDamageType::Magical;
-				total += EffectiveDamage(tools[usable[pos]], localHero, target, &damageInfo[pos].damageType, damageInfo[pos].rawDamage, amp);
+				const bool amp = includeAmplifier && tools[usable[pos]].damageType == AbilityDamageType::Magical;
+				total += EffectiveDamage(tools[usable[pos]], localHero, target, amp);
 				chosen.push_back(usable[pos]);
 			}
 			return total >= threshold ? chosen : std::vector<size_t>{};
@@ -862,9 +841,8 @@ namespace
 			eval.actionCount = chosen.size();
 			for (size_t index : chosen)
 			{
-				const auto info = LookupToolDamage(tools[index]);
-				const bool amp = amplifierActive && !tools[index].isDamageAmplifier && info.damageType == AbilityDamageType::Magical;
-				eval.totalDamage += EffectiveDamage(tools[index], localHero, target, &info.damageType, info.rawDamage, amp);
+				const bool amp = amplifierActive && !tools[index].isDamageAmplifier && tools[index].damageType == AbilityDamageType::Magical;
+				eval.totalDamage += EffectiveDamage(tools[index], localHero, target, amp);
 				eval.totalDelay += static_cast<float>(tools[index].delayMs);
 			}
 			return eval;
@@ -909,12 +887,10 @@ namespace
 			if (tools[leftIndex].isDamageAmplifier != tools[rightIndex].isDamageAmplifier)
 				return tools[leftIndex].isDamageAmplifier;
 
-			const auto leftInfo = LookupToolDamage(tools[leftIndex]);
-			const auto rightInfo = LookupToolDamage(tools[rightIndex]);
-			const bool leftAmp = selectedHasAmp && !tools[leftIndex].isDamageAmplifier && leftInfo.damageType == AbilityDamageType::Magical;
-			const bool rightAmp = selectedHasAmp && !tools[rightIndex].isDamageAmplifier && rightInfo.damageType == AbilityDamageType::Magical;
-			const float leftDamage = EffectiveDamage(tools[leftIndex], localHero, target, &leftInfo.damageType, leftInfo.rawDamage, leftAmp);
-			const float rightDamage = EffectiveDamage(tools[rightIndex], localHero, target, &rightInfo.damageType, rightInfo.rawDamage, rightAmp);
+			const bool leftAmp = selectedHasAmp && !tools[leftIndex].isDamageAmplifier && tools[leftIndex].damageType == AbilityDamageType::Magical;
+			const bool rightAmp = selectedHasAmp && !tools[rightIndex].isDamageAmplifier && tools[rightIndex].damageType == AbilityDamageType::Magical;
+			const float leftDamage = EffectiveDamage(tools[leftIndex], localHero, target, leftAmp);
+			const float rightDamage = EffectiveDamage(tools[rightIndex], localHero, target, rightAmp);
 			if (std::abs(leftDamage - rightDamage) > 0.01f)
 				return leftDamage > rightDamage;
 			if (tools[leftIndex].delayMs != tools[rightIndex].delayMs)

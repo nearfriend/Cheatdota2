@@ -1061,7 +1061,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSliderRow( "Health Buffer" , "##killStealerHealthBuffer" , Settings::KillStealer::HealthBuffer , 0.f , 250.f , "%.0f hp" , ReferenceIcon::Warning );
 				ImGui::EndDisabled();
 				ImGui::Spacing();
-				ImGui::TextDisabled( "Debug mode writes [kill-stealer] target and damage lines to debug.log." );
+				ImGui::TextDisabled( "Debug mode writes [kill-stealer] status and perf lines to debug.log." );
 				ImGui::TextDisabled( "Ability hotkeys assume default Q/W/E/D/F/R and Dota quick-cast settings." );
 				ImGui::TextDisabled( "When owned and off cooldown, Ethereal Blade leads the plan and doubles the rest of the magic damage." );
 			}
