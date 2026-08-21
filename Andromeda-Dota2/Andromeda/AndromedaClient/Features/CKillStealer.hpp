@@ -1,17 +1,17 @@
 #pragma once
 
-#include <Dota2/SDK/Types/CHandle.hpp>
-
 #include <cstdint>
 #include <string>
 #include <vector>
 
+// Automated kill-secure: on a lethal target, casts the fewest off-cooldown,
+// affordable abilities/items needed to finish it (see CKillStealer.cpp).
 class CKillStealer final
 {
 public:
 	auto OnRender() -> void;
 
-	struct KillPlanAction
+	struct PlanAction
 	{
 		enum class Kind : uint8_t
 		{
@@ -27,30 +27,23 @@ public:
 		bool noTarget = false;
 		bool unitTarget = false;
 		bool pointTarget = false;
+		bool isDamageAmplifier = false;
 	};
 
-	struct KillPlanState
+	struct PlanState
 	{
 		bool active = false;
 		uint32_t nextActionTick = 0;
 		uint32_t expiresAt = 0;
-		uint32_t targetHandle = INVALID_EHANDLE_INDEX;
+		int targetEntIndex = -1;
 		size_t actionIndex = 0;
-		std::vector<KillPlanAction> actions;
+		std::vector<PlanAction> actions;
 	};
 
 private:
+	auto OnRenderInner() -> void;
 	auto CancelPlan() -> void;
 
-	KillPlanState m_Plan{};
-	uint32_t m_LastStatusLogTick = 0;
-	uint32_t m_LastDebugLogTick = 0;
+	PlanState m_Plan{};
 	uint32_t m_NextThinkTick = 0;
-	uint32_t m_NextHeroScanTick = 0;
-	int m_NextHeroScanIndex = 0;
-	std::vector<CHandle> m_HeroHandles;
-	int m_LastScanEntities = 0;
-	int m_LastScanChunks = 0;
-	int m_LastScanControllers = 0;
-	int m_LastScanDirectHeroes = 0;
 };
