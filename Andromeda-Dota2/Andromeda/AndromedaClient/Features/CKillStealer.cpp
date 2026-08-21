@@ -101,6 +101,12 @@ namespace
 		float attackRange = 150.f;
 		int playerId = -1;
 		int ownerId = -1;
+		// True when the entity's own name matched a hero pattern (LooksLikeHeroName),
+		// as opposed to merely passing the team/health heuristics used when
+		// requireHeroName=false. Non-hero entities (statues, wards, etc.) can pass
+		// those heuristics, so playerId/team-majority fallback matching must not
+		// treat them as a real hero.
+		bool isConfirmedHero = false;
 	};
 
 	struct KillTool
@@ -502,6 +508,7 @@ namespace
 		hero.entity = entity;
 		hero.handle = handle;
 		hero.name = DisplayHeroName(heroName);
+		hero.isConfirmedHero = hasHeroName;
 		hero.health = ReadField<int>(entity, offsets.health);
 		hero.maxHealth = ReadField<int>(entity, offsets.maxHealth);
 		hero.team = ReadField<uint8_t>(entity, offsets.team);
@@ -631,6 +638,32 @@ namespace
 
 	auto ResolveLocalHero(CGameEntitySystem *entitySystem, const KillStealerOffsets &offsets, const std::vector<HeroCandidate> &heroes, HeroCandidate &outLocal) -> bool
 	{
+		// Fast path: reuse the last resolved handle across ticks instead of redoing
+		// the full phase 1-4 search (with its DEV_LOG file writes) every ~100ms.
+		// Without this, a persistently failing Phase 1 (e.g. GetLocalPlayerController
+		// returning null) reran the entire fallback chain - including several
+		// unthrottled disk writes - on every single think-tick, forever, which is
+		// enough sustained I/O to visibly stall the game the longer it ran.
+		static CHandle s_CachedHandle{INVALID_EHANDLE_INDEX};
+		static ULONGLONG s_LastFullResolveTick = 0;
+
+		if (s_CachedHandle.IsValid())
+		{
+			for (const auto &hero : heroes)
+			{
+				if (hero.handle.m_Index == s_CachedHandle.m_Index && hero.isConfirmedHero)
+				{
+					outLocal = hero;
+					return true;
+				}
+			}
+		}
+
+		const ULONGLONG now = GetTickCount64();
+		if (s_LastFullResolveTick && now - s_LastFullResolveTick < 1000)
+			return false;
+		s_LastFullResolveTick = now;
+
 		// Phase 1: Try the most reliable Valve engine path first - get local player controller
 		auto *controller = CGameEntitySystem::GetLocalPlayerController();
 		if (controller)
@@ -645,6 +678,7 @@ namespace
 					if (BuildHeroCandidate(entitySystem, heroEntity, nullptr, heroHandle, "", offsets, false, hero))
 					{
 						outLocal = hero;
+						s_CachedHandle = hero.handle;
 						DEV_LOG("[kill-stealer] local-hero-resolved controller=1 assignedHero=%s\n", hero.name.c_str());
 						return true;
 					}
@@ -664,7 +698,11 @@ namespace
 			DEV_LOG("[kill-stealer] local-hero controller=0\n");
 		}
 
-		// Phase 2: Try to get local player ID from engine
+		// Phase 2: Try to get local player ID from engine. Only match candidates
+		// whose own name actually looks like a hero - team/health heuristics alone
+		// (used when scanning for the general `heroes` list) can also match
+		// non-hero entities such as statues or wards, which happen to read a
+		// plausible-looking (often zeroed/garbage) playerId.
 		int localPlayerId = -1;
 		const bool hasLocalPlayerId = TryLocalPlayerId(localPlayerId);
 		if (hasLocalPlayerId)
@@ -672,9 +710,12 @@ namespace
 			DEV_LOG("[kill-stealer] local-hero playerId=%d\n", localPlayerId);
 			for (const auto &hero : heroes)
 			{
+				if (!hero.isConfirmedHero)
+					continue;
 				if (hero.playerId == localPlayerId || hero.ownerId == localPlayerId)
 				{
 					outLocal = hero;
+					s_CachedHandle = hero.handle;
 					DEV_LOG("[kill-stealer] local-hero resolved by playerId=%d hero=%s\n", localPlayerId, hero.name.c_str());
 					return true;
 				}
@@ -686,25 +727,33 @@ namespace
 			DEV_LOG("[kill-stealer] local-hero TryLocalPlayerId failed\n");
 		}
 
-		// Phase 3: If we have exactly one hero, use it as local hero
-		if (heroes.size() == 1)
+		// Phase 3: If we have exactly one confirmed hero, use it as local hero
+		const HeroCandidate *singleHero = nullptr;
+		int confirmedCount = 0;
+		for (const auto &hero : heroes)
 		{
-			outLocal = heroes.front();
-			DEV_LOG("[kill-stealer] local-hero resolved as single hero: %s\n", heroes.front().name.c_str());
+			if (!hero.isConfirmedHero)
+				continue;
+			++confirmedCount;
+			singleHero = &hero;
+		}
+		if (confirmedCount == 1 && singleHero)
+		{
+			outLocal = *singleHero;
+			s_CachedHandle = singleHero->handle;
+			DEV_LOG("[kill-stealer] local-hero resolved as single hero: %s\n", singleHero->name.c_str());
 			return true;
 		}
 
-		// Phase 4: Last resort - try to find a hero that looks like our team
-		if (!heroes.empty())
+		// Phase 4: Last resort - try to find a confirmed hero on our likely team
+		if (confirmedCount > 0)
 		{
-			// Try to find a hero with the most common team number (usually our team)
 			int teamCount[6] = {0, 0, 0, 0, 0, 0};
 			for (const auto &hero : heroes)
 			{
-				if (hero.team >= 2 && hero.team <= 5)
+				if (hero.isConfirmedHero && hero.team >= 2 && hero.team <= 5)
 					teamCount[hero.team]++;
 			}
-			// Pick the team with most heroes (assuming we're on that team)
 			int bestTeam = 2;
 			int bestCount = 0;
 			for (int t = 2; t <= 5; t++)
@@ -715,12 +764,12 @@ namespace
 					bestTeam = t;
 				}
 			}
-			// Find a hero on our suspected team
 			for (const auto &hero : heroes)
 			{
-				if (hero.team == bestTeam)
+				if (hero.isConfirmedHero && hero.team == bestTeam)
 				{
 					outLocal = hero;
+					s_CachedHandle = hero.handle;
 					DEV_LOG("[kill-stealer] local-hero resolved by team=%d hero=%s\n", bestTeam, hero.name.c_str());
 					return true;
 				}
@@ -1098,82 +1147,109 @@ namespace
 
 		if (usableIndices.empty())
 			return false;
-		if (usableIndices.size() >= 31)
-			return false;
 
-		struct BestSubset
+		// Greedy-by-largest-effective-damage is optimal for "fewest tools needed to
+		// reach at least `threshold`" (a covering problem, not exact subset-sum): if
+		// any k-tool combo reaches the threshold, the top-k highest-damage combo -
+		// which has the maximum possible sum among all k-sized combos - reaches it
+		// too. This replaces a previous O(2^n) brute-force subset search over every
+		// combination of usable tools, which had no real bound on how large n could
+		// get (items.json widened what counts as a usable damage item) and could
+		// take an arbitrarily long time to enumerate, stalling the game.
+		size_t amplifierIndex = static_cast<size_t>(-1);
+		for (size_t index : usableIndices)
 		{
-			uint32_t mask = 0;
-			size_t actionCount = 0;
-			float totalDamage = 0.f;
-			float totalDelay = 0.f;
+			if (tools[index].isDamageAmplifier)
+			{
+				amplifierIndex = index;
+				break;
+			}
+		}
+
+		auto buildGreedy = [&](bool includeAmplifier) -> std::vector<size_t>
+		{
+			std::vector<size_t> candidates;
+			candidates.reserve(usableIndices.size());
+			for (size_t index : usableIndices)
+			{
+				if (includeAmplifier && index == amplifierIndex)
+					continue;
+				candidates.push_back(index);
+			}
+
+			std::sort(candidates.begin(), candidates.end(), [&](size_t left, size_t right)
+			{
+				const bool leftAmp = includeAmplifier && tools[left].damageType == AbilityDamageType::Magical;
+				const bool rightAmp = includeAmplifier && tools[right].damageType == AbilityDamageType::Magical;
+				return EffectiveDamage(tools[left], localHero, target, leftAmp) >
+					   EffectiveDamage(tools[right], localHero, target, rightAmp);
+			});
+
+			std::vector<size_t> chosen;
+			float total = 0.f;
+			if (includeAmplifier)
+			{
+				chosen.push_back(amplifierIndex);
+				total += EffectiveDamage(tools[amplifierIndex], localHero, target, false);
+			}
+
+			for (size_t index : candidates)
+			{
+				if (total >= threshold)
+					break;
+				const bool amp = includeAmplifier && tools[index].damageType == AbilityDamageType::Magical;
+				total += EffectiveDamage(tools[index], localHero, target, amp);
+				chosen.push_back(index);
+			}
+			return total >= threshold ? chosen : std::vector<size_t>{};
 		};
 
-		BestSubset best{};
-		bool found = false;
-		const uint32_t subsetLimit = 1u << static_cast<uint32_t>(usableIndices.size());
-		for (uint32_t mask = 1; mask < subsetLimit; ++mask)
+		auto evaluate = [&](const std::vector<size_t> &chosen, bool amplifierActive) -> KillPlanEvaluation
 		{
-			bool hasAmplifier = false;
-			for (size_t bit = 0; bit < usableIndices.size(); ++bit)
+			KillPlanEvaluation eval{};
+			eval.actionCount = chosen.size();
+			for (size_t index : chosen)
 			{
-				if ((mask & (1u << static_cast<uint32_t>(bit))) && tools[usableIndices[bit]].isDamageAmplifier)
-				{
-					hasAmplifier = true;
-					break;
-				}
+				const bool amp = amplifierActive && !tools[index].isDamageAmplifier && tools[index].damageType == AbilityDamageType::Magical;
+				eval.totalDamage += EffectiveDamage(tools[index], localHero, target, amp);
+				eval.totalDelay += static_cast<float>(tools[index].delayMs);
 			}
+			return eval;
+		};
 
-			float totalDamage = 0.f;
-			float totalDelay = 0.f;
-			size_t actionCount = 0;
+		std::vector<size_t> withoutAmp = buildGreedy(false);
+		std::vector<size_t> withAmp = amplifierIndex != static_cast<size_t>(-1) ? buildGreedy(true) : std::vector<size_t>{};
 
-			for (size_t bit = 0; bit < usableIndices.size(); ++bit)
-			{
-				if (!(mask & (1u << static_cast<uint32_t>(bit))))
-					continue;
-
-				const auto &tool = tools[usableIndices[bit]];
-				const bool amplifyThis = hasAmplifier && !tool.isDamageAmplifier && tool.damageType == AbilityDamageType::Magical;
-				totalDamage += EffectiveDamage(tool, localHero, target, amplifyThis);
-				totalDelay += static_cast<float>(tool.delayMs);
-				++actionCount;
-			}
-
-			if (totalDamage < threshold)
-				continue;
-
-			const float currentOverkill = totalDamage - threshold;
-			const float bestOverkill = best.totalDamage - threshold;
-			const bool better =
-				!found ||
-				actionCount < best.actionCount ||
-				(actionCount == best.actionCount && currentOverkill < bestOverkill - 0.01f) ||
-				(actionCount == best.actionCount && std::abs(currentOverkill - bestOverkill) <= 0.01f &&
-				 totalDelay < best.totalDelay - 0.01f);
-
-			if (better)
-			{
-				best.mask = mask;
-				best.actionCount = actionCount;
-				best.totalDamage = totalDamage;
-				best.totalDelay = totalDelay;
-				found = true;
-			}
-		}
-
-		if (!found)
+		if (withoutAmp.empty() && withAmp.empty())
 			return false;
 
-		std::vector<size_t> selectedIndices;
-		for (size_t bit = 0; bit < usableIndices.size(); ++bit)
-		{
-			if (best.mask & (1u << static_cast<uint32_t>(bit)))
-				selectedIndices.push_back(usableIndices[bit]);
-		}
+		const KillPlanEvaluation evalWithout = withoutAmp.empty() ? KillPlanEvaluation{} : evaluate(withoutAmp, false);
+		const KillPlanEvaluation evalWith = withAmp.empty() ? KillPlanEvaluation{} : evaluate(withAmp, true);
 
-		const bool planHasAmplifier = std::any_of(selectedIndices.begin(), selectedIndices.end(),
-			[&](size_t index) { return tools[index].isDamageAmplifier; });
+		bool planHasAmplifier = false;
+		std::vector<size_t> selectedIndices;
+		KillPlanEvaluation chosenEval{};
+
+		if (!withoutAmp.empty() && !withAmp.empty())
+		{
+			const bool preferWith =
+				evalWith.actionCount < evalWithout.actionCount ||
+				(evalWith.actionCount == evalWithout.actionCount && evalWith.totalDamage < evalWithout.totalDamage - 0.01f);
+			selectedIndices = preferWith ? withAmp : withoutAmp;
+			chosenEval = preferWith ? evalWith : evalWithout;
+			planHasAmplifier = preferWith;
+		}
+		else if (!withoutAmp.empty())
+		{
+			selectedIndices = withoutAmp;
+			chosenEval = evalWithout;
+		}
+		else
+		{
+			selectedIndices = withAmp;
+			chosenEval = evalWith;
+			planHasAmplifier = true;
+		}
 
 		std::sort(selectedIndices.begin(), selectedIndices.end(), [&](size_t leftIndex, size_t rightIndex)
 		{
@@ -1204,9 +1280,7 @@ namespace
 		for (const size_t index : selectedIndices)
 			outPlan.actions.push_back(ToPlanAction(tools[index]));
 
-		outEvaluation.actionCount = best.actionCount;
-		outEvaluation.totalDamage = best.totalDamage;
-		outEvaluation.totalDelay = best.totalDelay;
+		outEvaluation = chosenEval;
 		return !outPlan.actions.empty();
 	}
 
@@ -1426,6 +1500,8 @@ auto CKillStealer::OnRender() -> void
 	std::vector<HeroCandidate> enemies;
 	for (const auto &hero : heroes)
 	{
+		if (!hero.isConfirmedHero)
+			continue;
 		if (hero.handle.m_Index == localHero.handle.m_Index)
 			continue;
 		if (hero.team != localHero.team && (hero.team == 2 || hero.team == 3))
