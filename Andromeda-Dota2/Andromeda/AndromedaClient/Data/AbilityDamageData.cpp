@@ -181,8 +181,10 @@ namespace
 
 	auto ShouldKeepEntry( const AbilityDamageEntry& entry ) -> bool
 	{
-		if ( !entry.IsUsableDamage() )
-			return false;
+		// Damage-only consumers (e.g. CKillStealer's lethal-plan builder) already
+		// gate on entry.IsUsableDamage() themselves; keeping non-damage utility
+		// abilities (stuns, disables, buffs) here too lets other consumers
+		// (e.g. CAutoCombo) use them without a second data source.
 		if ( entry.name.rfind( "special_bonus_" , 0 ) == 0 )
 			return false;
 		if ( entry.name.rfind( "generic_" , 0 ) == 0 || entry.name.rfind( "dota_" , 0 ) == 0 )
@@ -371,7 +373,11 @@ auto CAbilityDamageData::LoadFromFile( const std::string& path ) -> bool
 	if ( parsed.empty() )
 		return false;
 
-	m_Entries.swap( parsed );
+	// Merge rather than replace: LoadFromFile is called once per data file
+	// (abilities.json, items.json, ...) and later calls must not wipe out
+	// entries already loaded from earlier files.
+	for ( auto& [name, entry] : parsed )
+		m_Entries[name] = std::move( entry );
 	return true;
 }
 

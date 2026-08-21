@@ -115,6 +115,7 @@ namespace
 		bool noTarget = false;
 		bool unitTarget = false;
 		bool pointTarget = false;
+		bool isDamageAmplifier = false;
 		uint32_t delayMs = 0;
 	};
 
@@ -364,7 +365,9 @@ namespace
 		return damage * (1.f - std::clamp(reduction, -0.95f, 0.95f));
 	}
 
-	auto EffectiveDamage(const KillTool &tool, const HeroCandidate &localHero, const HeroCandidate &target) -> float
+	// Ethereal Blade makes its target take double magic damage for its duration
+	// (magicAmplified=true when the plan also includes item_ethereal_blade).
+	auto EffectiveDamage(const KillTool &tool, const HeroCandidate &localHero, const HeroCandidate &target, bool magicAmplified = false) -> float
 	{
 		float damage = tool.rawDamage;
 		if (tool.kind != KillToolKind::Attack)
@@ -378,7 +381,7 @@ namespace
 			return PhysicalDamageAfterArmor(damage, target.armor);
 		case AbilityDamageType::Magical:
 		default:
-			return damage * (1.f - target.magicResistance);
+			return damage * ( magicAmplified ? 2.f : 1.f ) * (1.f - target.magicResistance);
 		}
 	}
 
@@ -1006,8 +1009,15 @@ namespace
 
 					const std::string itemName = EntityName(item, identity);
 					const auto *data = FindDamageEntry(itemName);
-					if (!data || !data->IsUsableDamage() ||
-						(!data->unitTarget && !data->noTarget && !data->pointTarget))
+					if (!data || (!data->unitTarget && !data->noTarget && !data->pointTarget))
+						continue;
+
+					// Ethereal Blade deals no direct damage itself but doubles the
+					// magic damage the target takes for its duration, so it's kept
+					// even though it fails the usual IsUsableDamage() gate below -
+					// BuildKillPlan leads with it and amplifies the rest of the plan.
+					const bool isEtherealBlade = Settings::KillStealer::PrioritizeEtherealBlade && itemName == "item_ethereal_blade";
+					if (!isEtherealBlade && !data->IsUsableDamage())
 						continue;
 
 					const int level = (std::max)(1, ReadField<int>(item, offsets.abilityLevel, 1));
@@ -1022,7 +1032,7 @@ namespace
 						continue;
 
 					const float rawDamage = data->DamageForLevel(level);
-					if (rawDamage <= 0.f)
+					if (!isEtherealBlade && rawDamage <= 0.f)
 						continue;
 
 					KillTool tool{};
@@ -1036,6 +1046,7 @@ namespace
 					tool.noTarget = data->noTarget;
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
+					tool.isDamageAmplifier = isEtherealBlade;
 					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
 					tools.push_back(tool);
 				}
@@ -1103,6 +1114,16 @@ namespace
 		const uint32_t subsetLimit = 1u << static_cast<uint32_t>(usableIndices.size());
 		for (uint32_t mask = 1; mask < subsetLimit; ++mask)
 		{
+			bool hasAmplifier = false;
+			for (size_t bit = 0; bit < usableIndices.size(); ++bit)
+			{
+				if ((mask & (1u << static_cast<uint32_t>(bit))) && tools[usableIndices[bit]].isDamageAmplifier)
+				{
+					hasAmplifier = true;
+					break;
+				}
+			}
+
 			float totalDamage = 0.f;
 			float totalDelay = 0.f;
 			size_t actionCount = 0;
@@ -1113,7 +1134,8 @@ namespace
 					continue;
 
 				const auto &tool = tools[usableIndices[bit]];
-				totalDamage += EffectiveDamage(tool, localHero, target);
+				const bool amplifyThis = hasAmplifier && !tool.isDamageAmplifier && tool.damageType == AbilityDamageType::Magical;
+				totalDamage += EffectiveDamage(tool, localHero, target, amplifyThis);
 				totalDelay += static_cast<float>(tool.delayMs);
 				++actionCount;
 			}
@@ -1150,10 +1172,20 @@ namespace
 				selectedIndices.push_back(usableIndices[bit]);
 		}
 
+		const bool planHasAmplifier = std::any_of(selectedIndices.begin(), selectedIndices.end(),
+			[&](size_t index) { return tools[index].isDamageAmplifier; });
+
 		std::sort(selectedIndices.begin(), selectedIndices.end(), [&](size_t leftIndex, size_t rightIndex)
 		{
-			const float leftDamage = EffectiveDamage(tools[leftIndex], localHero, target);
-			const float rightDamage = EffectiveDamage(tools[rightIndex], localHero, target);
+			// Ethereal Blade (or any future damage amplifier) always leads the plan
+			// so its magic-damage-taken buff is up before the nukes that benefit from it.
+			if (tools[leftIndex].isDamageAmplifier != tools[rightIndex].isDamageAmplifier)
+				return tools[leftIndex].isDamageAmplifier;
+
+			const bool leftAmplified = planHasAmplifier && !tools[leftIndex].isDamageAmplifier && tools[leftIndex].damageType == AbilityDamageType::Magical;
+			const bool rightAmplified = planHasAmplifier && !tools[rightIndex].isDamageAmplifier && tools[rightIndex].damageType == AbilityDamageType::Magical;
+			const float leftDamage = EffectiveDamage(tools[leftIndex], localHero, target, leftAmplified);
+			const float rightDamage = EffectiveDamage(tools[rightIndex], localHero, target, rightAmplified);
 			if (std::abs(leftDamage - rightDamage) > 0.01f)
 				return leftDamage > rightDamage;
 			if (tools[leftIndex].noTarget != tools[rightIndex].noTarget)

@@ -83,6 +83,7 @@ namespace
 		bool noTarget = false;
 		bool unitTarget = false;
 		bool pointTarget = false;
+		bool hasDamage = false;
 		uint32_t delayMs = 0;
 	};
 
@@ -431,7 +432,7 @@ namespace
 
 					const std::string abilityName = EntityName( ability , identity );
 					const auto* data = FindDamageEntry( abilityName );
-					if ( !data || !data->IsUsableDamage() || ( !data->unitTarget && !data->noTarget && !data->pointTarget ) )
+					if ( !data || ( !data->unitTarget && !data->noTarget && !data->pointTarget ) )
 						continue;
 
 					const int level = ReadField<int>( ability , offsets.abilityLevel , 0 );
@@ -451,10 +452,6 @@ namespace
 					if ( manaCost > static_cast<int>( localUnit.mana + 0.5f ) )
 						continue;
 
-					const float rawDamage = data->DamageForLevel( level );
-					if ( rawDamage <= 0.f )
-						continue;
-
 					int preferredSlot = PreferredSlotForAbility( abilityName );
 					if ( preferredSlot < 0 || preferredSlot >= static_cast<int>( kAbilityKeys.size() ) )
 						preferredSlot = fallbackSlot;
@@ -470,6 +467,7 @@ namespace
 					tool.noTarget = data->noTarget;
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
+					tool.hasDamage = data->IsUsableDamage();
 					tool.delayMs = data->noTarget ? 90u : ( Settings::AutoCombo::QuickCast ? 120u : 180u );
 					tools.push_back( tool );
 				}
@@ -491,7 +489,7 @@ namespace
 
 					const std::string itemName = EntityName( item , identity );
 					const auto* data = FindDamageEntry( itemName );
-					if ( !data || !data->IsUsableDamage() || ( !data->unitTarget && !data->noTarget && !data->pointTarget ) )
+					if ( !data || ( !data->unitTarget && !data->noTarget && !data->pointTarget ) )
 						continue;
 
 					const int level = (std::max)( 1 , ReadField<int>( item , offsets.abilityLevel , 1 ) );
@@ -505,10 +503,6 @@ namespace
 					if ( manaCost > static_cast<int>( localUnit.mana + 0.5f ) )
 						continue;
 
-					const float rawDamage = data->DamageForLevel( level );
-					if ( rawDamage <= 0.f )
-						continue;
-
 					ComboTool tool{};
 					tool.kind = ComboToolKind::Item;
 					tool.name = itemName;
@@ -517,6 +511,7 @@ namespace
 					tool.noTarget = data->noTarget;
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
+					tool.hasDamage = data->IsUsableDamage();
 					tool.delayMs = data->noTarget ? 90u : ( Settings::AutoCombo::QuickCast ? 120u : 180u );
 					tools.push_back( tool );
 				}
@@ -535,16 +530,18 @@ namespace
 			tools.push_back( tool );
 		}
 
-		// No-target/self-cast first, then point-target ground spells, then unit-target
-		// spells and the finishing auto-attack - lets buffs/setups land before the
-		// unit-target follow-ups that benefit from them.
+		// No-target buffs/setups first, then point-target ground spells, then
+		// unit-target disables (Hex, stuns, silences - no damage of their own but
+		// lock the target down for what follows), then unit-target damage nukes,
+		// and the auto-attack finisher last.
 		std::stable_sort( tools.begin() , tools.end() , []( const ComboTool& a , const ComboTool& b )
 		{
 			auto rank = []( const ComboTool& t ) -> int
 			{
+				if ( t.kind == ComboToolKind::Attack ) return 4;
 				if ( t.noTarget ) return 0;
 				if ( t.pointTarget ) return 1;
-				return 2;
+				return t.hasDamage ? 3 : 2;
 			};
 			return rank( a ) < rank( b );
 		} );

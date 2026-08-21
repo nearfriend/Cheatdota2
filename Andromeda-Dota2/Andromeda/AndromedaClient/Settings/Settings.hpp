@@ -54,6 +54,10 @@ namespace Settings
 		inline bool QuickCast = true;
 		inline float HealthBuffer = 1.f;
 		inline int AttackKey = 'A';
+		// Lead the plan with Ethereal Blade (doubles magic damage taken) when it
+		// helps land the kill in fewer actions, instead of treating it as a
+		// no-damage item that gets filtered out.
+		inline bool PrioritizeEtherealBlade = true;
 	}
 	namespace LastHitAssistant
 	{

@@ -1042,7 +1042,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 420.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : 180.f ) );
+			const float settingsCardHeight = killStealerPage ? 460.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : 180.f ) );
 			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
 			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
@@ -1055,6 +1055,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSwitchRow( "Use Items" , "##killStealerItems" , Settings::KillStealer::UseItems , ReferenceIcon::Items );
 				DrawSwitchRow( "Use Auto Attack" , "##killStealerAttack" , Settings::KillStealer::UseAutoAttack , ReferenceIcon::Mouse );
 				DrawSwitchRow( "Quick Cast Mode" , "##killStealerQuickCast" , Settings::KillStealer::QuickCast , ReferenceIcon::Speed );
+				DrawSwitchRow( "Prioritize Ethereal Blade" , "##killStealerEtherealBlade" , Settings::KillStealer::PrioritizeEtherealBlade , ReferenceIcon::Sparkles );
 				DrawSwitchRow( "Draw Killable Markers" , "##killStealerMarkers" , Settings::KillStealer::DrawKillableMarkers , ReferenceIcon::Visible );
 				DrawSwitchRow( "Debug Logs" , "##killStealerDebug" , Settings::KillStealer::DrawDebugInfo , ReferenceIcon::Code );
 				DrawSliderRow( "Health Buffer" , "##killStealerHealthBuffer" , Settings::KillStealer::HealthBuffer , 0.f , 250.f , "%.0f hp" , ReferenceIcon::Warning );
@@ -1062,6 +1063,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				ImGui::Spacing();
 				ImGui::TextDisabled( "Debug mode writes [kill-stealer] target and damage lines to debug.log." );
 				ImGui::TextDisabled( "Ability hotkeys assume default Q/W/E/D/F/R and Dota quick-cast settings." );
+				ImGui::TextDisabled( "When owned and off cooldown, Ethereal Blade leads the plan and doubles the rest of the magic damage." );
 			}
 			else if ( lastHitPage )
 			{
@@ -1650,8 +1652,8 @@ auto CAndromedaMenu::OnRenderLegacyMenu() -> void
 				if ( headerFont ) ImGui::PushFont( headerFont );
 				ImGui::Text( "Auto Combo (all heroes)" );
 				if ( headerFont ) ImGui::PopFont();
-				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable damage ability/item at the target." );
-				ImGui::TextDisabled( "Only abilities with known damage data are used - pure disables/buffs (Hex, stuns, etc.) are skipped." );
+				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable ability/item at the target." );
+				ImGui::TextDisabled( "Order: setups/buffs, then point-target spells, then disables (Hex/stuns), then damage, then auto-attack." );
 
 				DrawSwitchRow( "Enable" , "##autoComboEnable" , Settings::AutoCombo::Enable , ReferenceIcon::Aggro );
 				ImGui::BeginDisabled( !Settings::AutoCombo::Enable );

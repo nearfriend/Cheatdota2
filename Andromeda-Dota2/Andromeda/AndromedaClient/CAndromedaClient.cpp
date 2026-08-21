@@ -3893,9 +3893,11 @@ auto CAndromedaClient::OnInit() -> void
 	const std::string baseDir = GetDllDir();
 	const std::string heroJsonPath = baseDir + "Assets\\data\\npc_heroes.json";
 	const std::string abilitiesJsonPath = baseDir + "Assets\\data\\abilities.json";
+	const std::string itemsJsonPath = baseDir + "Assets\\data\\items.json";
 	const std::string heroAbilitiesJsonPath = baseDir + "Assets\\data\\hero_abilities.json";
 	constexpr const char* kHeroJsonUrl = "https://raw.githubusercontent.com/odota/dotaconstants/master/build/heroes.json";
 	constexpr const char* kAbilitiesJsonUrl = "https://raw.githubusercontent.com/odota/dotaconstants/master/build/abilities.json";
+	constexpr const char* kItemsJsonUrl = "https://raw.githubusercontent.com/odota/dotaconstants/master/build/items.json";
 	constexpr const char* kHeroAbilitiesJsonUrl = "https://raw.githubusercontent.com/odota/dotaconstants/master/build/hero_abilities.json";
 
 	if ( g_HeroDataLoader.EnsureCacheAndLoad( kHeroJsonUrl , heroJsonPath ) )
@@ -3918,6 +3920,17 @@ auto CAndromedaClient::OnInit() -> void
 			GetAbilityDamageData()->LoadedCount() , abilitiesJsonPath.c_str() );
 	else
 		DEV_LOG( "[kill-stealer] damage metadata unavailable: %s\n" , abilitiesJsonPath.c_str() );
+
+	if ( !CHeroDataLoader::IsValidHeroCache( itemsJsonPath ) )
+	{
+		CHeroDataLoader::DownloadFileWinHttp( std::wstring( kItemsJsonUrl , kItemsJsonUrl + std::strlen( kItemsJsonUrl ) ) ,
+			std::wstring( itemsJsonPath.begin() , itemsJsonPath.end() ) );
+	}
+	if ( GetAbilityDamageData()->LoadFromFile( itemsJsonPath ) )
+		DEV_LOG( "[auto-combo] loaded %zu total ability/item entries after items.json (%s)\n" ,
+			GetAbilityDamageData()->LoadedCount() , itemsJsonPath.c_str() );
+	else
+		DEV_LOG( "[auto-combo] item metadata unavailable: %s\n" , itemsJsonPath.c_str() );
 
 	if ( !CHeroDataLoader::IsValidHeroCache( heroAbilitiesJsonPath ) )
 	{
