@@ -908,76 +908,6 @@ namespace
 		return cacheCandidates;
 	}
 
-	struct UniversalMarker
-	{
-		ImVec2 screen{};
-		bool allied = false;
-	};
-
-	// Every low-HP lane creep on screen, drawn as a star marker (not gated by
-	// CollectCandidates' in-range/killable filtering).
-	auto CollectUniversalMarkersFresh(const LastHitOffsets &offsets, const LocalHeroInfo &hero) -> std::vector<UniversalMarker>
-	{
-		std::vector<UniversalMarker> markers;
-		auto *entitySystem = SDK::Interfaces::GameEntitySystem();
-		if (!entitySystem || !hero.entity)
-			return markers;
-
-		const float lethalHealth = static_cast<float>(hero.attackDamage);
-		const int highest = entitySystem->GetHighestEntityIndex();
-		for (int i = 1; i <= highest; ++i)
-		{
-			auto *ent = entitySystem->GetBaseEntity<C_BaseEntity>(i);
-			if (!ent || ent == hero.entity)
-				continue;
-
-			const int health = ReadField<int>(ent, offsets.health);
-			const int maxHealth = ReadField<int>(ent, offsets.maxHealth);
-			const uint8_t team = ReadField<uint8_t>(ent, offsets.team);
-			if (health <= 5 || maxHealth <= 0)
-				continue;
-			if (LooksLikeExcludedLaneTarget(ent))
-				continue;
-			if (LooksLikeHeroEntity(ent))
-				continue;
-			if (!LooksLikeLaneCreepByStats(ent, offsets, health, maxHealth, team))
-				continue;
-			if (static_cast<float>(health) > lethalHealth)
-				continue;
-
-			Vector3 origin{};
-			if (!ReadOrigin(ent, offsets, origin))
-				continue;
-
-			ImVec2 screen{};
-			Vector3 markerOrigin = origin;
-			markerOrigin.m_z += 140.f;
-			if (!Math::WorldToScreen(markerOrigin, screen) && !Math::WorldToScreen(origin, screen))
-				continue;
-
-			markers.push_back({screen, team == hero.team});
-		}
-		return markers;
-	}
-
-	// Recomputed at most every kScanIntervalMs - this used to be a full,
-	// uncached entity scan (with string matching + WorldToScreen per entity)
-	// re-run on EVERY rendered frame regardless of framerate, which was by far
-	// the most expensive thing this feature did.
-	auto CollectUniversalMarkers(const LastHitOffsets &offsets, const LocalHeroInfo &hero) -> const std::vector<UniversalMarker> &
-	{
-		static ULONGLONG cacheTick = 0;
-		static std::vector<UniversalMarker> cacheMarkers;
-
-		const ULONGLONG now = GetTickCount64();
-		if (cacheTick && now - cacheTick < kScanIntervalMs)
-			return cacheMarkers;
-
-		cacheMarkers = CollectUniversalMarkersFresh(offsets, hero);
-		cacheTick = now;
-		return cacheMarkers;
-	}
-
 	auto DrawStarMarker(ImDrawList *drawList, const ImVec2 &center, float radius,
 						ImU32 fillColor, ImU32 outlineColor) -> void
 	{
@@ -1164,32 +1094,146 @@ auto CLastHitAssistant::OnRender() -> void
 	auto *drawList = ImGui::GetForegroundDrawList();
 
 	if (!hero.entity)
-	{
-		drawList->AddText(ImVec2(24.f, 118.f), IM_COL32(255, 205, 55, 235),
-						  "Last Hit Helper: waiting for local hero");
 		return;
-	}
 
-	// Universal lane-creep overlay: star+HP for every low-HP lane creep on
-	// screen (including allies), independent of CollectCandidates' in-range
-	// filtering. Cached at kScanIntervalMs - see CollectUniversalMarkers.
-	for (const auto &marker : CollectUniversalMarkers(offsets, hero))
+	// ---------------------------------------------------------------
+	// Universal lane-creep overlay (no range circle).
+	// Draws star+HP for every low-HP lane creep on-screen, including allies.
+	//
+	// Low-HP condition matches the one-attack threshold:
+	// health <= localHero.attackDamage
+	// ---------------------------------------------------------------
 	{
-		const ImU32 fillColor = marker.allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
-		const ImU32 outlineColor = marker.allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
-		DrawStarMarker(drawList, marker.screen, 9.f, fillColor, outlineColor);
+		const float lethalHealth = static_cast<float>(hero.attackDamage);
+		const float scanRange = hero.detectRange + 35.f;
+		const float scanRangeSq = scanRange * scanRange;
+		int totalAlive = 0;
+		int passedStats = 0;
+		int passedExclude = 0;
+		int aliveOnTeam = 0;
+		int aboveLethal = 0;
+		int skippedByDedupe = 0;
+		int skippedByOrigin = 0;
+		int skippedByProjection = 0;
+		int drawnUniversal = 0;
+
+		auto *entitySystem = SDK::Interfaces::GameEntitySystem();
+		if (entitySystem)
+		{
+			const int highest = entitySystem->GetHighestEntityIndex();
+			for (int i = 1; i <= highest; ++i)
+			{
+				auto *ent = entitySystem->GetBaseEntity<C_BaseEntity>(i);
+				if (!ent || ent == hero.entity)
+					continue;
+
+				const int health = ReadField<int>(ent, offsets.health);
+				const int maxHealth = ReadField<int>(ent, offsets.maxHealth);
+				const uint8_t team = ReadField<uint8_t>(ent, offsets.team);
+
+				if (health <= 5 || maxHealth <= 0)
+					continue;
+				++totalAlive;
+
+				if (LooksLikeExcludedLaneTarget(ent))
+					continue;
+				++passedExclude;
+
+				if (LooksLikeHeroEntity(ent))
+					continue;
+
+				// Diagnostic: log rejected entities to understand filter failures
+				const bool passedLaneCreep = LooksLikeLaneCreepByStats(ent, offsets, health, maxHealth, team);
+				if (!passedLaneCreep)
+				{
+					static ULONGLONG lastRejectLogTick = 0;
+					static int rejectLogCount = 0;
+					const ULONGLONG nowReject = GetTickCount64();
+					if (!lastRejectLogTick || nowReject - lastRejectLogTick >= 5000)
+					{
+						lastRejectLogTick = nowReject;
+						rejectLogCount = 0;
+					}
+					if (rejectLogCount < 12)
+					{
+						const char *designerName = EntityDesignerOrName(ent);
+						const char *className = ent->GetSchemaClassName();
+						const bool nameMatch = LooksLikeLaneCreepByName(ent);
+						const bool excluded = LooksLikeExcludedLaneTarget(ent);
+						const bool playerOwned = IsPlayerControlledUnit(ent, offsets);
+						char rejectData[512]{};
+						std::snprintf(rejectData, sizeof(rejectData),
+									  "{\"designer\":\"%s\",\"class\":\"%s\",\"hp\":%d,\"maxHp\":%d,\"team\":%u,\"nameMatch\":%d,\"excluded\":%d,\"playerOwned\":%d}",
+									  designerName ? designerName : "", className ? className : "",
+									  health, maxHealth, static_cast<unsigned int>(team),
+									  nameMatch ? 1 : 0, excluded ? 1 : 0, playerOwned ? 1 : 0);
+						++rejectLogCount;
+					}
+					continue;
+				}
+				++passedStats;
+
+				if (static_cast<float>(health) > lethalHealth)
+				{
+					++aboveLethal;
+					continue;
+				}
+
+				Vector3 origin{};
+				if (!ReadOrigin(ent, offsets, origin))
+				{
+					++skippedByOrigin;
+					continue;
+				}
+
+				ImVec2 screen{};
+				Vector3 markerOrigin = origin;
+				markerOrigin.m_z += 140.f;
+				if (!Math::WorldToScreen(markerOrigin, screen) && !Math::WorldToScreen(origin, screen))
+				{
+					++skippedByProjection;
+					continue;
+				}
+
+				const bool allied = team == hero.team;
+				const ImU32 fillColor = allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
+				const ImU32 outlineColor = allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
+				DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
+				++drawnUniversal;
+			}
+		}
 	}
 
+	int candidateProjected = 0;
+	int candidateOffscreen = 0;
 	for (const auto &candidate : candidates)
 	{
 		ImVec2 screen{};
 		if (!ProjectStarTargetScreen(candidate.origin, screen))
+		{
+			++candidateOffscreen;
 			continue;
+		}
+		++candidateProjected;
 
 		const bool allied = candidate.deny;
 		const ImU32 fillColor = allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
 		const ImU32 outlineColor = allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
 		DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
+	}
+
+	// #region agent log
+	{
+		static ULONGLONG lastCandidateLogTick = 0;
+		const ULONGLONG now = GetTickCount64();
+		if (!lastCandidateLogTick || now - lastCandidateLogTick >= 1000)
+		{
+			char data[192]{};
+			std::snprintf(data, sizeof(data),
+						  "{\"candidateCount\":%d,\"candidateProjected\":%d,\"candidateOffscreen\":%d}",
+						  static_cast<int>(candidates.size()), candidateProjected, candidateOffscreen);
+			lastCandidateLogTick = now;
+		}
 	}
 
 	// Auto-attack for last-hit starred creeps
@@ -1242,4 +1286,5 @@ auto CLastHitAssistant::OnRender() -> void
 			lastAutoAttackTick = now;
 		}
 	}
+	// #endregion
 }
