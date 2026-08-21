@@ -160,7 +160,20 @@ namespace
 	template <typename T>
 	auto TryRead(const void *address, T &out) -> bool
 	{
-		if (!IsReadableRuntimeMemory(address, sizeof(T)))
+		// No VirtualQuery here on purpose: this runs on every single field read
+		// (health, mana, cooldown, origin, ...) for every entity/ability/item,
+		// every ~100ms think-tick - thousands of syscalls/sec that were the
+		// dominant per-tick cost, unique to this feature (CLastHitAssistant reads
+		// the same kind of live entity fields with a plain dereference and no
+		// VirtualQuery at all). `address` is always base-entity-pointer + a small
+		// in-bounds struct offset, where the base pointer itself was already
+		// validated once via IsReadableRuntimeMemory when the entity was resolved
+		// (see TryEntityAtIndex) - so re-querying the OS for every field on top of
+		// that is redundant, not a real safety net. Bulk/array reads driven by a
+		// runtime-reported count (ReadHandleVector, ReadInventoryHandles) still
+		// validate their own memory region explicitly, since those pointers/counts
+		// are not pre-validated the same way.
+		if (!address)
 			return false;
 		std::memcpy(&out, address, sizeof(T));
 		return true;
