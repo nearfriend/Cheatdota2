@@ -63,6 +63,10 @@ namespace Settings
 		// the whole time. Off is the setting that can't silently no-op casts.
 		inline bool QuickCast = false;
 		inline float HealthBuffer = 1.f;
+		// Extra percentage of the target's current HP required on top of
+		// HealthBuffer before a plan counts as lethal - see LethalThreshold in
+		// CKillStealer.cpp.
+		inline float SafetyMarginPercent = 15.f;
 		inline int AttackKey = 'A';
 		// Lead the plan with Ethereal Blade (doubles magic damage taken) when it
 		// helps land the kill in fewer actions, instead of treating it as a

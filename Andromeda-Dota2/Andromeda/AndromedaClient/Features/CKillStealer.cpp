@@ -1118,13 +1118,26 @@ namespace
 	// if any k-tool combo reaches the threshold, the top-k highest-damage combo
 	// reaches it too. O(n log n), no combinatorial search, no n for which this
 	// can blow up.
+
+	// Single source of truth for "how much damage counts as lethal". A flat
+	// HealthBuffer alone can't absorb the damage estimate's own margin of
+	// error (magic resistance, spell amp), so a plan that only just clears
+	// health+HealthBuffer can still fail to finish the target in game even
+	// though it "should" have killed - requiring a percentage of headroom on
+	// top is what makes a plan that reads as lethal actually be lethal.
+	auto LethalThreshold(int targetHealth) -> float
+	{
+		const float health = static_cast<float>(targetHealth);
+		return health * (1.f + Settings::KillStealer::SafetyMarginPercent * 0.01f) + Settings::KillStealer::HealthBuffer;
+	}
+
 	auto BuildKillPlan(const HeroSnapshot& localHero, const HeroSnapshot& target, const std::vector<KillTool>& tools,
 		uint32_t now, CKillStealer::PlanState& outPlan, KillPlanEvaluation& outEvaluation) -> bool
 	{
 		outPlan = {};
 		outEvaluation = {};
 
-		const float threshold = static_cast<float>(target.health) + Settings::KillStealer::HealthBuffer;
+		const float threshold = LethalThreshold(target.health);
 		const float distance = Distance2D(localHero.origin, target.origin);
 
 		std::vector<size_t> usable;
@@ -1270,6 +1283,34 @@ namespace
 
 		outEvaluation = selectedEval;
 		return !outPlan.actions.empty();
+	}
+
+	// Re-derives whether the actions from the plan's current position onward
+	// still add up to lethal against the target's CURRENT health. Matches
+	// each remaining PlanAction back to its live KillTool by name (tools is
+	// recollected fresh every tick, so cooldown/mana/etc. are current) rather
+	// than trusting the damage total computed once when the plan was first
+	// built - see the call site in OnRenderInner for why that one-time check
+	// isn't enough on its own.
+	auto IsRemainingPlanStillLethal(const CKillStealer::PlanState& plan, const std::vector<KillTool>& tools,
+		const HeroSnapshot& localHero, const HeroSnapshot& target) -> bool
+	{
+		const bool planUsesAmplifier = std::any_of(plan.actions.begin(), plan.actions.end(),
+			[](const CKillStealer::PlanAction& action) { return action.isDamageAmplifier; });
+
+		float remainingDamage = 0.f;
+		for (size_t index = plan.actionIndex; index < plan.actions.size(); ++index)
+		{
+			const auto& planAction = plan.actions[index];
+			const auto tool = std::find_if(tools.begin(), tools.end(),
+				[&](const KillTool& candidate) { return candidate.name == planAction.name; });
+			if (tool == tools.end())
+				continue;
+			const bool amp = planUsesAmplifier && !tool->isDamageAmplifier && tool->damageType == AbilityDamageType::Magical;
+			remainingDamage += EffectiveDamage(*tool, localHero, target, amp);
+		}
+
+		return remainingDamage >= LethalThreshold(target.health);
 	}
 
 	// Diagnostic only - mirrors WindowReadyForInput()'s exact gate order so a
@@ -1779,6 +1820,20 @@ auto CKillStealer::OnRenderInner() -> void
 			{
 				CancelPlan();
 			}
+			else if (now >= m_Plan.nextActionTick && !IsRemainingPlanStillLethal(m_Plan, tools, localHero, *target))
+			{
+				// The plan's total damage was only ever checked once, at the
+				// tick it was built - a target that regenerated, got healed,
+				// or (in one captured session) respawned back to full HP
+				// while reusing the same entity slot, would otherwise absorb
+				// the rest of the combo, ultimate included, for nothing: the
+				// code only checked "does the target still exist", never "is
+				// what's left of the plan still lethal".
+				if (Settings::KillStealer::DrawDebugInfo)
+					DEV_LOG("[kill-stealer] plan cancelled: target no longer killable with what's left - hp=%d/%d actions_left=%zu\n",
+						target->health, target->maxHealth, m_Plan.actions.size() - m_Plan.actionIndex);
+				CancelPlan();
+			}
 			else if (now >= m_Plan.nextActionTick)
 			{
 				const auto& action = m_Plan.actions[m_Plan.actionIndex];
@@ -1841,14 +1896,14 @@ auto CKillStealer::OnRenderInner() -> void
 
 			DEV_LOG("[kill-stealer] enemy hp=%d/%d dist=%.0f in_range_tools=%d/%zu max_possible_dmg=%.0f threshold=%.0f lethal=%d plan_actions=%zu plan_dmg=%.0f\n",
 				enemy.health, enemy.maxHealth, distance, inRangeToolCount, tools.size(), maxPossibleDamage,
-				static_cast<float>(enemy.health) + Settings::KillStealer::HealthBuffer, lethal ? 1 : 0,
+				LethalThreshold(enemy.health), lethal ? 1 : 0,
 				candidatePlan.actions.size(), candidateEvaluation.totalDamage);
 		}
 
 		if (!lethal)
 			continue;
 
-		const float overkill = candidateEvaluation.totalDamage - (static_cast<float>(enemy.health) + Settings::KillStealer::HealthBuffer);
+		const float overkill = candidateEvaluation.totalDamage - LethalThreshold(enemy.health);
 		const bool better = !bestTarget ||
 			candidateEvaluation.actionCount < bestEvaluation.actionCount ||
 			(candidateEvaluation.actionCount == bestEvaluation.actionCount && overkill < bestOverkill - 0.01f);
