@@ -1298,18 +1298,81 @@ namespace
 		return window;
 	}
 
-	auto MoveCursorToClientPoint(HWND window, const ImVec2& screen, POINT& previousOut) -> bool
+	// SetCursorPos teleports the OS cursor directly - it does NOT go through
+	// the same input pipeline as a real mouse move, so it never generates a
+	// WM_INPUT / raw-input mouse event. Source 2 (like most modern engines)
+	// reads raw input for precise cursor tracking rather than trusting
+	// WM_MOUSEMOVE alone, so a SetCursorPos-only move can visibly relocate
+	// the Windows arrow while the game's own idea of "where the player is
+	// pointing" - the thing that actually decides where a targeted ability
+	// lands - never updates. Routing the move through SendInput instead
+	// (MOUSEEVENTF_MOVE|ABSOLUTE) puts it in the exact same synthetic-input
+	// stream as the key press and click that follow it, so anything already
+	// listening to that stream for the key/click sees the move too.
+	auto SendMouseMoveAbsolute(int screenX, int screenY) -> bool
+	{
+		const int virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+		const int virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+		const int virtualW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+		const int virtualH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+		if (virtualW <= 1 || virtualH <= 1)
+			return false;
+
+		INPUT input{};
+		input.type = INPUT_MOUSE;
+		input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+		input.mi.dx = static_cast<LONG>((static_cast<long long>(screenX - virtualX) * 65535LL) / (virtualW - 1));
+		input.mi.dy = static_cast<LONG>((static_cast<long long>(screenY - virtualY) * 65535LL) / (virtualH - 1));
+		return SendInput(1, &input, sizeof(INPUT)) == 1;
+	}
+
+	auto MoveCursorToClientPoint(HWND window, const ImVec2& screen, POINT& previousOut, bool logDetail = false) -> bool
 	{
 		RECT client{};
-		if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0)
+		if (!GetClientRect(window, &client))
+		{
+			if (logDetail)
+				DEV_LOG("[kill-stealer] cursor: GetClientRect FAILED (err=%lu)\n", GetLastError());
 			return false;
+		}
+		if (client.right <= 0 || client.bottom <= 0)
+		{
+			if (logDetail)
+				DEV_LOG("[kill-stealer] cursor: degenerate client rect %ldx%ld\n", client.right, client.bottom);
+			return false;
+		}
 		const int x = std::clamp(static_cast<int>(std::lround(screen.x)), 0, static_cast<int>(client.right) - 1);
 		const int y = std::clamp(static_cast<int>(std::lround(screen.y)), 0, static_cast<int>(client.bottom) - 1);
 		POINT target{x, y};
 		if (!ClientToScreen(window, &target))
+		{
+			if (logDetail)
+				DEV_LOG("[kill-stealer] cursor: ClientToScreen FAILED (err=%lu)\n", GetLastError());
 			return false;
+		}
 		GetCursorPos(&previousOut);
-		return SetCursorPos(target.x, target.y) != FALSE;
+		// Primary move: SendInput, so the game's input stream actually sees a
+		// mouse-move event (see the comment on SendMouseMoveAbsolute). Fall
+		// back to SetCursorPos only if that call itself couldn't be queued at
+		// all (e.g. no valid virtual-screen metrics) - a visibly-wrong
+		// position beats silently not moving at all.
+		bool moved = SendMouseMoveAbsolute(target.x, target.y);
+		if (!moved)
+			moved = SetCursorPos(target.x, target.y) != FALSE;
+		if (logDetail)
+		{
+			// GetCursorPos read back after the move proves whether the OS
+			// cursor genuinely relocated, rather than trusting the move call's
+			// own return value - a game that has ClipCursor()'d the mouse to a
+			// region that excludes `target` can make the move "succeed" while
+			// the pointer never actually gets where we asked.
+			POINT verify{};
+			GetCursorPos(&verify);
+			DEV_LOG("[kill-stealer] cursor: proj_screen=(%.0f,%.0f) client=%ldx%ld clamped=(%d,%d) screen_target=(%ld,%ld) move_ok=%d verify_pos=(%ld,%ld) verify_match=%d\n",
+				screen.x, screen.y, client.right, client.bottom, x, y, target.x, target.y,
+				moved ? 1 : 0, verify.x, verify.y, (verify.x == target.x && verify.y == target.y) ? 1 : 0);
+		}
+		return moved;
 	}
 
 	auto SendKeyPress(WORD key) -> bool
@@ -1352,15 +1415,26 @@ namespace
 
 		ImVec2 screen{};
 		if (!ProjectTargetScreen(targetOrigin, screen))
+		{
+			if (Settings::KillStealer::DrawDebugInfo)
+				DEV_LOG("[kill-stealer] cursor: ProjectTargetScreen FAILED for target=(%.0f,%.0f,%.0f)\n",
+					targetOrigin.m_x, targetOrigin.m_y, targetOrigin.m_z);
 			return false;
+		}
 
 		POINT previous{};
-		if (!MoveCursorToClientPoint(window, screen, previous))
+		if (!MoveCursorToClientPoint(window, screen, previous, Settings::KillStealer::DrawDebugInfo))
 			return false;
 
 		const bool needsClick = action.kind == CKillStealer::PlanAction::Kind::Attack || !Settings::KillStealer::QuickCast;
-		const bool sent = SendKeyPress(action.key) && (!needsClick || SendLeftClick());
-		SetCursorPos(previous.x, previous.y);
+		const bool keyOk = SendKeyPress(action.key);
+		const bool clickOk = !needsClick || SendLeftClick();
+		const bool sent = keyOk && clickOk;
+		if (Settings::KillStealer::DrawDebugInfo)
+			DEV_LOG("[kill-stealer] cursor: action=%s key=%c needs_click=%d key_sent=%d click_sent=%d overall_sent=%d\n",
+				action.name.c_str(), static_cast<char>(action.key), needsClick ? 1 : 0, keyOk ? 1 : 0, clickOk ? 1 : 0, sent ? 1 : 0);
+		// Cursor is deliberately left on the enemy after the cast, not
+		// restored to wherever it was before.
 		return sent;
 	}
 
@@ -1692,6 +1766,13 @@ auto CKillStealer::OnRenderInner() -> void
 
 			if (!target || target->health <= 0)
 			{
+				// Silent before this - the two most common causes are "target
+				// walked out of DetectRange between plan-build and this tick"
+				// and "target already died to something else". Both look
+				// identical from the outside as "the cast just never
+				// happened", so name which one it was.
+				if (Settings::KillStealer::DrawDebugInfo)
+					DEV_LOG("[kill-stealer] plan cancelled: %s\n", !target ? "target left enemy list (out of range/dead/unresolved)" : "target already at 0 hp");
 				CancelPlan();
 			}
 			else if (m_Plan.actionIndex >= m_Plan.actions.size())
