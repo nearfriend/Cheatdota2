@@ -52,7 +52,16 @@ namespace Settings
 		inline bool DrawKillableMarkers = true;
 		inline bool DrawDetectRangeCircle = true;
 		inline bool DrawDebugInfo = false;
-		inline bool QuickCast = true;
+		// When on, CastPlanAction skips the confirm-click after the ability
+		// hotkey and relies on the press alone firing at the cursor - correct
+		// ONLY if Quickcast is enabled for that ability in Dota's own options.
+		// Defaults off: a stray confirm-click is harmless when Dota-side
+		// Quickcast IS on (it just selects the already-cast-at unit), but
+		// skipping the click when Dota-side Quickcast is OFF means the ability
+		// only ever enters targeting mode and never fires - which reads as
+		// "the spell didn't kill" when the plan and damage math were correct
+		// the whole time. Off is the setting that can't silently no-op casts.
+		inline bool QuickCast = false;
 		inline float HealthBuffer = 1.f;
 		inline int AttackKey = 'A';
 		// Lead the plan with Ethereal Blade (doubles magic damage taken) when it

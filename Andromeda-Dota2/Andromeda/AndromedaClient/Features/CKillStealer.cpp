@@ -122,6 +122,9 @@ namespace
 		float mana = 0.f;
 		float armor = 0.f;
 		float magicResistance = 0.25f;
+		// Pre-normalization value, kept only so debug logging can show whether
+		// the percentage-vs-fraction rescale in BuildSnapshot actually fired.
+		float rawMagicResistance = 0.25f;
 		float spellAmp = 0.f;
 		float attackDamage = 0.f;
 		float attackRange = 150.f;
@@ -413,9 +416,29 @@ namespace
 		if (!std::isfinite(out.mana) || out.mana < 0.f || out.mana > 100000.f)
 			out.mana = 0.f;
 		out.armor = offsets.hasArmor ? ReadField<float>(entity, offsets.armor, 0.f) : 0.f;
-		out.magicResistance = offsets.hasMagicResistance
-			? std::clamp(ReadField<float>(entity, offsets.magicResistance, 0.25f), -0.95f, 0.95f)
-			: 0.25f;
+		if (offsets.hasMagicResistance)
+		{
+			float rawResistance = ReadField<float>(entity, offsets.magicResistance, 0.25f);
+			// m_flMagicalResistanceValue/m_flMagicalResistance has been observed
+			// coming back as a whole-number percentage (e.g. 25.0 for 25%) in
+			// this build rather than the 0-1 fraction the -0.95..0.95 clamp
+			// below assumes. Left unnormalized, any hero with resistance >=1
+			// (i.e. essentially every hero, since base is already ~25) clamped
+			// straight to the 0.95 ceiling - silently applying 95% magic
+			// resistance to every enemy, every time, which is why Finger of
+			// Death (and every other magic spell) kept reading as non-lethal
+			// even against low-HP targets. A fraction-scale value is always
+			// comfortably under 1 in practice, so treat anything |x|>=1 as a
+			// percentage and rescale it before the clamp.
+			out.rawMagicResistance = rawResistance;
+			if (std::isfinite(rawResistance) && std::fabs(rawResistance) >= 1.f)
+				rawResistance *= 0.01f;
+			out.magicResistance = std::clamp(rawResistance, -0.95f, 0.95f);
+		}
+		else
+		{
+			out.magicResistance = 0.25f;
+		}
 		out.spellAmp = offsets.hasSpellAmp ? std::clamp(ReadField<float>(entity, offsets.spellAmp, 0.f), -0.75f, 3.0f) : 0.f;
 		out.attackDamage = static_cast<float>((std::max)(1,
 			ReadField<int>(entity, offsets.damageMin, 0) + (offsets.hasDamageBonus ? ReadField<int>(entity, offsets.damageBonus, 0) : 0)));
@@ -843,7 +866,8 @@ namespace
 		return castRange > 0.f ? castRange : 800.f;
 	}
 
-	auto CollectTools(CGameEntitySystem* entitySystem, const HeroSnapshot& localHero, const KillStealerOffsets& offsets) -> std::vector<KillTool>
+	auto CollectTools(CGameEntitySystem* entitySystem, const HeroSnapshot& localHero, const KillStealerOffsets& offsets,
+		bool logRejections = false) -> std::vector<KillTool>
 	{
 		std::vector<KillTool> tools;
 		static constexpr std::array<WORD, 6> kAbilityKeys = {'Q', 'W', 'E', 'D', 'F', 'R'};
@@ -855,46 +879,111 @@ namespace
 			const auto* field = reinterpret_cast<const uint8_t*>(localHero.entity) + offsets.abilities;
 			if (ReadHandleArray(field, 48, abilityHandles))
 			{
-				int fallbackSlot = 0;
-				for (const auto& handle : abilityHandles)
+				if (logRejections)
 				{
+					int validCount = 0;
+					for (const auto& handle : abilityHandles)
+						validCount += handle.IsValid() ? 1 : 0;
+					DEV_LOG("[kill-stealer] tools: ability array size=%zu valid=%d\n", abilityHandles.size(), validCount);
+				}
+
+				int fallbackSlot = 0;
+				for (size_t slotIndex = 0; slotIndex < abilityHandles.size(); ++slotIndex)
+				{
+					const CHandle& handle = abilityHandles[slotIndex];
 					if (!handle.IsValid())
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): slot=%zu reason=invalid-handle\n", slotIndex);
 						continue;
+					}
 					auto* ability = entitySystem->GetBaseEntityFromHandle(handle);
 					if (!ability)
+					{
+						// A valid CHandle that fails to resolve to an entity -
+						// distinct from never having a handle at all. If this
+						// is where the ultimate goes missing, the handle array
+						// itself is stale/misaligned rather than any of the
+						// gates below being too strict.
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): slot=%zu reason=handle-does-not-resolve ent=%d\n",
+								slotIndex, handle.GetEntryIndex());
 						continue;
+					}
 
+					// Every reason an ability can be dropped, named, so "tools
+					// never grows past 3" is diagnosable instead of another
+					// round of guessing - this loop has been silent on failure
+					// from day one, and it was hiding exactly this.
 					const std::string abilityName = EntityName(ability);
 					const auto* data = FindDamageEntry(abilityName);
-					if (!data || !data->IsUsableDamage() || (!data->unitTarget && !data->noTarget && !data->pointTarget))
+					if (!data)
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name='%s' reason=no-damage-data-entry\n",
+								abilityName.empty() ? "<unnamed>" : abilityName.c_str());
 						continue;
+					}
+					if (!data->IsUsableDamage() || (!data->unitTarget && !data->noTarget && !data->pointTarget))
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=data-not-usable usable=%d unit=%d point=%d notarget=%d\n",
+								abilityName.c_str(), data->IsUsableDamage() ? 1 : 0,
+								data->unitTarget ? 1 : 0, data->pointTarget ? 1 : 0, data->noTarget ? 1 : 0);
+						continue;
+					}
 
 					const int level = ReadField<int>(ability, offsets.abilityLevel, 0);
 					if (level <= 0)
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=level<=0 level=%d\n", abilityName.c_str(), level);
 						continue;
+					}
 					if (offsets.hasAbilityActivated && !ReadField<bool>(ability, offsets.abilityActivated, true))
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=not-activated\n", abilityName.c_str());
 						continue;
+					}
 
 					const float cooldown = ReadField<float>(ability, offsets.abilityCooldown, 0.f);
 					if (std::isfinite(cooldown) && cooldown > 0.15f)
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=on-cooldown cd=%.2f\n", abilityName.c_str(), cooldown);
 						continue;
+					}
 
 					int manaCost = ReadField<int>(ability, offsets.abilityManaCost, 0);
 					if (manaCost <= 0)
 						manaCost = data->ManaForLevel(level);
 					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=cant-afford mana_cost=%d have_mana=%.0f\n",
+								abilityName.c_str(), manaCost, localHero.mana);
 						continue;
+					}
 
 					const float rawDamage = data->DamageForLevel(level);
 					if (rawDamage <= 0.f)
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=zero-damage-for-level level=%d\n", abilityName.c_str(), level);
 						continue;
+					}
 
 					int preferredSlot = PreferredSlotForAbility(abilityName);
 					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
 						preferredSlot = fallbackSlot;
 					++fallbackSlot;
 					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
+					{
+						if (logRejections)
+							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=no-key-slot-available\n", abilityName.c_str());
 						continue;
+					}
 
 					KillTool tool{};
 					tool.kind = ToolKind::Ability;
@@ -907,8 +996,15 @@ namespace
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
 					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
+					if (logRejections)
+						DEV_LOG("[kill-stealer] tool ACCEPTED (ability): name=%s dmg=%.0f range=%.0f key=%c\n",
+							abilityName.c_str(), tool.rawDamage, tool.castRange, static_cast<char>(tool.key));
 					tools.push_back(tool);
 				}
+			}
+			else if (logRejections)
+			{
+				DEV_LOG("[kill-stealer] tools: ability array UNREADABLE (ReadHandleArray failed)\n");
 			}
 		}
 
@@ -1550,9 +1646,9 @@ auto CKillStealer::OnRenderInner() -> void
 			{
 				const bool sameTeam = hero.team == localHero.team;
 				const bool isSelf = hero.entIndex == localHero.entIndex;
-				DEV_LOG("[kill-stealer]   hero=%s team=%u pid=%d pos=(%.0f,%.0f) hp=%d/%d posrepl=%d dist=%.0f %s\n",
+				DEV_LOG("[kill-stealer]   hero=%s team=%u pid=%d pos=(%.0f,%.0f) hp=%d/%d posrepl=%d magicres_raw=%.3f magicres_used=%.3f dist=%.0f %s\n",
 					hero.name.c_str(), hero.team, hero.playerId, hero.origin.m_x, hero.origin.m_y, hero.health, hero.maxHealth,
-					hero.originReplicated ? 1 : 0,
+					hero.originReplicated ? 1 : 0, hero.rawMagicResistance, hero.magicResistance,
 					Distance2D(localHero.origin, hero.origin), isSelf ? "[SELF]" : (sameTeam ? "[ally]" : "[ENEMY]"));
 			}
 			lastDebugLogTick = now;
@@ -1565,7 +1661,14 @@ auto CKillStealer::OnRenderInner() -> void
 		return;
 	}
 
-	const auto tools = CollectTools(entitySystem, localHero, offsets);
+	// Same throttle pattern as the scan-rejection log: walks every ability's
+	// full name/class, so keep it off the hot path.
+	static uint32_t s_LastToolLogTick = 0;
+	const bool logToolRejections = Settings::KillStealer::DrawDebugInfo && (now - s_LastToolLogTick >= 3000);
+	if (logToolRejections)
+		s_LastToolLogTick = now;
+
+	const auto tools = CollectTools(entitySystem, localHero, offsets, logToolRejections);
 	DrawMarkers(localHero, enemies, tools, now);
 
 	// Advance an in-flight plan.
