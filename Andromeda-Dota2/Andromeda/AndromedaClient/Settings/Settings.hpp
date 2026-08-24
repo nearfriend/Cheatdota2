@@ -50,6 +50,7 @@ namespace Settings
 		inline bool UseItems = true;
 		inline bool UseAutoAttack = true;
 		inline bool DrawKillableMarkers = true;
+		inline bool DrawDetectRangeCircle = true;
 		inline bool DrawDebugInfo = false;
 		inline bool QuickCast = true;
 		inline float HealthBuffer = 1.f;
@@ -58,6 +59,11 @@ namespace Settings
 		// helps land the kill in fewer actions, instead of treating it as a
 		// no-damage item that gets filtered out.
 		inline bool PrioritizeEtherealBlade = true;
+		// Ignore enemy heroes farther than this from the local hero. Without a
+		// gate here, any enemy your team merely has vision of (anywhere on the
+		// map) gets evaluated every tick even though nothing in range could ever
+		// reach them - noise at best, wasted work at worst.
+		inline float DetectRange = 1200.f;
 	}
 	namespace LastHitAssistant
 	{

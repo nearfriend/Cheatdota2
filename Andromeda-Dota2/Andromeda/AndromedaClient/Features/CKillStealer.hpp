@@ -43,7 +43,41 @@ public:
 private:
 	auto OnRenderInner() -> void;
 	auto CancelPlan() -> void;
+	auto DrawDebugOverlay() -> void;
+	auto DrawDetectRangeCircle() -> void;
 
 	PlanState m_Plan{};
 	uint32_t m_NextThinkTick = 0;
+
+	// Cached snapshot of the last think-tick's state, drawn every frame as an
+	// on-screen readout when Debug Logs is on - so detection can be verified
+	// live in-game instead of only via debug.log after the fact.
+	struct DebugReadout
+	{
+		bool valid = false;
+		bool localResolved = false;
+		std::string localName;
+		// Which resolver picked localName, so a positional guess is visibly
+		// distinguishable from an authoritative match.
+		std::string localSource;
+		std::string nearestEnemyName;
+		int nearestEnemyHp = 0;
+		int nearestEnemyMaxHp = 0;
+		float nearestEnemyDist = -1.f;
+		int opposingCount = 0;
+		int inRangeCount = 0;
+		// Opposing heroes excluded for having no replicated position at all.
+		int noPositionCount = 0;
+		bool planActive = false;
+		// Local hero world position and the detect range at the moment of the
+		// last think tick, so the range circle can be drawn every frame in
+		// OnRender (not throttled to the 150ms think tick) without redoing the
+		// resolve. Plain floats rather than Vector3 to avoid pulling the SDK
+		// math header into this header.
+		float localOriginX = 0.f;
+		float localOriginY = 0.f;
+		float localOriginZ = 0.f;
+		float detectRange = 0.f;
+	};
+	DebugReadout m_Debug{};
 };

@@ -6,6 +6,7 @@
 #include <Common/DevLog.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
 #include <Dota2/SDK/Interface/CGameEntitySystem.hpp>
+#include <Dota2/SDK/Interface/IVEngineClient2.hpp>
 #include <Dota2/SDK/Math/Math.hpp>
 #include <Dota2/SDK/SDK.hpp>
 #include <Dota2/SDK/Types/CEntityData.hpp>
@@ -17,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -82,6 +84,13 @@ namespace
 		uint32_t attackRange = 0;
 		uint32_t isIllusion = 0;
 		uint32_t isClone = 0;
+		uint32_t heroPlayerId = 0;
+		uint32_t playerOwnerId = 0;
+		uint32_t waitingToSpawn = 0;
+		uint32_t controllerAssignedHero = 0;
+		uint32_t isLocalController = 0;
+		bool hasControllerAssignedHero = false;
+		bool hasIsLocalController = false;
 		bool hasInventory = false;
 		bool hasAbilityActivated = false;
 		bool hasArmor = false;
@@ -91,6 +100,9 @@ namespace
 		bool hasAttackRange = false;
 		bool hasIsIllusion = false;
 		bool hasIsClone = false;
+		bool hasHeroPlayerId = false;
+		bool hasPlayerOwnerId = false;
+		bool hasWaitingToSpawn = false;
 		bool resolved = false;
 	};
 
@@ -101,6 +113,10 @@ namespace
 		std::string name;
 		Vector3 origin{};
 		uint8_t team = 0;
+		int playerId = -1;
+		// False when the scene node still holds the exact-zero placeholder,
+		// meaning this hero has never had a real position replicated to us.
+		bool originReplicated = false;
 		int health = 0;
 		int maxHealth = 0;
 		float mana = 0.f;
@@ -197,10 +213,29 @@ namespace
 		return {};
 	}
 
-	auto LooksLikeHeroName(const std::string& name) -> bool
+	// Two-pronged check (matching CLastHitAssistant.cpp's proven-reliable
+	// LooksLikeHeroEntity): name-string alone isn't always enough - if the
+	// designer/entity name is empty or doesn't resolve for whatever reason,
+	// the schema class name is a working fallback so a hero doesn't silently
+	// get dropped from the scan entirely.
+	auto TextContains(const char* text, const char* needle) -> bool
 	{
+		return text && needle && std::strstr(text, needle) != nullptr;
+	}
+
+	auto LooksLikeHeroEntity(C_BaseEntity* entity, const std::string& name) -> bool
+	{
+		if (!entity)
+			return false;
+
 		const std::string lower = ToLower(name);
-		return lower.find("npc_dota_hero_") != std::string::npos;
+		if (lower.find("npc_dota_hero_") != std::string::npos)
+			return true;
+
+		const char* className = entity->GetSchemaClassName();
+		return TextContains(className, "DOTA_BaseNPC_Hero") ||
+			TextContains(className, "C_DOTA_BaseNPC_Hero") ||
+			TextContains(className, "DOTA_Unit_Hero");
 	}
 
 	auto IsPlayableTeam(uint8_t team) -> bool
@@ -258,35 +293,107 @@ namespace
 		offsets.hasAttackRange = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iAttackRange", offsets.attackRange);
 		offsets.hasIsIllusion = schema->TryGetOffset("C_DOTA_BaseNPC", "m_bIsIllusion", offsets.isIllusion);
 		offsets.hasIsClone = schema->TryGetOffset("C_DOTA_BaseNPC", "m_bIsClone", offsets.isClone);
+		offsets.hasHeroPlayerId = schema->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_iPlayerID", offsets.heroPlayerId) ||
+			schema->TryGetOffset("C_DOTA_BaseNPC", "m_iPlayerID", offsets.heroPlayerId);
+		offsets.hasPlayerOwnerId = schema->TryGetOffset("C_DOTA_BaseNPC", "m_nPlayerOwnerID", offsets.playerOwnerId);
+		// NOTE: there is deliberately no per-team vision lookup here. A
+		// m_iTaggedAsVisibleByTeam-style bitmask would be the right signal for
+		// "can we actually see this enemy", but this build's schema has no such
+		// field - dumping C_DOTA_BaseNPC and C_BaseEntity produced only
+		// m_bSelectionRingVisible, m_flInvisibilityLevel and
+		// m_nVisibilityNoInterpolationTick. Use CShcemaOffset::LogFieldsMatching
+		// to re-check if a future build adds one.
+		offsets.hasWaitingToSpawn = schema->TryGetOffset("C_DOTA_BaseNPC", "m_bIsWaitingToSpawn", offsets.waitingToSpawn);
+		offsets.hasControllerAssignedHero = schema->TryGetOffset("C_DOTAPlayerController", "m_hAssignedHero", offsets.controllerAssignedHero);
+		offsets.hasIsLocalController =
+			schema->TryGetOffset("CBasePlayerController", "m_bIsLocalPlayerController", offsets.isLocalController) ||
+			schema->TryGetOffset("C_BasePlayerController", "m_bIsLocalPlayerController", offsets.isLocalController) ||
+			schema->TryGetOffset("C_DOTAPlayerController", "m_bIsLocalPlayerController", offsets.isLocalController);
 
 		offsets.resolved = hasHealth && hasMaxHealth && hasTeam && hasMana && hasAbilities &&
 			hasSceneNode && hasAbsOrigin && hasAbilityLevel && hasAbilityCooldown && hasAbilityMana;
 
 		if (offsets.resolved)
-			DEV_LOG("[kill-stealer] offsets ready\n");
+			DEV_LOG("[kill-stealer] offsets ready localCtrlFlag=%d(0x%X) ctrlAssignedHero=%d(0x%X) heroPlayerId=%d(0x%X) playerOwnerId=%d(0x%X) waitingToSpawn=%d(0x%X)\n",
+				offsets.hasIsLocalController ? 1 : 0, offsets.isLocalController,
+				offsets.hasControllerAssignedHero ? 1 : 0, offsets.controllerAssignedHero,
+				offsets.hasHeroPlayerId ? 1 : 0, offsets.heroPlayerId,
+				offsets.hasPlayerOwnerId ? 1 : 0, offsets.playerOwnerId,
+				offsets.hasWaitingToSpawn ? 1 : 0, offsets.waitingToSpawn);
 
 		return offsets;
 	}
 
-	auto BuildSnapshot(C_BaseEntity* entity, int entIndex, const KillStealerOffsets& offsets, HeroSnapshot& out) -> bool
+	auto IsLikelyPlayerId(int value) -> bool
 	{
+		return value >= 0 && value < 24;
+	}
+
+	auto UnitPlayerId(const C_BaseEntity* entity, const KillStealerOffsets& offsets) -> int
+	{
+		if (offsets.hasHeroPlayerId)
+		{
+			const int heroPlayerId = ReadField<int>(entity, offsets.heroPlayerId, -1);
+			if (IsLikelyPlayerId(heroPlayerId))
+				return heroPlayerId;
+		}
+		if (offsets.hasPlayerOwnerId)
+		{
+			const int ownerPlayerId = ReadField<int>(entity, offsets.playerOwnerId, -1);
+			if (IsLikelyPlayerId(ownerPlayerId))
+				return ownerPlayerId;
+		}
+		return -1;
+	}
+
+	auto TryLocalPlayerId(int& outPlayerId) -> bool
+	{
+		outPlayerId = -1;
+		auto* engine = SDK::Interfaces::EngineToClient();
+		if (!engine)
+			return false;
+		engine->GetLocalPlayer(outPlayerId, 0);
+		return IsLikelyPlayerId(outPlayerId);
+	}
+
+	// outReject, when supplied, receives a static string naming the gate that
+	// rejected the entity. Heroes silently vanishing from the scan has been the
+	// hardest part of this feature to diagnose, because a filtered entity leaves
+	// no trace - this makes each rejection attributable.
+	auto BuildSnapshot(C_BaseEntity* entity, int entIndex, const KillStealerOffsets& offsets, HeroSnapshot& out,
+		const char** outReject = nullptr) -> bool
+	{
+		const auto Reject = [&](const char* reason) -> bool
+		{
+			if (outReject)
+				*outReject = reason;
+			return false;
+		};
+
 		const int health = ReadField<int>(entity, offsets.health, 0);
 		const int maxHealth = ReadField<int>(entity, offsets.maxHealth, 0);
-		if (health <= 0 || maxHealth <= 0 || maxHealth > 50000)
-			return false;
+		if (health <= 0)
+			return Reject("dead/zero-hp");
+		if (maxHealth <= 0 || maxHealth > 50000)
+			return Reject("implausible-maxhp");
 
 		const uint8_t team = ReadField<uint8_t>(entity, offsets.team, 0);
 		if (!IsPlayableTeam(team))
-			return false;
+			return Reject("non-playable-team");
 
 		if (offsets.hasIsIllusion && ReadField<bool>(entity, offsets.isIllusion, false))
-			return false;
+			return Reject("illusion");
 		if (offsets.hasIsClone && ReadField<bool>(entity, offsets.isClone, false))
-			return false;
+			return Reject("clone");
+		// Pre-spawn hero entities exist during strategy time and while dead
+		// heroes wait to respawn; they carry health and a team but are not on
+		// the map, so they can never be a target.
+		if (offsets.hasWaitingToSpawn && ReadField<bool>(entity, offsets.waitingToSpawn, false))
+			return Reject("waiting-to-spawn");
 
 		Vector3 origin{};
 		if (!ReadOrigin(entity, offsets, origin))
-			return false;
+			return Reject("no-origin");
 
 		out = {};
 		out.entity = entity;
@@ -294,6 +401,12 @@ namespace
 		out.name = EntityName(entity);
 		out.origin = origin;
 		out.team = team;
+		out.playerId = UnitPlayerId(entity, offsets);
+		// An exact zero on all three axes is the never-replicated placeholder,
+		// not a real standing position. It matters because (0,0,0) sits near the
+		// middle of the Dota map, so an unseen hero parked there otherwise reads
+		// as the closest enemy to anyone fighting around mid.
+		out.originReplicated = !(origin.m_x == 0.f && origin.m_y == 0.f && origin.m_z == 0.f);
 		out.health = health;
 		out.maxHealth = maxHealth;
 		out.mana = ReadField<float>(entity, offsets.mana, 0.f);
@@ -312,105 +425,108 @@ namespace
 		return true;
 	}
 
+	// Whether this hero's position can be trusted for range checks.
+	//
+	// NOTE: this is deliberately NOT a fog-of-war test. A per-team vision
+	// bitmask would be the right signal, but this build's schema exposes no
+	// such field - a dump of C_DOTA_BaseNPC and C_BaseEntity turned up only
+	// m_bSelectionRingVisible, m_flInvisibilityLevel and
+	// m_nVisibilityNoInterpolationTick, none of which describe team vision. So
+	// the only staleness we can actually detect is the never-replicated
+	// (0,0,0) placeholder, which matters because (0,0,0) sits near the middle
+	// of the map and would otherwise read as the closest enemy to anyone
+	// fighting around mid.
+	//
+	// In practice enemy positions do keep updating (see debug.log: Warlock
+	// moved through several distinct positions while unseen), so a hero that
+	// walked into fog is not currently distinguishable here.
+	auto HasTrustworthyPosition(const HeroSnapshot& hero) -> bool
+	{
+		return hero.originReplicated;
+	}
+
 	// One flat pass over every populated entity slot, throttled to the same
 	// cadence as the rest of the feature. Builds every playable-team hero
 	// snapshot in one go - no separate handle-cache layer to keep in sync.
-	auto ScanHeroes(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets) -> std::vector<HeroSnapshot>
+	// Walks the allocated identity chunks directly instead of indexing
+	// GetHighestEntityIndex()..1. That index has been the actual cause of
+	// "local hero not resolved": in a real capture, our own hero (team=2)
+	// never appeared in an index-bounded scan for an entire ~7800-line
+	// session, while CAndromedaClient.cpp's CollectInPlayHeroVitals - which
+	// already walks chunks for exactly this reason - found it every tick
+	// (see its own comment: "GetHighestEntityIndex is build-dependent in
+	// Dota"). Chunk 0 covers entity 0..511, chunk 1 covers 512..1023, and so
+	// on for all MAX_ENTITY_LISTS chunks - together they cover every index
+	// GetHighestEntityIndex() could ever report and then some, so this is
+	// strictly a superset of the old scan, not a different one.
+	auto ScanHeroes(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets,
+		bool logRejections = false) -> std::vector<HeroSnapshot>
 	{
 		std::vector<HeroSnapshot> heroes;
 		if (!entitySystem)
 			return heroes;
 
-		const int highest = (std::min)(entitySystem->GetHighestEntityIndex(), MAX_TOTAL_ENTITIES - 1);
-		if (highest <= 0)
-			return heroes;
-
+		int scannedChunks = 0;
 		heroes.reserve(12);
-		for (int index = 1; index <= highest; ++index)
+		for (int chunkIndex = 0; chunkIndex < MAX_ENTITY_LISTS; ++chunkIndex)
 		{
-			auto* entity = entitySystem->GetBaseEntity<C_BaseEntity>(index);
-			if (!entity)
+			auto* chunk = entitySystem->m_pIdentityChunks[chunkIndex];
+			if (!chunk)
 				continue;
+			++scannedChunks;
 
-			HeroSnapshot snapshot{};
-			if (!BuildSnapshot(entity, index, offsets, snapshot))
-				continue;
-			if (!LooksLikeHeroName(snapshot.name))
-				continue;
+			for (int entryIndex = 0; entryIndex < MAX_ENTITIES_IN_LIST; ++entryIndex)
+			{
+				auto* entity = chunk->m_pIdentities[entryIndex].pBaseEntity();
+				if (!entity)
+					continue;
+				const int index = chunkIndex * MAX_ENTITIES_IN_LIST + entryIndex;
 
-			heroes.push_back(std::move(snapshot));
+				HeroSnapshot snapshot{};
+				const char* reject = nullptr;
+				if (!BuildSnapshot(entity, index, offsets, snapshot, &reject))
+				{
+					// Only bother naming the entity if it actually looks like a
+					// hero - otherwise this would report every creep and ward on
+					// the map. Costs an extra name/class lookup, but only on the
+					// throttled debug path.
+					if (logRejections)
+					{
+						const std::string name = EntityName(entity);
+						if (LooksLikeHeroEntity(entity, name))
+							DEV_LOG("[kill-stealer] scan: DROPPED hero-like ent=%d name=%s reason=%s\n",
+								index, name.empty() ? "<unnamed>" : name.c_str(), reject ? reject : "unknown");
+					}
+					continue;
+				}
+				if (!LooksLikeHeroEntity(entity, snapshot.name))
+				{
+					if (logRejections && snapshot.playerId >= 0)
+						DEV_LOG("[kill-stealer] scan: DROPPED player-unit ent=%d name=%s pid=%d reason=not-hero-shaped\n",
+							index, snapshot.name.empty() ? "<unnamed>" : snapshot.name.c_str(), snapshot.playerId);
+					continue;
+				}
+
+				heroes.push_back(std::move(snapshot));
+			}
 		}
+
+		if (logRejections)
+			DEV_LOG("[kill-stealer] scan: chunks=%d/%d\n", scannedChunks, MAX_ENTITY_LISTS);
 
 		return heroes;
 	}
 
-	auto TryScreenCenterDistanceSq(const Vector3& origin, float& outDistanceSq) -> bool
-	{
-		Vector3 lifted = origin;
-		lifted.m_z += 64.f;
-		ImVec2 screen{};
-		if (!Math::WorldToScreen(lifted, screen) && !Math::WorldToScreen(origin, screen))
-			return false;
-
-		ImVec2 display{};
-		if (ImGui::GetCurrentContext())
-			display = ImGui::GetIO().DisplaySize;
-		if (display.x <= 0.f || display.y <= 0.f)
-		{
-			auto* gui = GetAndromedaGUI();
-			const HWND window = gui ? gui->m_hCS2Window : nullptr;
-			RECT client{};
-			if (window && GetClientRect(window, &client))
-				display = ImVec2(static_cast<float>(client.right), static_cast<float>(client.bottom));
-		}
-		if (display.x <= 0.f || display.y <= 0.f)
-			return false;
-
-		const float dx = screen.x - display.x * 0.5f;
-		const float dy = screen.y - display.y * 0.5f;
-		outDistanceSq = dx * dx + dy * dy;
-		return std::isfinite(outDistanceSq);
-	}
-
-	// Primary local-hero identification: the game camera is centered on your
-	// own hero by default, so "nearest hero to the middle of the screen" is a
-	// cheap, reliable proxy that needs nothing but positions we already read.
-	// This is the same strategy CLastHitAssistant.cpp already uses successfully.
-	auto ResolveLocalHeroByScreenCenter(const std::vector<HeroSnapshot>& heroes, int cachedEntIndex, const HeroSnapshot*& out) -> bool
-	{
-		out = nullptr;
-		float bestDistanceSq = 3.4e38f;
-		const HeroSnapshot* best = nullptr;
-
-		for (const auto& hero : heroes)
-		{
-			float distanceSq = 0.f;
-			if (!TryScreenCenterDistanceSq(hero.origin, distanceSq))
-				continue;
-
-			// Sticky preference for whichever hero we picked last tick, so a
-			// momentary camera pan doesn't flip which hero we think is "us".
-			if (hero.entIndex == cachedEntIndex)
-				distanceSq *= 0.1f;
-
-			if (distanceSq < bestDistanceSq)
-			{
-				bestDistanceSq = distanceSq;
-				best = &hero;
-			}
-		}
-
-		if (!best)
-			return false;
-		out = best;
-		return true;
-	}
-
-	// Circuit-broken: measured at 100-190ms per attempt when it fails in this
-	// environment (its internal fallback scans every populated entity slot with
-	// a virtual call on each one). Back off hard after repeated failures rather
-	// than paying that cost on every resolve attempt - the screen-center
-	// fallback below is the reliable path here.
+	// This is the authoritative identity path, so the backoff here only exists
+	// to bound cost, never to give up on it. Failures are normal and expected
+	// while loading / in hero select, when there genuinely is no controller yet
+	// - a long backoff would then still be in force at the moment the match
+	// starts, handing the whole game to the screen-center guess.
+	//
+	// The cost concern is real but already bounded upstream: GetLocalPlayerController()
+	// throttles its own full-entity scan to once per 250ms and caches the handle
+	// on success, so a resolved hero costs a handle deref, not a scan. Cap the
+	// backoff at 2s so it recovers as soon as the controller actually exists.
 	auto TryResolveViaController(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets, HeroSnapshot& out) -> bool
 	{
 		static int failStreak = 0;
@@ -420,68 +536,206 @@ namespace
 		if (now < nextAttemptTick)
 			return false;
 
-		auto* controller = CGameEntitySystem::GetLocalPlayerController();
-		if (!controller)
+		const auto Fail = [&]() -> bool
 		{
 			++failStreak;
-			nextAttemptTick = now + (failStreak >= 3 ? 60000ull : 1000ull);
+			nextAttemptTick = now + (failStreak >= 3 ? 2000ull : 500ull);
 			return false;
-		}
+		};
+
+		auto* controller = CGameEntitySystem::GetLocalPlayerController();
+		if (!controller)
+			return Fail();
 
 		const CHandle heroHandle = controller->m_hAssignedHero();
 		if (!heroHandle.IsValid())
-		{
-			++failStreak;
-			nextAttemptTick = now + (failStreak >= 3 ? 60000ull : 1000ull);
-			return false;
-		}
+			return Fail();
 
 		auto* heroEntity = entitySystem->GetBaseEntityFromHandle(heroHandle);
 		if (!heroEntity || !BuildSnapshot(heroEntity, heroHandle.GetEntryIndex(), offsets, out))
-		{
-			++failStreak;
-			nextAttemptTick = now + (failStreak >= 3 ? 60000ull : 1000ull);
-			return false;
-		}
+			return Fail();
 
 		failStreak = 0;
+		nextAttemptTick = 0;
 		return true;
+	}
+
+	// Match the engine's local player slot against each hero's own m_iPlayerID.
+	// Unlike m_bIsLocalPlayerController (see ResolveLocalHero), m_iPlayerID is
+	// replicated for every hero, so comparing it to our own slot is an exact
+	// identity test rather than a byte that only happens to be meaningful on
+	// our own controller. Operates on the hero list we already scanned this
+	// tick, so it costs nothing extra.
+	auto ResolveLocalHeroByPlayerId(const std::vector<HeroSnapshot>& heroes, const HeroSnapshot*& out) -> bool
+	{
+		out = nullptr;
+
+		int localPlayerId = -1;
+		const bool haveLocalPlayerId = TryLocalPlayerId(localPlayerId);
+
+		const HeroSnapshot* match = nullptr;
+		bool ambiguous = false;
+		if (haveLocalPlayerId)
+		{
+			for (const auto& hero : heroes)
+			{
+				if (hero.playerId != localPlayerId)
+					continue;
+				// Ambiguous - two heroes claiming our slot (illusions/clones that
+				// kept the owner's id). Refuse rather than pick one at random.
+				if (match)
+				{
+					ambiguous = true;
+					break;
+				}
+				match = &hero;
+			}
+		}
+
+		if (match && !ambiguous)
+		{
+			out = match;
+			return true;
+		}
+
+		// Every heroes_seen>0 failure to date has been a mystery because this
+		// was the one branch with no log line of its own - the per-hero dump
+		// only ran AFTER a successful resolve. Throttled to 2s so a persistent
+		// failure doesn't spam.
+		if (Settings::KillStealer::DrawDebugInfo)
+		{
+			static ULONGLONG s_NextLogTick = 0;
+			const ULONGLONG now = GetTickCount64();
+			if (now >= s_NextLogTick)
+			{
+				s_NextLogTick = now + 2000;
+				DEV_LOG("[kill-stealer] playerid FAILED: haveLocalPlayerId=%d localPlayerId=%d ambiguous=%d heroes=%zu\n",
+					haveLocalPlayerId ? 1 : 0, localPlayerId, ambiguous ? 1 : 0, heroes.size());
+				for (const auto& hero : heroes)
+					DEV_LOG("[kill-stealer]   candidate: %s team=%u pid=%d ent=%d\n",
+						hero.name.c_str(), hero.team, hero.playerId, hero.entIndex);
+			}
+		}
+
+		return false;
+	}
+
+	// Which resolver produced the current local hero ("playerid" or
+	// "controller"). Surfaced in the debug overlay and the log purely for
+	// diagnosis - misidentification has been the recurring failure mode here,
+	// so knowing which resolver answered is the difference between diagnosing
+	// the next one and guessing again.
+	const char* g_LastLocalHeroSource = "none";
+
+	// Logs only when the answer or the source that produced it changes, so the
+	// line doesn't repeat every think tick.
+	auto NoteLocalHeroResolved(const char* source, const HeroSnapshot& hero) -> void
+	{
+		g_LastLocalHeroSource = source;
+
+		if (!Settings::KillStealer::DrawDebugInfo)
+			return;
+
+		static int s_LastEntIndex = -1;
+		static const char* s_LastSource = nullptr;
+		if (s_LastEntIndex == hero.entIndex && s_LastSource == source)
+			return;
+
+		s_LastEntIndex = hero.entIndex;
+		s_LastSource = source;
+		DEV_LOG("[kill-stealer] local hero resolved via %s: %s team=%u pid=%d ent=%d\n",
+			source, hero.name.c_str(), hero.team, hero.playerId, hero.entIndex);
 	}
 
 	auto ResolveLocalHero(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets,
 		const std::vector<HeroSnapshot>& heroes, HeroSnapshot& out) -> bool
 	{
 		static int s_CachedEntIndex = -1;
+		// True only when the cached hero came from an identity source (the
+		// assigned-hero handle, or an exact player-id match) rather than a
+		// positional guess. An untrusted cache is still reused between attempts
+		// so the readout doesn't flicker, but the resolvers above it keep
+		// running so a wrong guess can always be replaced.
+		static bool s_CacheTrusted = false;
+		// Which resolver produced the cached hero. Re-reported on every cache
+		// hit so that turning Debug Logs on mid-session still names the source -
+		// otherwise the one line that explains the choice is only ever emitted
+		// at the moment of resolution, which is usually before logging is on.
+		static const char* s_CachedSource = "cache";
 
-		// Fast path: the hero we picked last tick is still in the fresh scan.
-		if (s_CachedEntIndex >= 0)
+		// PRIMARY: our engine player slot matched against each hero's replicated
+		// m_iPlayerID. This is the only method observed to be correct in this
+		// environment - see debug.log, where the controller path never resolved
+		// at all and the screen-center path produced a wrong hero.
+		//
+		// Deliberately runs BEFORE the cache, every tick, rather than being
+		// short-circuited by it: it is a plain loop over the hero list we
+		// already scanned, so it costs nothing, and re-deriving it each tick
+		// means a stale or wrong cached entry can never outlive one tick. Every
+		// path below is a fallback for when the engine reports no usable slot.
+		const HeroSnapshot* playerIdHero = nullptr;
+		if (ResolveLocalHeroByPlayerId(heroes, playerIdHero))
+		{
+			out = *playerIdHero;
+			s_CachedEntIndex = out.entIndex;
+			s_CacheTrusted = true;
+			s_CachedSource = "playerid";
+			NoteLocalHeroResolved("playerid", out);
+			return true;
+		}
+
+		// Reuse the last trusted hero while the engine slot is briefly
+		// unavailable, so the readout doesn't drop out mid-game.
+		if (s_CachedEntIndex >= 0 && s_CacheTrusted)
 		{
 			for (const auto& hero : heroes)
 			{
 				if (hero.entIndex == s_CachedEntIndex)
 				{
 					out = hero;
+					NoteLocalHeroResolved(s_CachedSource, hero);
 					return true;
 				}
 			}
+			// Trusted hero vanished (died/reconnect) - drop and re-resolve.
+			s_CachedEntIndex = -1;
+			s_CacheTrusted = false;
 		}
 
+		// FALLBACK: the engine's local-player-controller, whose m_hAssignedHero
+		// is by definition our hero. Correct in principle, but its resolver has
+		// never succeeded on this build.
+		//
+		// Do NOT reintroduce a bare m_bIsLocalPlayerController scan ahead of
+		// this. That byte is only meaningful on our own controller; on other
+		// players' controllers it is not replicated, so it reads as whatever
+		// happens to be in memory. A stale non-zero byte there makes the first
+		// matching controller win and hands back somebody else's hero - which
+		// is exactly the bug where a Lion player was shown as Sniper.
 		HeroSnapshot controllerHero{};
 		if (TryResolveViaController(entitySystem, offsets, controllerHero))
 		{
 			out = controllerHero;
-			s_CachedEntIndex = out.entIndex;
+			s_CachedEntIndex = controllerHero.entIndex;
+			s_CacheTrusted = true;
+			s_CachedSource = "controller";
+			NoteLocalHeroResolved("controller", controllerHero);
 			return true;
 		}
 
-		const HeroSnapshot* screenCenterHero = nullptr;
-		if (ResolveLocalHeroByScreenCenter(heroes, s_CachedEntIndex, screenCenterHero))
-		{
-			out = *screenCenterHero;
-			s_CachedEntIndex = out.entIndex;
-			return true;
-		}
-
+		// No screen-center guess below this point, deliberately. It used to be
+		// the last resort, but it has no way to know our team before a hero is
+		// ever trusted-resolved, so at the very start of a match (before our
+		// own hero entity exists client-side - see debug.log, where it took
+		// several minutes for npc_dota_hero_lion to appear in the scan at all
+		// while enemy bots were already present) it would happily report the
+		// nearest hero to the screen center as "you" even when that hero was on
+		// the ENEMY team. Reporting nothing until playerid/controller actually
+		// identifies us is strictly better than reporting a guess that can be
+		// an opponent: every consumer of ResolveLocalHero (targeting, the
+		// overlay, the range circle) already treats "not resolved" as "do
+		// nothing yet", which is the correct behavior while our hero doesn't
+		// exist to act through anyway.
 		s_CachedEntIndex = -1;
 		return false;
 	}
@@ -922,6 +1176,23 @@ namespace
 		return !outPlan.actions.empty();
 	}
 
+	// Diagnostic only - mirrors WindowReadyForInput()'s exact gate order so a
+	// failed cast can report specifically which condition blocked it, instead
+	// of leaving "why didn't it fire" as another guess.
+	auto DescribeInputBlockReason() -> const char*
+	{
+		auto* gui = GetAndromedaGUI();
+		if (!gui)
+			return "no GUI instance";
+		if (!gui->m_hCS2Window)
+			return "no CS2 window handle";
+		if (GetForegroundWindow() != gui->m_hCS2Window)
+			return "game window not focused";
+		if (gui->IsVisible())
+			return "Andromeda menu overlay is open (input is blocked while it's open)";
+		return "input checks passed - failure is elsewhere (key press/cursor)";
+	}
+
 	auto WindowReadyForInput() -> HWND
 	{
 		auto* gui = GetAndromedaGUI();
@@ -1024,6 +1295,72 @@ namespace
 			drawList->AddText(ImVec2(screen.x - size.x * 0.5f, screen.y - size.y * 0.5f), IM_COL32(255, 255, 255, 255), label);
 		}
 	}
+
+	// Ported from CLastHitAssistant.cpp's DrawStyledWorldCircle/DrawScreenRangeFallback
+	// pair (same visual style, so both features read as one system). Traces the
+	// circle in world space and projects every point through WorldToScreen, so
+	// it foreshortens correctly with the camera instead of being a flat screen
+	// ellipse - unlike last-hit's copy, this one is actually wired up to render.
+	auto DrawStyledWorldCircle(ImDrawList* drawList, const Vector3& origin, float radius) -> bool
+	{
+		if (!drawList || radius <= 1.f)
+			return false;
+
+		constexpr int segments = 128;
+		constexpr float kTwoPi = 6.28318530718f;
+		std::array<ImVec2, segments> points{};
+		for (int index = 0; index < segments; ++index)
+		{
+			const float angle = static_cast<float>(index) * kTwoPi / static_cast<float>(segments);
+			const Vector3 world(origin.m_x + std::cos(angle) * radius,
+				origin.m_y + std::sin(angle) * radius, origin.m_z + 4.f);
+			if (!Math::WorldToScreen(world, points[index]))
+				return false;
+		}
+
+		drawList->AddConvexPolyFilled(points.data(), segments, IM_COL32(70, 170, 255, 8));
+		drawList->AddPolyline(points.data(), segments, IM_COL32(5, 9, 12, 125), ImDrawFlags_Closed, 4.0f);
+		drawList->AddPolyline(points.data(), segments, IM_COL32(65, 190, 255, 82), ImDrawFlags_Closed, 5.0f);
+		drawList->AddPolyline(points.data(), segments, IM_COL32(255, 232, 132, 235), ImDrawFlags_Closed, 2.0f);
+		drawList->AddPolyline(points.data(), segments, IM_COL32(155, 245, 255, 135), ImDrawFlags_Closed, 1.1f);
+		return true;
+	}
+
+	auto DrawStyledScreenCircle(ImDrawList* drawList, const ImVec2& center, float radius, int segments = 128) -> void
+	{
+		if (!drawList || radius <= 1.f)
+			return;
+
+		drawList->AddCircleFilled(center, radius, IM_COL32(70, 170, 255, 9), segments);
+		drawList->AddCircle(center, radius + 1.7f, IM_COL32(5, 9, 12, 125), segments, 4.0f);
+		drawList->AddCircle(center, radius, IM_COL32(65, 190, 255, 82), segments, 5.0f);
+		drawList->AddCircle(center, radius, IM_COL32(255, 232, 132, 235), segments, 2.0f);
+		drawList->AddCircle(center, (std::max)(1.f, radius - 2.4f), IM_COL32(155, 245, 255, 135), segments, 1.1f);
+	}
+
+	// When the world-space circle can't be projected (hero is off-screen, or
+	// the camera angle makes some rim points fail WorldToScreen), fall back to
+	// a flat screen-space circle sized from one known-good point on the rim -
+	// worse geometry, but still gives an honest sense of scale instead of
+	// nothing at all.
+	auto DrawScreenRangeFallback(ImDrawList* drawList, const Vector3& origin, float radius) -> void
+	{
+		Vector3 lifted = origin;
+		lifted.m_z += 64.f;
+		ImVec2 center{};
+		if (!Math::WorldToScreen(lifted, center) && !Math::WorldToScreen(origin, center))
+			return;
+
+		Vector3 sideWorld(origin.m_x + radius, origin.m_y, origin.m_z + 64.f);
+		ImVec2 side{};
+		float screenRadius = 150.f;
+		if (Math::WorldToScreen(sideWorld, side))
+			screenRadius = std::hypot(side.x - center.x, side.y - center.y);
+		screenRadius = std::clamp(screenRadius, 45.f, 420.f);
+
+		DrawStyledScreenCircle(drawList, center, screenRadius);
+		drawList->AddCircleFilled(center, 3.5f, IM_COL32(248, 250, 238, 210), 16);
+	}
 }
 
 auto CKillStealer::CancelPlan() -> void
@@ -1037,6 +1374,15 @@ auto CKillStealer::OnRenderInner() -> void
 
 	if (!Settings::KillStealer::Enable)
 	{
+		if (Settings::KillStealer::DrawDebugInfo)
+		{
+			static uint32_t lastLogTick = 0;
+			if (now - lastLogTick >= 3000)
+			{
+				DEV_LOG("[kill-stealer] debug blocked: Enable is OFF\n");
+				lastLogTick = now;
+			}
+		}
 		CancelPlan();
 		m_NextThinkTick = now;
 		return;
@@ -1050,26 +1396,167 @@ auto CKillStealer::OnRenderInner() -> void
 	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
 	if (!entitySystem || !offsets.resolved)
 	{
+		if (Settings::KillStealer::DrawDebugInfo)
+		{
+			static uint32_t lastLogTick = 0;
+			if (now - lastLogTick >= 3000)
+			{
+				DEV_LOG("[kill-stealer] debug blocked: entitySystem=%d offsets_resolved=%d\n",
+					entitySystem ? 1 : 0, offsets.resolved ? 1 : 0);
+				lastLogTick = now;
+			}
+		}
+		// Clear the readout instead of leaving the last good frame on screen - a
+		// stale "you: X / nearest: Y" would read as if detection were still
+		// running when in fact nothing is being evaluated at all.
+		m_Debug = {};
 		CancelPlan();
 		return;
 	}
 
-	const auto heroes = ScanHeroes(entitySystem, offsets);
+	// Scan-rejection logging walks names/classes for failed entities, so keep it
+	// to a slow cadence rather than every think tick.
+	static uint32_t s_LastScanLogTick = 0;
+	const bool logScanRejections = Settings::KillStealer::DrawDebugInfo && (now - s_LastScanLogTick >= 3000);
+	if (logScanRejections)
+		s_LastScanLogTick = now;
+
+	const auto heroes = ScanHeroes(entitySystem, offsets, logScanRejections);
 
 	HeroSnapshot localHero{};
 	if (!ResolveLocalHero(entitySystem, offsets, heroes, localHero))
 	{
+		m_Debug = {};
+		m_Debug.valid = true;
+		m_Debug.localResolved = false;
+		if (Settings::KillStealer::DrawDebugInfo)
+		{
+			static uint32_t lastLogTick = 0;
+			if (now - lastLogTick >= 3000)
+			{
+				DEV_LOG("[kill-stealer] debug blocked: local hero not resolved, heroes_seen=%zu\n", heroes.size());
+				lastLogTick = now;
+			}
+		}
 		CancelPlan();
 		return;
 	}
 
 	std::vector<HeroSnapshot> enemies;
+	float nearestEnemyDist = -1.f;
+	int nearestEnemyHp = 0;
+	int nearestEnemyMaxHp = 0;
+	std::string nearestEnemyName;
+	int totalOpposingTeamHeroes = 0;
+	int unpositionedEnemies = 0;
 	for (const auto& hero : heroes)
 	{
 		if (hero.entIndex == localHero.entIndex)
 			continue;
-		if (hero.team != localHero.team)
-			enemies.push_back(hero);
+		if (hero.team == localHero.team)
+			continue;
+
+		// Reject only the never-replicated (0,0,0) placeholder - see
+		// HasTrustworthyPosition for why a real fog test is not available.
+		if (!HasTrustworthyPosition(hero))
+		{
+			++unpositionedEnemies;
+			continue;
+		}
+
+		++totalOpposingTeamHeroes;
+		const float distance = Distance2D(localHero.origin, hero.origin);
+		if (nearestEnemyDist < 0.f || distance < nearestEnemyDist)
+		{
+			nearestEnemyDist = distance;
+			nearestEnemyHp = hero.health;
+			nearestEnemyMaxHp = hero.maxHealth;
+			nearestEnemyName = hero.name;
+		}
+
+		const bool inRange = distance <= Settings::KillStealer::DetectRange;
+
+		// Log the moment an enemy crosses the range boundary in either
+		// direction. The previous capture contained no in-range sample at all
+		// (closest enemy all session: 7390 units), so the entry condition has
+		// never actually been observed - this records the crossing itself,
+		// including both positions it was derived from, rather than relying on
+		// catching it in a periodic sample.
+		if (Settings::KillStealer::DrawDebugInfo)
+		{
+			static std::vector<std::pair<int, bool>> s_LastInRange;
+			auto entry = std::find_if(s_LastInRange.begin(), s_LastInRange.end(),
+				[&](const auto& pair) { return pair.first == hero.entIndex; });
+
+			if (entry == s_LastInRange.end())
+				s_LastInRange.emplace_back(hero.entIndex, inRange);
+			else if (entry->second != inRange)
+			{
+				entry->second = inRange;
+				DEV_LOG("[kill-stealer] RANGE %s: %s dist=%.0f threshold=%.0f self=(%.0f,%.0f) enemy=(%.0f,%.0f) hp=%d/%d\n",
+					inRange ? "ENTER" : "EXIT", hero.name.c_str(), distance, Settings::KillStealer::DetectRange,
+					localHero.origin.m_x, localHero.origin.m_y, hero.origin.m_x, hero.origin.m_y,
+					hero.health, hero.maxHealth);
+			}
+		}
+
+		if (!inRange)
+			continue;
+		enemies.push_back(hero);
+	}
+
+	// Cache the resolved state for the live on-screen overlay (drawn every
+	// frame in OnRender, independent of this think-tick throttle).
+	m_Debug = {};
+	m_Debug.valid = true;
+	m_Debug.localResolved = true;
+	m_Debug.localName = localHero.name;
+	m_Debug.localSource = g_LastLocalHeroSource;
+	m_Debug.nearestEnemyName = nearestEnemyName;
+	m_Debug.nearestEnemyHp = nearestEnemyHp;
+	m_Debug.nearestEnemyMaxHp = nearestEnemyMaxHp;
+	m_Debug.nearestEnemyDist = nearestEnemyDist;
+	m_Debug.opposingCount = totalOpposingTeamHeroes;
+	m_Debug.inRangeCount = static_cast<int>(enemies.size());
+	m_Debug.noPositionCount = unpositionedEnemies;
+	m_Debug.planActive = m_Plan.active;
+	m_Debug.localOriginX = localHero.origin.m_x;
+	m_Debug.localOriginY = localHero.origin.m_y;
+	m_Debug.localOriginZ = localHero.origin.m_z;
+	m_Debug.detectRange = Settings::KillStealer::DetectRange;
+
+	// Log once local hero is resolved. When any enemy is within detect range,
+	// sample fast (250ms) so a brief kill window can't slip between samples;
+	// otherwise keep it quiet (3s). The summary carries the local hero's own
+	// origin (so it can be cross-checked against other features' readings) and
+	// is followed by one line per opposing hero with its raw position - so a
+	// hero being dropped entirely, or read at a bogus position, is visible.
+	if (Settings::KillStealer::DrawDebugInfo)
+	{
+		static uint32_t lastDebugLogTick = 0;
+		const uint32_t interval = enemies.empty() ? 3000u : 250u;
+		if (now - lastDebugLogTick >= interval)
+		{
+			DEV_LOG("[kill-stealer] debug local=%s team=%u mana=%.0f local_pos=(%.0f,%.0f) nearest_enemy=%s hp=%d/%d dist=%.0f detect_range=%.0f opposing=%d no_position=%d heroes_seen=%zu in_range=%zu plan_active=%d\n",
+				localHero.name.c_str(), localHero.team, localHero.mana, localHero.origin.m_x, localHero.origin.m_y,
+				nearestEnemyName.empty() ? "<none>" : nearestEnemyName.c_str(),
+				nearestEnemyHp, nearestEnemyMaxHp, nearestEnemyDist, Settings::KillStealer::DetectRange,
+				totalOpposingTeamHeroes, unpositionedEnemies, heroes.size(), enemies.size(), m_Plan.active ? 1 : 0);
+
+			int engineSlot = -1;
+			TryLocalPlayerId(engineSlot);
+			DEV_LOG("[kill-stealer]   engineLocalPlayer=%d\n", engineSlot);
+			for (const auto& hero : heroes)
+			{
+				const bool sameTeam = hero.team == localHero.team;
+				const bool isSelf = hero.entIndex == localHero.entIndex;
+				DEV_LOG("[kill-stealer]   hero=%s team=%u pid=%d pos=(%.0f,%.0f) hp=%d/%d posrepl=%d dist=%.0f %s\n",
+					hero.name.c_str(), hero.team, hero.playerId, hero.origin.m_x, hero.origin.m_y, hero.health, hero.maxHealth,
+					hero.originReplicated ? 1 : 0,
+					Distance2D(localHero.origin, hero.origin), isSelf ? "[SELF]" : (sameTeam ? "[ally]" : "[ENEMY]"));
+			}
+			lastDebugLogTick = now;
+		}
 	}
 
 	if (enemies.empty())
@@ -1080,17 +1567,6 @@ auto CKillStealer::OnRenderInner() -> void
 
 	const auto tools = CollectTools(entitySystem, localHero, offsets);
 	DrawMarkers(localHero, enemies, tools, now);
-
-	if (Settings::KillStealer::DrawDebugInfo)
-	{
-		static uint32_t lastDebugLogTick = 0;
-		if (now - lastDebugLogTick >= 3000)
-		{
-			DEV_LOG("[kill-stealer] debug local=%s team=%u mana=%.0f enemies=%zu tools=%zu plan_active=%d\n",
-				localHero.name.c_str(), localHero.team, localHero.mana, enemies.size(), tools.size(), m_Plan.active ? 1 : 0);
-			lastDebugLogTick = now;
-		}
-	}
 
 	// Advance an in-flight plan.
 	if (m_Plan.active)
@@ -1124,6 +1600,8 @@ auto CKillStealer::OnRenderInner() -> void
 				const auto& action = m_Plan.actions[m_Plan.actionIndex];
 				if (!CastPlanAction(action, target->origin))
 				{
+					if (Settings::KillStealer::DrawDebugInfo)
+						DEV_LOG("[kill-stealer] cast failed: action=%s reason=%s\n", action.name.c_str(), DescribeInputBlockReason());
 					CancelPlan();
 				}
 				else
@@ -1147,11 +1625,43 @@ auto CKillStealer::OnRenderInner() -> void
 	const HeroSnapshot* bestTarget = nullptr;
 	float bestOverkill = 3.4e38f;
 
+	// Sample fast (250ms) while there's a target to evaluate, so a fleeting
+	// close-and-low-HP kill window is actually captured instead of slipping
+	// between coarse 3s samples.
+	const bool debugEnemies = Settings::KillStealer::DrawDebugInfo;
+	static uint32_t lastEnemyLogTick = 0;
+	const bool shouldLogEnemies = debugEnemies && (now - lastEnemyLogTick >= 250);
+
 	for (const auto& enemy : enemies)
 	{
 		PlanState candidatePlan{};
 		KillPlanEvaluation candidateEvaluation{};
-		if (!BuildKillPlan(localHero, enemy, tools, now, candidatePlan, candidateEvaluation))
+		const bool lethal = BuildKillPlan(localHero, enemy, tools, now, candidatePlan, candidateEvaluation);
+
+		if (shouldLogEnemies)
+		{
+			// Upper-bound diagnostic: sum of every in-range tool's damage, not
+			// gated by the greedy search's early-exit-at-threshold - shows
+			// whether "not lethal" means "genuinely not enough damage in range"
+			// vs. something else (range, mana, cooldown filtering tools out).
+			float maxPossibleDamage = 0.f;
+			int inRangeToolCount = 0;
+			const float distance = Distance2D(localHero.origin, enemy.origin);
+			for (const auto& tool : tools)
+			{
+				if (!tool.noTarget && distance > tool.castRange + 75.f)
+					continue;
+				++inRangeToolCount;
+				maxPossibleDamage += EffectiveDamage(tool, localHero, enemy, false);
+			}
+
+			DEV_LOG("[kill-stealer] enemy hp=%d/%d dist=%.0f in_range_tools=%d/%zu max_possible_dmg=%.0f threshold=%.0f lethal=%d plan_actions=%zu plan_dmg=%.0f\n",
+				enemy.health, enemy.maxHealth, distance, inRangeToolCount, tools.size(), maxPossibleDamage,
+				static_cast<float>(enemy.health) + Settings::KillStealer::HealthBuffer, lethal ? 1 : 0,
+				candidatePlan.actions.size(), candidateEvaluation.totalDamage);
+		}
+
+		if (!lethal)
 			continue;
 
 		const float overkill = candidateEvaluation.totalDamage - (static_cast<float>(enemy.health) + Settings::KillStealer::HealthBuffer);
@@ -1168,6 +1678,9 @@ auto CKillStealer::OnRenderInner() -> void
 		}
 	}
 
+	if (shouldLogEnemies)
+		lastEnemyLogTick = now;
+
 	if (!bestTarget)
 		return;
 
@@ -1181,6 +1694,11 @@ auto CKillStealer::OnRender() -> void
 	if (!Settings::KillStealer::DrawDebugInfo)
 	{
 		OnRenderInner();
+		// The range circle is a gameplay visual, not a diagnostic - it must
+		// keep drawing regardless of the Debug Logs toggle, using the cached
+		// think-tick state so it stays smooth every frame like the killable
+		// markers do.
+		DrawDetectRangeCircle();
 		return;
 	}
 
@@ -1208,5 +1726,97 @@ auto CKillStealer::OnRender() -> void
 		DEV_LOG("[kill-stealer] perf worst_onrender_ms=%.3f\n", worstMs);
 		worstMs = 0.0;
 		lastPerfLogTick = nowTick;
+	}
+
+	// Drawn every frame (not throttled) so both stay stable instead of
+	// flickering at the think-tick rate.
+	DrawDetectRangeCircle();
+	DrawDebugOverlay();
+}
+
+auto CKillStealer::DrawDetectRangeCircle() -> void
+{
+	if (!Settings::KillStealer::Enable || !Settings::KillStealer::DrawDetectRangeCircle)
+		return;
+	if (!ImGui::GetCurrentContext() || !m_Debug.valid || !m_Debug.localResolved)
+		return;
+
+	auto* drawList = ImGui::GetForegroundDrawList();
+	if (!drawList)
+		return;
+
+	const Vector3 origin(m_Debug.localOriginX, m_Debug.localOriginY, m_Debug.localOriginZ);
+	if (DrawStyledWorldCircle(drawList, origin, m_Debug.detectRange))
+		return;
+
+	DrawScreenRangeFallback(drawList, origin, m_Debug.detectRange);
+}
+
+auto CKillStealer::DrawDebugOverlay() -> void
+{
+	if (!Settings::KillStealer::DrawDebugInfo || !ImGui::GetCurrentContext())
+		return;
+
+	auto* drawList = ImGui::GetForegroundDrawList();
+	if (!drawList)
+		return;
+
+	const float x = 24.f;
+	float y = 150.f;
+	const auto line = [&](const char* text, ImU32 color)
+	{
+		drawList->AddText(ImVec2(x + 1.f, y + 1.f), IM_COL32(0, 0, 0, 200), text);
+		drawList->AddText(ImVec2(x, y), color, text);
+		y += 18.f;
+	};
+
+	constexpr ImU32 kHeader = IM_COL32(120, 200, 255, 255);
+	constexpr ImU32 kText = IM_COL32(235, 235, 235, 255);
+	constexpr ImU32 kWarn = IM_COL32(255, 190, 70, 255);
+	constexpr ImU32 kGood = IM_COL32(120, 240, 140, 255);
+
+	line("[Kill Stealer debug]", kHeader);
+
+	if (!Settings::KillStealer::Enable)
+	{
+		line("Enable is OFF", kWarn);
+		return;
+	}
+	if (!m_Debug.valid)
+	{
+		line("waiting for game state...", kWarn);
+		return;
+	}
+	if (!m_Debug.localResolved)
+	{
+		line("local hero NOT resolved", kWarn);
+		return;
+	}
+
+	char buf[256];
+	// Both remaining resolvers (playerid, controller) are identity matches, not
+	// guesses, so there is no "this might be wrong" state left to call out here
+	// - the source is shown purely for diagnosis, not as a trust signal.
+	std::snprintf(buf, sizeof(buf), "you: %s  [via %s]",
+		m_Debug.localName.c_str(), m_Debug.localSource.c_str());
+	line(buf, kText);
+
+	if (m_Debug.nearestEnemyDist < 0.f || m_Debug.nearestEnemyName.empty())
+	{
+		std::snprintf(buf, sizeof(buf), "no enemy heroes in scan (%d without position)", m_Debug.noPositionCount);
+		line(buf, kWarn);
+	}
+	else
+	{
+		const bool inRange = m_Debug.nearestEnemyDist <= Settings::KillStealer::DetectRange;
+		std::snprintf(buf, sizeof(buf), "nearest: %s  hp %d/%d  dist %.0f (range %.0f)",
+			m_Debug.nearestEnemyName.c_str(), m_Debug.nearestEnemyHp, m_Debug.nearestEnemyMaxHp,
+			m_Debug.nearestEnemyDist, Settings::KillStealer::DetectRange);
+		line(buf, inRange ? kGood : kWarn);
+
+		std::snprintf(buf, sizeof(buf), "opposing: %d   no-pos: %d   in range: %d   plan: %s",
+			m_Debug.opposingCount, m_Debug.noPositionCount, m_Debug.inRangeCount,
+			m_Debug.planActive ? "ACTIVE" : "idle");
+		line(buf, m_Debug.planActive ? kGood : kText);
 	}
 }

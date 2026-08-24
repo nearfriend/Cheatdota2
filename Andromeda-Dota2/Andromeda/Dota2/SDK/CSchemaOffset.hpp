@@ -36,6 +36,15 @@ public:
 
 	void StoreOffset( const char* className , const char* propertyName , uint32_t offset );
 
+	/**
+	 * DEV_LOG every field of ClassName whose name contains Needle
+	 * (case-insensitive). For pinning down a field whose exact spelling changed
+	 * between builds, without turning on DUMP_SCHEMA_ALL_OFFSET and dumping the
+	 * entire schema.
+	 * @return Number of fields logged.
+	 */
+	auto LogFieldsMatching( const std::string& ClassName , const std::string& Needle ) const -> size_t;
+
 private:
 	std::unordered_map<std::string , std::unordered_map<std::string , SchemaOffset_t>> m_SchemaData;
 };

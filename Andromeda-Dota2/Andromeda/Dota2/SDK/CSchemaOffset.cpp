@@ -3,6 +3,7 @@
 #include <Dota2/SDK/SDK.hpp>
 #include <Dota2/SDK/Interface/CShemaSystemSDK.hpp>
 
+#include <cctype>
 #include <cstring>
 #include <algorithm>
 #include <unordered_set>
@@ -352,6 +353,42 @@ auto CShcemaOffset::StoreOffset( const char* className , const char* propertyNam
 	m_SchemaData[className][propertyName].m_ClassName = className;
 	m_SchemaData[className][propertyName].m_PropertyName = propertyName;
 	m_SchemaData[className][propertyName].m_Offset = offset;
+}
+
+auto CShcemaOffset::LogFieldsMatching( const std::string& ClassName , const std::string& Needle ) const -> size_t
+{
+	const auto classIt = m_SchemaData.find( ClassName );
+
+	if ( classIt == m_SchemaData.end() )
+	{
+		DEV_LOG( "[schema] class %s not present\n" , ClassName.c_str() );
+		return 0;
+	}
+
+	auto lower = []( const std::string& in ) -> std::string
+	{
+		std::string out = in;
+		std::transform( out.begin() , out.end() , out.begin() ,
+			[]( unsigned char c ) { return static_cast<char>( std::tolower( c ) ); } );
+		return out;
+	};
+
+	const std::string needleLower = lower( Needle );
+	size_t logged = 0;
+
+	for ( const auto& field : classIt->second )
+	{
+		if ( lower( field.first ).find( needleLower ) == std::string::npos )
+			continue;
+
+		DEV_LOG( "[schema]   %s::%s = 0x%04X\n" , ClassName.c_str() , field.first.c_str() , field.second.m_Offset );
+		++logged;
+	}
+
+	if ( logged == 0 )
+		DEV_LOG( "[schema] no field of %s matched \"%s\"\n" , ClassName.c_str() , Needle.c_str() );
+
+	return logged;
 }
 
 auto CShcemaOffset::TryGetOffset( const std::string& ClassName , const std::string& PropertyName , uint32_t& outOffset ) const -> bool
