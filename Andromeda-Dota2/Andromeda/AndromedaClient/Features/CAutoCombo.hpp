@@ -2,6 +2,7 @@
 
 #include <Dota2/SDK/Types/CHandle.hpp>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -18,6 +19,11 @@ public:
 	auto OnRender() -> void;
 
 	std::string GetStatus() const { return m_Status; }
+
+	// Live ability name per slot (0..5 = Q W E D F R) of the local hero, for
+	// the menu's spell-order editor. Empty string = slot unknown/unresolved.
+	// Refreshed by OnRender (same render thread as the menu, no locking).
+	const std::array<std::string , 6>& GetSlotNames() const { return m_SlotNames; }
 
 	struct ComboPlanAction
 	{
@@ -68,6 +74,8 @@ private:
 
 	ComboPlanState m_Plan{};
 	uint32_t m_NextThinkTick = 0;
+	uint32_t m_NextSlotNameRefresh = 0;
 	bool m_ComboKeyWasDown = false;
 	std::string m_Status = "Idle";
+	std::array<std::string , 6> m_SlotNames{};
 };

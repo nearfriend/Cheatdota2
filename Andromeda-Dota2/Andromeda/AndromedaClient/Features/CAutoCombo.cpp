@@ -84,6 +84,8 @@ namespace
 		std::string name;
 		float castRange = 0.f;
 		WORD key = 0;
+		// Ability slot 0..5 (Q W E D F R) for kind==Ability; -1 for items/attack.
+		int slot = -1;
 		bool noTarget = false;
 		bool unitTarget = false;
 		bool pointTarget = false;
@@ -510,6 +512,43 @@ namespace
 		return bestIndex;
 	}
 
+	// Names the local hero's ability slots (0..5 = Q W E D F R) for the menu's
+	// spell-order editor. Unlike CollectTools this does not filter on the
+	// damage-data catalog, level, cooldown or mana - the user should see and be
+	// able to disable every spell the hero has, usable right now or not.
+	auto CollectSlotNames( CGameEntitySystem* entitySystem , const UnitSnapshot& localUnit ,
+		const AutoComboOffsets& offsets , std::array<std::string , 6>& out ) -> void
+	{
+		out = {};
+		std::vector<CHandle> abilityHandles;
+		const auto* field = reinterpret_cast<const void*>( reinterpret_cast<uintptr_t>( localUnit.entity ) + offsets.abilities );
+		if ( !ReadHandleVector( field , 48 , abilityHandles ) )
+			return;
+
+		int fallbackSlot = 0;
+		for ( const auto& handle : abilityHandles )
+		{
+			CEntityIdentity* identity = nullptr;
+			auto* ability = EntityFromHandle( entitySystem , handle , &identity );
+			if ( !ability )
+				continue;
+
+			const std::string name = EntityName( ability , identity );
+			if ( name.empty() ||
+				name.rfind( "special_bonus_" , 0 ) == 0 ||
+				name.rfind( "generic_" , 0 ) == 0 ||
+				name.rfind( "ability_" , 0 ) == 0 )
+				continue;
+
+			int slot = PreferredSlotForAbility( name );
+			if ( slot < 0 || slot >= static_cast<int>( out.size() ) )
+				slot = fallbackSlot;
+			++fallbackSlot;
+			if ( slot >= 0 && slot < static_cast<int>( out.size() ) && out[slot].empty() )
+				out[slot] = name;
+		}
+	}
+
 	auto CollectTools( CGameEntitySystem* entitySystem , const UnitSnapshot& localUnit , const AutoComboOffsets& offsets ) -> std::vector<ComboTool>
 	{
 		std::vector<ComboTool> tools;
@@ -559,11 +598,16 @@ namespace
 					if ( preferredSlot < 0 || preferredSlot >= static_cast<int>( kAbilityKeys.size() ) )
 						continue;
 
+					// Per-slot opt-out from the menu's spell-order editor.
+					if ( !Settings::AutoCombo::SpellEnabled[preferredSlot] )
+						continue;
+
 					ComboTool tool{};
 					tool.kind = ComboToolKind::Ability;
 					tool.name = abilityName;
 					tool.castRange = data->noTarget ? 25000.f : ReadCastRange( ability , offsets , data->castRange );
 					tool.key = kAbilityKeys[preferredSlot];
+					tool.slot = preferredSlot;
 					tool.noTarget = data->noTarget;
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
@@ -630,18 +674,24 @@ namespace
 			tools.push_back( tool );
 		}
 
-		// No-target buffs/setups first, then point-target ground spells, then
-		// unit-target disables (Hex, stuns, silences - no damage of their own but
-		// lock the target down for what follows), then unit-target damage nukes,
-		// and the auto-attack finisher last.
+		// Abilities cast in the user's per-slot order (Settings::AutoCombo::SpellOrder,
+		// edited in the menu's spell-order editor - Zeus players can put E before R
+		// before W, etc). Items follow after every spell, the auto-attack finisher
+		// goes last. Stable sort keeps item slot order among themselves.
 		std::stable_sort( tools.begin() , tools.end() , []( const ComboTool& a , const ComboTool& b )
 		{
 			auto rank = []( const ComboTool& t ) -> int
 			{
-				if ( t.kind == ComboToolKind::Attack ) return 4;
-				if ( t.noTarget ) return 0;
-				if ( t.pointTarget ) return 1;
-				return t.hasDamage ? 3 : 2;
+				if ( t.kind == ComboToolKind::Attack )
+					return 200;
+				if ( t.kind == ComboToolKind::Item )
+					return 100;
+				for ( int position = 0; position < Settings::AutoCombo::SpellSlotCount; ++position )
+				{
+					if ( Settings::AutoCombo::SpellOrder[position] == t.slot )
+						return position;
+				}
+				return Settings::AutoCombo::SpellSlotCount;
 			};
 			return rank( a ) < rank( b );
 		} );
@@ -757,6 +807,17 @@ auto CAutoCombo::OnRender() -> void
 		CancelPlan();
 		m_Status = "Waiting for offsets";
 		return;
+	}
+
+	// Keep the menu's spell-order editor labeled with the hero's real spell
+	// names. Only while the menu is open (casting is blocked then anyway) and
+	// at a slow cadence - it re-scans the ability list each refresh.
+	if ( GetAndromedaGUI()->IsVisible() && now >= m_NextSlotNameRefresh )
+	{
+		m_NextSlotNameRefresh = now + 500;
+		UnitSnapshot localUnit{};
+		if ( ResolveLocalUnit( entitySystem , offsets , localUnit ) )
+			CollectSlotNames( entitySystem , localUnit , offsets , m_SlotNames );
 	}
 
 	// Advance an in-flight plan first.

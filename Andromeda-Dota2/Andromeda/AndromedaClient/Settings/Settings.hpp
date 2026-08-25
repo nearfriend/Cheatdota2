@@ -93,6 +93,16 @@ namespace Settings
 		inline int ComboKey = 0;
 		inline int TargetEntIndex = -1;
 		inline int AttackKey = 'A';
+
+		// Per-spell cast order and enable flags, edited from the menu. Indices
+		// are ability slots 0..5 (hotkeys Q W E D F R). SpellOrder is the cast
+		// sequence - element 0 casts first - and is always kept a permutation
+		// of 0..5 (the UI only swaps neighbors). A slot with SpellEnabled[slot]
+		// false is skipped by the combo entirely. Items (if enabled) cast after
+		// all spells, the auto-attack finisher last.
+		inline constexpr int SpellSlotCount = 6;
+		inline int SpellOrder[SpellSlotCount] = { 0 , 1 , 2 , 3 , 4 , 5 };
+		inline bool SpellEnabled[SpellSlotCount] = { true , true , true , true , true , true };
 	}
 	namespace Heroes
 	{

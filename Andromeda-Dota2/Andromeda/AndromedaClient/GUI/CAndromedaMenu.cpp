@@ -15,6 +15,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 #include <wincodec.h>
+#include <array>
 #include <filesystem>
 #include <winreg.h>
 #include <vector>
@@ -1044,7 +1045,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : ( autoComboPage ? 400.f : 180.f ) ) );
+			// The auto-combo card's content (toggles + keybind + cast-order list)
+			// exceeds the visible card, which scrolls internally.
+			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) );
 			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
 			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
@@ -1108,7 +1111,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			else if ( autoComboPage )
 			{
 				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable ability/item at the target." );
-				ImGui::TextDisabled( "Order: setups/buffs, then point-target spells, then disables (Hex/stuns), then damage, then auto-attack." );
+				ImGui::TextDisabled( "Cast order is editable below - top of the list is cast first." );
 				ImGui::Spacing();
 
 				DrawSwitchRow( "Enable" , "##autoComboEnable" , Settings::AutoCombo::Enable , ReferenceIcon::Aggro );
@@ -1158,6 +1161,57 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 					Settings::AutoCombo::TargetEntIndex = targetInputAutoCombo;
 				ImGui::SameLine();
 				ImGui::TextDisabled( "-1 = auto-target nearest enemy hero" );
+
+				ImGui::Spacing();
+				ImGui::Separator();
+				ImGui::Text( "Spell order" );
+				ImGui::SameLine();
+				if ( ImGui::SmallButton( "Reset##spellOrder" ) )
+				{
+					for ( int i = 0; i < Settings::AutoCombo::SpellSlotCount; ++i )
+					{
+						Settings::AutoCombo::SpellOrder[i] = i;
+						Settings::AutoCombo::SpellEnabled[i] = true;
+					}
+				}
+				ImGui::SameLine();
+				ImGui::TextDisabled( "top = cast first, uncheck = skip that spell" );
+
+				static const char* kSlotKeys[Settings::AutoCombo::SpellSlotCount] = { "Q" , "W" , "E" , "D" , "F" , "R" };
+
+				const std::array<std::string , 6>* slotNames = nullptr;
+				if ( auto* pClient = GetAndromedaClient() )
+					slotNames = &pClient->GetAutoCombo().GetSlotNames();
+
+				for ( int position = 0; position < Settings::AutoCombo::SpellSlotCount; ++position )
+				{
+					const int slot = Settings::AutoCombo::SpellOrder[position];
+					if ( slot < 0 || slot >= Settings::AutoCombo::SpellSlotCount )
+						continue;
+
+					ImGui::PushID( position );
+					ImGui::Checkbox( "##spellEnabled" , &Settings::AutoCombo::SpellEnabled[slot] );
+					ImGui::SameLine();
+					ImGui::BeginDisabled( position == 0 );
+					if ( ImGui::ArrowButton( "##spellUp" , ImGuiDir_Up ) )
+						std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position - 1] );
+					ImGui::EndDisabled();
+					ImGui::SameLine();
+					ImGui::BeginDisabled( position == Settings::AutoCombo::SpellSlotCount - 1 );
+					if ( ImGui::ArrowButton( "##spellDown" , ImGuiDir_Down ) )
+						std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position + 1] );
+					ImGui::EndDisabled();
+					ImGui::SameLine();
+
+					const char* liveName = slotNames && !( *slotNames )[slot].empty() ? ( *slotNames )[slot].c_str() : nullptr;
+					if ( !Settings::AutoCombo::SpellEnabled[slot] )
+						ImGui::TextDisabled( "%d. [%s] %s (skipped)" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
+					else
+						ImGui::Text( "%d. [%s] %s" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
+					ImGui::PopID();
+				}
+				if ( !slotNames || ( *slotNames )[0].empty() )
+					ImGui::TextDisabled( "Spell names appear once you're in a match with your hero." );
 
 				ImGui::EndDisabled();
 
