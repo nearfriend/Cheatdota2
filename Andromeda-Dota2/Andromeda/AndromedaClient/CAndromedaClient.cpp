@@ -2800,7 +2800,6 @@ namespace
 	{
 		static uint32_t assignedHeroOffset = 0;
 		static bool loggedOffsets = false;
-		static ULONGLONG lastStatusLog = 0;
 		static ULONGLONG lastW2SFailLog = 0;
 		static ULONGLONG nextSourceRefresh = 0;
 		static std::vector<TrueSightSource> cachedSources{};
@@ -2906,17 +2905,6 @@ namespace
 		const bool detected = detectedByRange || detectedByDebuff;
 		if ( detectedByDebuff && !detectedByRange )
 			nearestKind = TrueSightKind::Sentry;
-
-		if ( now - lastStatusLog >= 1000 )
-		{
-			const char* kindName = nearestKind == TrueSightKind::Gem ? "gem" :
-				( nearestKind == TrueSightKind::Sentry ? "sentry" : "tower" );
-			DEV_LOG( "[visible-by-enemy] detected=%d range=%d debuff=%d sources=%d nearest=%.0f(%s) team=%u pos=(%.0f,%.0f)\n" ,
-				detected ? 1 : 0 , detectedByRange ? 1 : 0 , detectedByDebuff ? 1 : 0 ,
-				sourceChecks , nearestSource , kindName , localTeam ,
-				localOrigin.m_x , localOrigin.m_y );
-			lastStatusLog = now;
-		}
 
 		if ( !detected )
 			return;

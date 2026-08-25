@@ -7,10 +7,11 @@
 #include <vector>
 
 // Generic, hero-agnostic burst combo: on a hotkey, fires every off-cooldown,
-// affordable damage ability/item (plus optionally an auto-attack) at a manually
-// selected target. Unlike CInvokerController this has no per-hero scripting, so it
-// only knows about abilities present in the AbilityDamageData catalog (damage
-// spells/items) - pure utility/disables without a damage value are not included.
+// affordable damage ability/item (plus optionally an auto-attack) at the nearest
+// enemy hero (or a manually pinned entindex, if TargetEntIndex >= 0). Unlike
+// CInvokerController this has no per-hero scripting, so it only knows about
+// abilities present in the AbilityDamageData catalog (damage spells/items) -
+// pure utility/disables without a damage value are not included.
 class CAutoCombo final
 {
 public:
@@ -36,6 +37,18 @@ public:
 		bool pointTarget = false;
 	};
 
+	// Targeted casts span three think ticks (aim -> cast -> restore) instead of
+	// one call: Dota consumes injected input asynchronously, so the cursor must
+	// still be sitting on the target when the game actually processes the
+	// key/click - moving and instantly restoring it made every unit/point-target
+	// spell resolve at the old cursor position.
+	enum class CastPhase : uint8_t
+	{
+		Aim,
+		Cast,
+		Restore
+	};
+
 	struct ComboPlanState
 	{
 		bool active = false;
@@ -43,6 +56,10 @@ public:
 		uint32_t expiresAt = 0;
 		int targetEntIndex = -1;
 		size_t actionIndex = 0;
+		CastPhase castPhase = CastPhase::Aim;
+		int32_t prevCursorX = 0;
+		int32_t prevCursorY = 0;
+		bool hasPrevCursor = false;
 		std::vector<ComboPlanAction> actions;
 	};
 

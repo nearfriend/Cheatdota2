@@ -6,6 +6,7 @@
 #include <Common/DevLog.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
 #include <Dota2/SDK/Interface/CGameEntitySystem.hpp>
+#include <Dota2/SDK/Interface/CLocalHeroResolver.hpp>
 #include <Dota2/SDK/Math/Math.hpp>
 #include <Dota2/SDK/SDK.hpp>
 #include <Dota2/SDK/Types/CEntityData.hpp>
@@ -48,10 +49,12 @@ namespace
 		uint32_t damageMin = 0;
 		uint32_t damageBonus = 0;
 		uint32_t attackRange = 0;
+		uint32_t team = 0;
 		bool hasInventory = false;
 		bool hasAbilityActivated = false;
 		bool hasDamageBonus = false;
 		bool hasAttackRange = false;
+		bool hasTeam = false;
 		bool resolved = false;
 	};
 
@@ -72,6 +75,7 @@ namespace
 		float mana = 0.f;
 		float attackDamage = 0.f;
 		float attackRange = 150.f;
+		uint8_t team = 0;
 	};
 
 	struct ComboTool
@@ -111,6 +115,9 @@ namespace
 		return start >= regionStart && start + size <= regionEnd && start + size >= start;
 	}
 
+	// Validated read - VirtualQuery per call, so keep it OFF hot paths. Only
+	// for pointers that were themselves read out of game memory (handle-vector
+	// data, inventory arrays), where a stale/garbage pointer is plausible.
 	template <typename T>
 	auto TryRead( const void* address , T& out ) -> bool
 	{
@@ -120,12 +127,20 @@ namespace
 		return true;
 	}
 
+	// Plain dereference, no VirtualQuery - `base` is always the game's own live
+	// entity pointer (or an offset a few hundred bytes into it), never
+	// attacker-controlled or independently computed. Matches CKillStealer's
+	// ReadField: routing the entity-scan loops through VirtualQuery instead
+	// meant tens of thousands of kernel calls in a single render-thread frame,
+	// which froze the game for noticeable fractions of a second on the combo
+	// keypress.
 	template <typename T>
 	auto TryReadField( const void* base , uint32_t offset , T& out ) -> bool
 	{
 		if ( !base || !offset )
 			return false;
-		return TryRead( reinterpret_cast<const void*>( reinterpret_cast<uintptr_t>( base ) + offset ) , out );
+		std::memcpy( &out , reinterpret_cast<const uint8_t*>( base ) + offset , sizeof( T ) );
+		return true;
 	}
 
 	template <typename T>
@@ -159,6 +174,12 @@ namespace
 		return {};
 	}
 
+	// identityOut comes from the entity's own m_pEntity schema field (matching
+	// CKillStealer's entity->pEntityIdentity()) rather than being left null -
+	// a null identity here silently made EntityName() fall back to
+	// GetSchemaClassName(), which returns null for entities reached via an
+	// identity-chunk walk, so every caller (ability/item lookup, hero
+	// detection) was matching against an empty name.
 	auto TryEntityAtIndex( CGameEntitySystem* entitySystem , int index , CEntityIdentity*& identityOut , C_BaseEntity*& entityOut ) -> bool
 	{
 		identityOut = nullptr;
@@ -171,6 +192,7 @@ namespace
 			return false;
 
 		entityOut = entity;
+		identityOut = entity->pEntityIdentity();
 		return true;
 	}
 
@@ -323,6 +345,7 @@ namespace
 
 		const bool hasHealth = schema->TryGetOffset( "C_BaseEntity" , "m_iHealth" , offsets.health );
 		const bool hasMaxHealth = schema->TryGetOffset( "C_BaseEntity" , "m_iMaxHealth" , offsets.maxHealth );
+		offsets.hasTeam = schema->TryGetOffset( "C_BaseEntity" , "m_iTeamNum" , offsets.team );
 		const bool hasMana = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_flMana" , offsets.mana );
 		const bool hasAbilities = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_vecAbilities" , offsets.abilities );
 		const bool hasSceneNode = schema->TryGetOffset( "C_BaseEntity" , "m_pGameSceneNode" , offsets.sceneNode );
@@ -353,18 +376,33 @@ namespace
 		return offsets;
 	}
 
+	auto IsPlayableTeam( uint8_t team ) -> bool
+	{
+		return team == 2 || team == 3;
+	}
+
+	auto LooksLikeHeroEntity( C_BaseEntity* entity , const std::string& name ) -> bool
+	{
+		if ( !entity )
+			return false;
+		const std::string lower = ToLower( name );
+		if ( lower.find( "npc_dota_hero_" ) != std::string::npos )
+			return true;
+		const char* className = entity->GetSchemaClassName();
+		return className && ( std::strstr( className , "DOTA_BaseNPC_Hero" ) || std::strstr( className , "DOTA_Unit_Hero" ) );
+	}
+
+	// Which entity is our hero is resolved by the shared CLocalHeroResolver
+	// (see Dota2/SDK/Interface/CLocalHeroResolver.hpp) - it already carries
+	// the fix for GetLocalPlayerController() never succeeding on this build,
+	// originally worked out debugging CKillStealer. This just reads out the
+	// AutoCombo-specific fields (mana, attack damage/range) once an entity is
+	// found.
 	auto ResolveLocalUnit( CGameEntitySystem* entitySystem , const AutoComboOffsets& offsets , UnitSnapshot& out ) -> bool
 	{
-		auto* controller = CGameEntitySystem::GetLocalPlayerController();
-		if ( !controller )
-			return false;
-
-		const CHandle heroHandle = controller->m_hAssignedHero();
-		if ( !heroHandle.IsValid() )
-			return false;
-
-		auto* entity = entitySystem->GetBaseEntityFromHandle( heroHandle );
-		if ( !entity )
+		C_BaseEntity* entity = nullptr;
+		int entIndex = -1;
+		if ( !CLocalHeroResolver::Resolve( entitySystem , entity , entIndex ) )
 			return false;
 
 		const int health = ReadField<int>( entity , offsets.health , 0 );
@@ -384,6 +422,7 @@ namespace
 		out.attackDamage = static_cast<float>( (std::max)( 1 , ReadField<int>( entity , offsets.damageMin , 0 ) +
 			( offsets.hasDamageBonus ? ReadField<int>( entity , offsets.damageBonus , 0 ) : 0 ) ) );
 		out.attackRange = offsets.hasAttackRange ? static_cast<float>( (std::max)( 150 , ReadField<int>( entity , offsets.attackRange , 150 ) ) ) : 150.f;
+		out.team = offsets.hasTeam ? ReadField<uint8_t>( entity , offsets.team , 0 ) : 0;
 		return true;
 	}
 
@@ -407,7 +446,68 @@ namespace
 		out.entity = entity;
 		out.origin = origin;
 		out.health = health;
+		out.team = offsets.hasTeam ? ReadField<uint8_t>( entity , offsets.team , 0 ) : 0;
 		return true;
+	}
+
+	// Walking allocated identity chunks directly (rather than an index-bounded
+	// loop up to GetHighestEntityIndex) mirrors CKillStealer's ScanHeroes fix -
+	// see that file's comment for why the index-bounded approach silently
+	// missed live heroes in a real capture.
+	auto FindNearestEnemyHero( CGameEntitySystem* entitySystem , const AutoComboOffsets& offsets , const UnitSnapshot& localUnit , float maxRange ) -> int
+	{
+		if ( !entitySystem || !offsets.hasTeam || !IsPlayableTeam( localUnit.team ) )
+			return -1;
+
+		int bestIndex = -1;
+		float bestDistance = maxRange;
+
+		for ( int chunkIndex = 0; chunkIndex < MAX_ENTITY_LISTS; ++chunkIndex )
+		{
+			auto* chunk = entitySystem->m_pIdentityChunks[chunkIndex];
+			if ( !chunk )
+				continue;
+
+			for ( int entryIndex = 0; entryIndex < MAX_ENTITIES_IN_LIST; ++entryIndex )
+			{
+				auto* entity = chunk->m_pIdentities[entryIndex].pBaseEntity();
+				if ( !entity || entity == localUnit.entity )
+					continue;
+
+				const int health = ReadField<int>( entity , offsets.health , 0 );
+				if ( health <= 0 )
+					continue;
+
+				const uint8_t team = ReadField<uint8_t>( entity , offsets.team , 0 );
+				if ( !IsPlayableTeam( team ) || team == localUnit.team )
+					continue;
+
+				CEntityIdentity* identity = nullptr;
+				C_BaseEntity* namedEntity = nullptr;
+				const int entIndex = chunkIndex * MAX_ENTITIES_IN_LIST + entryIndex;
+				if ( !TryEntityAtIndex( entitySystem , entIndex , identity , namedEntity ) )
+					continue;
+
+				const std::string name = EntityName( namedEntity , identity );
+				if ( !LooksLikeHeroEntity( entity , name ) )
+					continue;
+
+				Vector3 origin{};
+				if ( !TryReadOrigin( entity , offsets , origin ) )
+					continue;
+				if ( origin.m_x == 0.f && origin.m_y == 0.f && origin.m_z == 0.f )
+					continue;
+
+				const float distance = Distance2D( localUnit.origin , origin );
+				if ( distance < bestDistance )
+				{
+					bestDistance = distance;
+					bestIndex = entIndex;
+				}
+			}
+		}
+
+		return bestIndex;
 	}
 
 	auto CollectTools( CGameEntitySystem* entitySystem , const UnitSnapshot& localUnit , const AutoComboOffsets& offsets ) -> std::vector<ComboTool>
@@ -603,32 +703,28 @@ namespace
 		return Math::WorldToScreen( origin , out );
 	}
 
-	auto CastPlanAction( const CAutoCombo::ComboPlanAction& action , const Vector3& targetOrigin ) -> bool
+	auto AimCursorAtTarget( HWND window , const Vector3& targetOrigin ) -> bool
 	{
-		const HWND window = WindowReadyForInput();
-		if ( !window || action.key == 0 )
-			return false;
-
-		if ( action.noTarget )
-			return SendKeyPress( static_cast<WORD>( action.key ) );
-
 		ImVec2 screen{};
 		if ( !ProjectTargetScreen( targetOrigin , screen ) )
 			return false;
-
 		POINT previous{};
-		if ( !MoveCursorToClientPoint( window , screen , previous ) )
-			return false;
-
-		const bool needsClick = action.kind == CAutoCombo::ComboPlanAction::Kind::Attack || !Settings::AutoCombo::QuickCast;
-		const bool sent = SendKeyPress( static_cast<WORD>( action.key ) ) && ( !needsClick || SendLeftClick() );
-		SetCursorPos( previous.x , previous.y );
-		return sent;
+		return MoveCursorToClientPoint( window , screen , previous );
 	}
+
+	// How long the cursor is left parked on the target before the key/click is
+	// sent, and again before it is restored. Dota consumes injected input on
+	// its own message loop, not synchronously with SendInput, so both waits
+	// must be at least a frame or the cast resolves at the pre-aim cursor
+	// position. One think tick (30ms) plus margin.
+	constexpr uint32_t kCastSettleMs = 45;
 }
 
 auto CAutoCombo::CancelPlan( const char* reason ) -> void
 {
+	// Never leave the cursor parked on the target if the plan dies mid-cast.
+	if ( m_Plan.hasPrevCursor )
+		SetCursorPos( m_Plan.prevCursorX , m_Plan.prevCursorY );
 	m_Plan = {};
 	if ( reason )
 	{
@@ -675,7 +771,11 @@ auto CAutoCombo::OnRender() -> void
 			UnitSnapshot target{};
 			if ( !ResolveTargetUnit( entitySystem , offsets , m_Plan.targetEntIndex , target ) )
 			{
-				CancelPlan( "Target lost" );
+				// A dead target is the combo doing its job, not a failure - only
+				// a vanished entity (fog, reconnect) is a real "lost".
+				auto* entity = entitySystem->GetBaseEntity( m_Plan.targetEntIndex );
+				const bool died = entity && ReadField<int>( entity , offsets.health , 0 ) <= 0;
+				CancelPlan( died ? "Target died" : "Target lost" );
 			}
 			else if ( m_Plan.actionIndex >= m_Plan.actions.size() )
 			{
@@ -685,23 +785,84 @@ auto CAutoCombo::OnRender() -> void
 			else if ( now >= m_Plan.nextActionTick )
 			{
 				const auto& action = m_Plan.actions[m_Plan.actionIndex];
-				if ( !CastPlanAction( action , target.origin ) )
+				const HWND window = WindowReadyForInput();
+
+				auto AdvanceAction = [&]( uint32_t delayMs )
 				{
-					CancelPlan( "Cast failed" );
-				}
-				else
-				{
-					m_Status = std::string( "Casting " ) + action.name;
+					m_Plan.castPhase = CastPhase::Aim;
 					++m_Plan.actionIndex;
 					if ( m_Plan.actionIndex >= m_Plan.actions.size() )
 					{
+						DEV_LOG( "[auto-combo] plan finished: all %zu actions cast vs entindex=%d\n" ,
+							m_Plan.actions.size() , m_Plan.targetEntIndex );
 						CancelPlan();
 						m_Status = "Done";
 					}
 					else
 					{
-						m_Plan.nextActionTick = now + action.delayMs;
+						m_Plan.nextActionTick = now + delayMs;
 					}
+				};
+
+				if ( !window || action.key == 0 )
+				{
+					CancelPlan( "Cast failed" );
+				}
+				else if ( action.noTarget )
+				{
+					// Cursor position is irrelevant - fire in one step.
+					if ( !SendKeyPress( static_cast<WORD>( action.key ) ) )
+						CancelPlan( "Cast failed" );
+					else
+					{
+						m_Status = std::string( "Casting " ) + action.name;
+						AdvanceAction( action.delayMs );
+					}
+				}
+				else switch ( m_Plan.castPhase )
+				{
+				case CastPhase::Aim:
+				{
+					POINT previous{};
+					GetCursorPos( &previous );
+					if ( !AimCursorAtTarget( window , target.origin ) )
+					{
+						CancelPlan( "Cast failed" );
+						break;
+					}
+					m_Plan.prevCursorX = previous.x;
+					m_Plan.prevCursorY = previous.y;
+					m_Plan.hasPrevCursor = true;
+					m_Plan.castPhase = CastPhase::Cast;
+					m_Plan.nextActionTick = now + kCastSettleMs;
+					break;
+				}
+				case CastPhase::Cast:
+				{
+					// Re-aim right before the press - the target may have moved
+					// during the settle window.
+					AimCursorAtTarget( window , target.origin );
+					const bool needsClick = action.kind == ComboPlanAction::Kind::Attack || !Settings::AutoCombo::QuickCast;
+					if ( !SendKeyPress( static_cast<WORD>( action.key ) ) || ( needsClick && !SendLeftClick() ) )
+					{
+						CancelPlan( "Cast failed" );
+						break;
+					}
+					m_Status = std::string( "Casting " ) + action.name;
+					m_Plan.castPhase = CastPhase::Restore;
+					m_Plan.nextActionTick = now + kCastSettleMs;
+					break;
+				}
+				case CastPhase::Restore:
+				{
+					if ( m_Plan.hasPrevCursor )
+					{
+						SetCursorPos( m_Plan.prevCursorX , m_Plan.prevCursorY );
+						m_Plan.hasPrevCursor = false;
+					}
+					AdvanceAction( action.delayMs );
+					break;
+				}
 				}
 			}
 		}
@@ -715,25 +876,35 @@ auto CAutoCombo::OnRender() -> void
 	{
 		UnitSnapshot localUnit{};
 		UnitSnapshot target{};
-		if ( Settings::AutoCombo::TargetEntIndex < 0 )
-		{
-			m_Status = "No target set";
-		}
-		else if ( !ResolveLocalUnit( entitySystem , offsets , localUnit ) )
+
+		// Auto-target the nearest enemy hero unless the user pinned a specific
+		// entindex (e.g. -1 is the default, so most users never manage to set
+		// one, and the combo used to just sit there doing nothing).
+		constexpr float kAutoTargetRange = 1800.f;
+		int resolvedTargetIndex = Settings::AutoCombo::TargetEntIndex;
+
+		if ( !ResolveLocalUnit( entitySystem , offsets , localUnit ) )
 		{
 			m_Status = "Local hero unresolved";
 		}
-		else if ( !ResolveTargetUnit( entitySystem , offsets , Settings::AutoCombo::TargetEntIndex , target ) )
+		else if ( resolvedTargetIndex < 0 )
+		{
+			resolvedTargetIndex = FindNearestEnemyHero( entitySystem , offsets , localUnit , kAutoTargetRange );
+			if ( resolvedTargetIndex < 0 )
+				m_Status = "No enemy hero nearby";
+		}
+
+		if ( localUnit.entity && resolvedTargetIndex >= 0 && !ResolveTargetUnit( entitySystem , offsets , resolvedTargetIndex , target ) )
 		{
 			m_Status = "Target invalid";
 		}
-		else
+		else if ( localUnit.entity && resolvedTargetIndex >= 0 && target.entity )
 		{
 			const auto tools = CollectTools( entitySystem , localUnit , offsets );
 			const float distance = Distance2D( localUnit.origin , target.origin );
 
 			ComboPlanState plan{};
-			plan.targetEntIndex = Settings::AutoCombo::TargetEntIndex;
+			plan.targetEntIndex = resolvedTargetIndex;
 
 			constexpr size_t kMaxActions = 12;
 			for ( const auto& tool : tools )

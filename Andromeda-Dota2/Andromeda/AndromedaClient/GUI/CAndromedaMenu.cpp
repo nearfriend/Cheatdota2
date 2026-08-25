@@ -632,6 +632,7 @@ static const ReferenceNavigationItem g_GeneralNavigation[] =
 	{ "Procast Damage", ReferenceIcon::Sparkles, nullptr },
 	{ "Shop Manager", ReferenceIcon::Overlay, nullptr },
 	{ "Snatcher", ReferenceIcon::Mouse, nullptr },
+	{ "Auto Combo", ReferenceIcon::Aggro, nullptr },
 };
 
 static const ReferenceNavigationItem g_HeroesNavigation[] =
@@ -996,6 +997,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
 		const bool infoOverlayPage = selectedCategory == 2 && selectedItem == 3;
 		const bool visibleByEnemyPage = selectedCategory == 2 && selectedItem == 8;
+		const bool autoComboPage = selectedCategory == 0 && selectedItem == IM_ARRAYSIZE( g_GeneralNavigation ) - 1;
 		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
 
 		if ( infoOverlayPage )
@@ -1042,7 +1044,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : 180.f ) );
+			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : ( autoComboPage ? 400.f : 180.f ) ) );
 			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
 			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
@@ -1102,6 +1104,68 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				ImGui::Spacing();
 				ImGui::TextDisabled( "Shows an eye next to your health bar when True Sight detects you." );
 				ImGui::TextDisabled( "Triggers from enemy Gem of True Sight, Sentry Wards, or Towers." );
+			}
+			else if ( autoComboPage )
+			{
+				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable ability/item at the target." );
+				ImGui::TextDisabled( "Order: setups/buffs, then point-target spells, then disables (Hex/stuns), then damage, then auto-attack." );
+				ImGui::Spacing();
+
+				DrawSwitchRow( "Enable" , "##autoComboEnable" , Settings::AutoCombo::Enable , ReferenceIcon::Aggro );
+				ImGui::BeginDisabled( !Settings::AutoCombo::Enable );
+				DrawSwitchRow( "Use Abilities" , "##autoComboAbilities" , Settings::AutoCombo::UseAbilities , ReferenceIcon::Sparkles );
+				DrawSwitchRow( "Use Items" , "##autoComboItems" , Settings::AutoCombo::UseItems , ReferenceIcon::Items );
+				DrawSwitchRow( "Use Auto Attack" , "##autoComboAttack" , Settings::AutoCombo::UseAutoAttack , ReferenceIcon::Mouse );
+				DrawSwitchRow( "Quick Cast Mode" , "##autoComboQuickCast" , Settings::AutoCombo::QuickCast , ReferenceIcon::Speed );
+
+				ImGui::Spacing();
+				ImGui::Text( "Combo key" );
+				ImGui::SameLine();
+				static bool capturingComboAuto = false;
+				if ( ImGui::Button( capturingComboAuto ? "Press key...##autoCombo" : "Bind combo##autoCombo" ) )
+					capturingComboAuto = true;
+
+				ImGui::SameLine();
+				if ( ImGui::Button( "Clear##comboAuto" ) )
+				{
+					Settings::AutoCombo::ComboKey = 0;
+					capturingComboAuto = false;
+				}
+
+				ImGui::SameLine();
+				ImGui::Text( "Current: %s", VkToName( Settings::AutoCombo::ComboKey ).c_str() );
+
+				if ( capturingComboAuto )
+				{
+					for ( int vk = 1; vk <= 255; ++vk )
+					{
+						if ( GetAsyncKeyState( vk ) & 0x8000 )
+						{
+							Settings::AutoCombo::ComboKey = vk;
+							capturingComboAuto = false;
+							break;
+						}
+					}
+				}
+
+				ImGui::Text( "Target entindex" );
+				ImGui::SameLine();
+				static int targetInputAutoCombo = -1;
+				if ( targetInputAutoCombo < 0 )
+					targetInputAutoCombo = Settings::AutoCombo::TargetEntIndex;
+				ImGui::SetNextItemWidth( 120.f );
+				if ( ImGui::InputInt( "##autoCombo.target" , &targetInputAutoCombo ) )
+					Settings::AutoCombo::TargetEntIndex = targetInputAutoCombo;
+				ImGui::SameLine();
+				ImGui::TextDisabled( "-1 = auto-target nearest enemy hero" );
+
+				ImGui::EndDisabled();
+
+				if ( auto* pClient = GetAndromedaClient() )
+				{
+					const auto& autoCombo = pClient->GetAutoCombo();
+					ImGui::Text( "Status: %s", autoCombo.GetStatus().c_str() );
+				}
 			}
 			else
 			{
@@ -1317,6 +1381,71 @@ auto CAndromedaMenu::OnRenderLegacyMenu() -> void
 				if ( headerFont ) ImGui::PushFont( headerFont );
 				ImGui::Text( XorStr( "Heroes" ) );
 				if ( headerFont ) ImGui::PopFont();
+				ImGui::Separator();
+
+				// Shown first (not buried below the Meepo/Invoker panels further
+				// down, which used to make this easy to miss - see CAutoCombo.cpp).
+				if ( headerFont ) ImGui::PushFont( headerFont );
+				ImGui::Text( "Auto Combo (all heroes)" );
+				if ( headerFont ) ImGui::PopFont();
+				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable ability/item at the target." );
+				ImGui::TextDisabled( "Order: setups/buffs, then point-target spells, then disables (Hex/stuns), then damage, then auto-attack." );
+
+				DrawSwitchRow( "Enable" , "##autoComboEnable" , Settings::AutoCombo::Enable , ReferenceIcon::Aggro );
+				ImGui::BeginDisabled( !Settings::AutoCombo::Enable );
+				DrawSwitchRow( "Use Abilities" , "##autoComboAbilities" , Settings::AutoCombo::UseAbilities , ReferenceIcon::Sparkles );
+				DrawSwitchRow( "Use Items" , "##autoComboItems" , Settings::AutoCombo::UseItems , ReferenceIcon::Items );
+				DrawSwitchRow( "Use Auto Attack" , "##autoComboAttack" , Settings::AutoCombo::UseAutoAttack , ReferenceIcon::Mouse );
+				DrawSwitchRow( "Quick Cast Mode" , "##autoComboQuickCast" , Settings::AutoCombo::QuickCast , ReferenceIcon::Speed );
+
+				ImGui::Text( "Combo key" );
+				ImGui::SameLine();
+				static bool capturingComboAuto = false;
+				if ( ImGui::Button( capturingComboAuto ? "Press key...##autoCombo" : "Bind combo##autoCombo" ) )
+					capturingComboAuto = true;
+
+				ImGui::SameLine();
+				if ( ImGui::Button( "Clear##comboAuto" ) )
+				{
+					Settings::AutoCombo::ComboKey = 0;
+					capturingComboAuto = false;
+				}
+
+				ImGui::SameLine();
+				ImGui::Text( "Current: %s", VkToName( Settings::AutoCombo::ComboKey ).c_str() );
+
+				if ( capturingComboAuto )
+				{
+					for ( int vk = 1; vk <= 255; ++vk )
+					{
+						if ( GetAsyncKeyState( vk ) & 0x8000 )
+						{
+							Settings::AutoCombo::ComboKey = vk;
+							capturingComboAuto = false;
+							break;
+						}
+					}
+				}
+
+				ImGui::Text( "Target entindex" );
+				ImGui::SameLine();
+				static int targetInputAutoCombo = -1;
+				if ( targetInputAutoCombo < 0 )
+					targetInputAutoCombo = Settings::AutoCombo::TargetEntIndex;
+				ImGui::SetNextItemWidth( 120.f );
+				if ( ImGui::InputInt( "##autoCombo.target" , &targetInputAutoCombo ) )
+					Settings::AutoCombo::TargetEntIndex = targetInputAutoCombo;
+				ImGui::SameLine();
+				ImGui::TextDisabled( "-1 = auto-target nearest enemy hero" );
+
+				ImGui::EndDisabled();
+
+				if ( auto* pClient = GetAndromedaClient() )
+				{
+					const auto& autoCombo = pClient->GetAutoCombo();
+					ImGui::Text( "Status: %s", autoCombo.GetStatus().c_str() );
+				}
+
 				ImGui::Separator();
 
 				// РџРµСЂРІС‹Р№ РіРµСЂРѕР№ РІ СЃРїРёСЃРєРµ: Meepo.
@@ -1647,69 +1776,6 @@ auto CAndromedaMenu::OnRenderLegacyMenu() -> void
 					const auto& invokerController = pClient->GetInvokerController();
 					ImGui::Text( "Status: %s", invokerController.GetComboStatus().c_str() );
 				}
-
-				ImGui::Separator();
-				if ( headerFont ) ImGui::PushFont( headerFont );
-				ImGui::Text( "Auto Combo (all heroes)" );
-				if ( headerFont ) ImGui::PopFont();
-				ImGui::TextDisabled( "Hero-agnostic: fires every off-cooldown, affordable ability/item at the target." );
-				ImGui::TextDisabled( "Order: setups/buffs, then point-target spells, then disables (Hex/stuns), then damage, then auto-attack." );
-
-				DrawSwitchRow( "Enable" , "##autoComboEnable" , Settings::AutoCombo::Enable , ReferenceIcon::Aggro );
-				ImGui::BeginDisabled( !Settings::AutoCombo::Enable );
-				DrawSwitchRow( "Use Abilities" , "##autoComboAbilities" , Settings::AutoCombo::UseAbilities , ReferenceIcon::Sparkles );
-				DrawSwitchRow( "Use Items" , "##autoComboItems" , Settings::AutoCombo::UseItems , ReferenceIcon::Items );
-				DrawSwitchRow( "Use Auto Attack" , "##autoComboAttack" , Settings::AutoCombo::UseAutoAttack , ReferenceIcon::Mouse );
-				DrawSwitchRow( "Quick Cast Mode" , "##autoComboQuickCast" , Settings::AutoCombo::QuickCast , ReferenceIcon::Speed );
-
-				ImGui::Text( "Combo key" );
-				ImGui::SameLine();
-				static bool capturingComboAuto = false;
-				if ( ImGui::Button( capturingComboAuto ? "Press key...##autoCombo" : "Bind combo##autoCombo" ) )
-					capturingComboAuto = true;
-
-				ImGui::SameLine();
-				if ( ImGui::Button( "Clear##comboAuto" ) )
-				{
-					Settings::AutoCombo::ComboKey = 0;
-					capturingComboAuto = false;
-				}
-
-				ImGui::SameLine();
-				ImGui::Text( "Current: %s", VkToName( Settings::AutoCombo::ComboKey ).c_str() );
-
-				if ( capturingComboAuto )
-				{
-					for ( int vk = 1; vk <= 255; ++vk )
-					{
-						if ( GetAsyncKeyState( vk ) & 0x8000 )
-						{
-							Settings::AutoCombo::ComboKey = vk;
-							capturingComboAuto = false;
-							break;
-						}
-					}
-				}
-
-				ImGui::Text( "Target entindex" );
-				ImGui::SameLine();
-				static int targetInputAutoCombo = -1;
-				if ( targetInputAutoCombo < 0 )
-					targetInputAutoCombo = Settings::AutoCombo::TargetEntIndex;
-				ImGui::SetNextItemWidth( 120.f );
-				if ( ImGui::InputInt( "##autoCombo.target" , &targetInputAutoCombo ) )
-					Settings::AutoCombo::TargetEntIndex = targetInputAutoCombo;
-				ImGui::SameLine();
-				ImGui::TextDisabled( "Use entindex from ESP/console" );
-
-				ImGui::EndDisabled();
-
-				if ( auto* pClient = GetAndromedaClient() )
-				{
-					const auto& autoCombo = pClient->GetAutoCombo();
-					ImGui::Text( "Status: %s", autoCombo.GetStatus().c_str() );
-				}
-
 
 			}
 		}

@@ -272,6 +272,7 @@
     <ClCompile Include="Andromeda\Dota2\Protobuf\valveextensions.pb.cc" />
     <ClCompile Include="Andromeda\Dota2\SDK\CFunctionList.cpp" />
     <ClCompile Include="Andromeda\Dota2\SDK\CSchemaOffset.cpp" />
+    <ClCompile Include="Andromeda\Dota2\SDK\Interface\CLocalHeroResolver.cpp" />
     <ClCompile Include="Andromeda\Dota2\SDK\Interface\Interface.cpp" />
     <ClCompile Include="Andromeda\Dota2\SDK\Math\Math.cpp" />
     <ClCompile Include="Andromeda\Dota2\SDK\Math\Matrix.cpp" />
@@ -409,6 +410,7 @@
     <ClInclude Include="Andromeda\Dota2\SDK\CSchemaOffset.hpp" />
     <ClInclude Include="Andromeda\Dota2\SDK\FunctionListSDK.hpp" />
     <ClInclude Include="Andromeda\Dota2\SDK\Interface\CGameEntitySystem.hpp" />
+    <ClInclude Include="Andromeda\Dota2\SDK\Interface\CLocalHeroResolver.hpp" />
     <ClInclude Include="Andromeda\Dota2\SDK\Interface\CShemaSystemSDK.hpp" />
     <ClInclude Include="Andromeda\Dota2\SDK\Interface\IVEngineClient2.hpp" />
     <ClInclude Include="Andromeda\Dota2\SDK\Interface\Interface.hpp" />

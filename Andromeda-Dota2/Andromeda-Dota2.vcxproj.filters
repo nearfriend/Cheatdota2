@@ -168,6 +168,9 @@
     <ClCompile Include="Andromeda\Dota2\SDK\Interface\Interface.cpp">
       <Filter>Andromeda\Dota2\SDK\Interface</Filter>
     </ClCompile>
+    <ClCompile Include="Andromeda\Dota2\SDK\Interface\CLocalHeroResolver.cpp">
+      <Filter>Andromeda\Dota2\SDK\Interface</Filter>
+    </ClCompile>
     <ClCompile Include="Andromeda\Dota2\CSDK_Loader.cpp">
       <Filter>Andromeda\Dota2</Filter>
     </ClCompile>
@@ -597,6 +600,9 @@
       <Filter>Andromeda\Dota2\SDK\Update</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\Dota2\SDK\Interface\CGameEntitySystem.hpp">
+      <Filter>Andromeda\Dota2\SDK\Interface</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\Dota2\SDK\Interface\CLocalHeroResolver.hpp">
       <Filter>Andromeda\Dota2\SDK\Interface</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\Dota2\SDK\Update\Offsets.hpp">
