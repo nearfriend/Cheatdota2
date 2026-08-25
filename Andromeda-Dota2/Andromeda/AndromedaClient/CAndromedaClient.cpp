@@ -3958,16 +3958,6 @@ auto CAndromedaClient::OnInit() -> void
 
 	const std::string scriptsRoot = baseDir + "Assets\\Lua\\";
 	GetLuaManager()->Init( scriptsRoot );
-
-	DEV_LOG( "[kill-stealer] startup settings enable=%d debug=%d abilities=%d items=%d attack=%d quickcast=%d buffer=%.1f detect_range=%.0f\n" ,
-		Settings::KillStealer::Enable ? 1 : 0 ,
-		Settings::KillStealer::DrawDebugInfo ? 1 : 0 ,
-		Settings::KillStealer::UseAbilities ? 1 : 0 ,
-		Settings::KillStealer::UseItems ? 1 : 0 ,
-		Settings::KillStealer::UseAutoAttack ? 1 : 0 ,
-		Settings::KillStealer::QuickCast ? 1 : 0 ,
-		Settings::KillStealer::HealthBuffer ,
-		Settings::KillStealer::DetectRange );
 }
 
 auto CAndromedaClient::SetCameraDistance( float Distance ) -> void

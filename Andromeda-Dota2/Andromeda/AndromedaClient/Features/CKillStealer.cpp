@@ -316,14 +316,6 @@ namespace
 		offsets.resolved = hasHealth && hasMaxHealth && hasTeam && hasMana && hasAbilities &&
 			hasSceneNode && hasAbsOrigin && hasAbilityLevel && hasAbilityCooldown && hasAbilityMana;
 
-		if (offsets.resolved)
-			DEV_LOG("[kill-stealer] offsets ready localCtrlFlag=%d(0x%X) ctrlAssignedHero=%d(0x%X) heroPlayerId=%d(0x%X) playerOwnerId=%d(0x%X) waitingToSpawn=%d(0x%X)\n",
-				offsets.hasIsLocalController ? 1 : 0, offsets.isLocalController,
-				offsets.hasControllerAssignedHero ? 1 : 0, offsets.controllerAssignedHero,
-				offsets.hasHeroPlayerId ? 1 : 0, offsets.heroPlayerId,
-				offsets.hasPlayerOwnerId ? 1 : 0, offsets.playerOwnerId,
-				offsets.hasWaitingToSpawn ? 1 : 0, offsets.waitingToSpawn);
-
 		return offsets;
 	}
 
@@ -360,43 +352,32 @@ namespace
 	}
 
 	// outReject, when supplied, receives a static string naming the gate that
-	// rejected the entity. Heroes silently vanishing from the scan has been the
-	// hardest part of this feature to diagnose, because a filtered entity leaves
-	// no trace - this makes each rejection attributable.
-	auto BuildSnapshot(C_BaseEntity* entity, int entIndex, const KillStealerOffsets& offsets, HeroSnapshot& out,
-		const char** outReject = nullptr) -> bool
+	auto BuildSnapshot(C_BaseEntity* entity, int entIndex, const KillStealerOffsets& offsets, HeroSnapshot& out) -> bool
 	{
-		const auto Reject = [&](const char* reason) -> bool
-		{
-			if (outReject)
-				*outReject = reason;
-			return false;
-		};
-
 		const int health = ReadField<int>(entity, offsets.health, 0);
 		const int maxHealth = ReadField<int>(entity, offsets.maxHealth, 0);
 		if (health <= 0)
-			return Reject("dead/zero-hp");
+			return false;
 		if (maxHealth <= 0 || maxHealth > 50000)
-			return Reject("implausible-maxhp");
+			return false;
 
 		const uint8_t team = ReadField<uint8_t>(entity, offsets.team, 0);
 		if (!IsPlayableTeam(team))
-			return Reject("non-playable-team");
+			return false;
 
 		if (offsets.hasIsIllusion && ReadField<bool>(entity, offsets.isIllusion, false))
-			return Reject("illusion");
+			return false;
 		if (offsets.hasIsClone && ReadField<bool>(entity, offsets.isClone, false))
-			return Reject("clone");
+			return false;
 		// Pre-spawn hero entities exist during strategy time and while dead
 		// heroes wait to respawn; they carry health and a team but are not on
 		// the map, so they can never be a target.
 		if (offsets.hasWaitingToSpawn && ReadField<bool>(entity, offsets.waitingToSpawn, false))
-			return Reject("waiting-to-spawn");
+			return false;
 
 		Vector3 origin{};
 		if (!ReadOrigin(entity, offsets, origin))
-			return Reject("no-origin");
+			return false;
 
 		out = {};
 		out.entity = entity;
@@ -482,21 +463,18 @@ namespace
 	// on for all MAX_ENTITY_LISTS chunks - together they cover every index
 	// GetHighestEntityIndex() could ever report and then some, so this is
 	// strictly a superset of the old scan, not a different one.
-	auto ScanHeroes(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets,
-		bool logRejections = false) -> std::vector<HeroSnapshot>
+	auto ScanHeroes(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets) -> std::vector<HeroSnapshot>
 	{
 		std::vector<HeroSnapshot> heroes;
 		if (!entitySystem)
 			return heroes;
 
-		int scannedChunks = 0;
 		heroes.reserve(12);
 		for (int chunkIndex = 0; chunkIndex < MAX_ENTITY_LISTS; ++chunkIndex)
 		{
 			auto* chunk = entitySystem->m_pIdentityChunks[chunkIndex];
 			if (!chunk)
 				continue;
-			++scannedChunks;
 
 			for (int entryIndex = 0; entryIndex < MAX_ENTITIES_IN_LIST; ++entryIndex)
 			{
@@ -506,36 +484,14 @@ namespace
 				const int index = chunkIndex * MAX_ENTITIES_IN_LIST + entryIndex;
 
 				HeroSnapshot snapshot{};
-				const char* reject = nullptr;
-				if (!BuildSnapshot(entity, index, offsets, snapshot, &reject))
-				{
-					// Only bother naming the entity if it actually looks like a
-					// hero - otherwise this would report every creep and ward on
-					// the map. Costs an extra name/class lookup, but only on the
-					// throttled debug path.
-					if (logRejections)
-					{
-						const std::string name = EntityName(entity);
-						if (LooksLikeHeroEntity(entity, name))
-							DEV_LOG("[kill-stealer] scan: DROPPED hero-like ent=%d name=%s reason=%s\n",
-								index, name.empty() ? "<unnamed>" : name.c_str(), reject ? reject : "unknown");
-					}
+				if (!BuildSnapshot(entity, index, offsets, snapshot))
 					continue;
-				}
 				if (!LooksLikeHeroEntity(entity, snapshot.name))
-				{
-					if (logRejections && snapshot.playerId >= 0)
-						DEV_LOG("[kill-stealer] scan: DROPPED player-unit ent=%d name=%s pid=%d reason=not-hero-shaped\n",
-							index, snapshot.name.empty() ? "<unnamed>" : snapshot.name.c_str(), snapshot.playerId);
 					continue;
-				}
 
 				heroes.push_back(std::move(snapshot));
 			}
 		}
-
-		if (logRejections)
-			DEV_LOG("[kill-stealer] scan: chunks=%d/%d\n", scannedChunks, MAX_ENTITY_LISTS);
 
 		return heroes;
 	}
@@ -621,53 +577,7 @@ namespace
 			return true;
 		}
 
-		// Every heroes_seen>0 failure to date has been a mystery because this
-		// was the one branch with no log line of its own - the per-hero dump
-		// only ran AFTER a successful resolve. Throttled to 2s so a persistent
-		// failure doesn't spam.
-		if (Settings::KillStealer::DrawDebugInfo)
-		{
-			static ULONGLONG s_NextLogTick = 0;
-			const ULONGLONG now = GetTickCount64();
-			if (now >= s_NextLogTick)
-			{
-				s_NextLogTick = now + 2000;
-				DEV_LOG("[kill-stealer] playerid FAILED: haveLocalPlayerId=%d localPlayerId=%d ambiguous=%d heroes=%zu\n",
-					haveLocalPlayerId ? 1 : 0, localPlayerId, ambiguous ? 1 : 0, heroes.size());
-				for (const auto& hero : heroes)
-					DEV_LOG("[kill-stealer]   candidate: %s team=%u pid=%d ent=%d\n",
-						hero.name.c_str(), hero.team, hero.playerId, hero.entIndex);
-			}
-		}
-
 		return false;
-	}
-
-	// Which resolver produced the current local hero ("playerid" or
-	// "controller"). Surfaced in the debug overlay and the log purely for
-	// diagnosis - misidentification has been the recurring failure mode here,
-	// so knowing which resolver answered is the difference between diagnosing
-	// the next one and guessing again.
-	const char* g_LastLocalHeroSource = "none";
-
-	// Logs only when the answer or the source that produced it changes, so the
-	// line doesn't repeat every think tick.
-	auto NoteLocalHeroResolved(const char* source, const HeroSnapshot& hero) -> void
-	{
-		g_LastLocalHeroSource = source;
-
-		if (!Settings::KillStealer::DrawDebugInfo)
-			return;
-
-		static int s_LastEntIndex = -1;
-		static const char* s_LastSource = nullptr;
-		if (s_LastEntIndex == hero.entIndex && s_LastSource == source)
-			return;
-
-		s_LastEntIndex = hero.entIndex;
-		s_LastSource = source;
-		DEV_LOG("[kill-stealer] local hero resolved via %s: %s team=%u pid=%d ent=%d\n",
-			source, hero.name.c_str(), hero.team, hero.playerId, hero.entIndex);
 	}
 
 	auto ResolveLocalHero(CGameEntitySystem* entitySystem, const KillStealerOffsets& offsets,
@@ -680,11 +590,6 @@ namespace
 		// so the readout doesn't flicker, but the resolvers above it keep
 		// running so a wrong guess can always be replaced.
 		static bool s_CacheTrusted = false;
-		// Which resolver produced the cached hero. Re-reported on every cache
-		// hit so that turning Debug Logs on mid-session still names the source -
-		// otherwise the one line that explains the choice is only ever emitted
-		// at the moment of resolution, which is usually before logging is on.
-		static const char* s_CachedSource = "cache";
 
 		// PRIMARY: our engine player slot matched against each hero's replicated
 		// m_iPlayerID. This is the only method observed to be correct in this
@@ -702,8 +607,6 @@ namespace
 			out = *playerIdHero;
 			s_CachedEntIndex = out.entIndex;
 			s_CacheTrusted = true;
-			s_CachedSource = "playerid";
-			NoteLocalHeroResolved("playerid", out);
 			return true;
 		}
 
@@ -716,7 +619,6 @@ namespace
 				if (hero.entIndex == s_CachedEntIndex)
 				{
 					out = hero;
-					NoteLocalHeroResolved(s_CachedSource, hero);
 					return true;
 				}
 			}
@@ -741,8 +643,6 @@ namespace
 			out = controllerHero;
 			s_CachedEntIndex = controllerHero.entIndex;
 			s_CacheTrusted = true;
-			s_CachedSource = "controller";
-			NoteLocalHeroResolved("controller", controllerHero);
 			return true;
 		}
 
@@ -866,8 +766,7 @@ namespace
 		return castRange > 0.f ? castRange : 800.f;
 	}
 
-	auto CollectTools(CGameEntitySystem* entitySystem, const HeroSnapshot& localHero, const KillStealerOffsets& offsets,
-		bool logRejections = false) -> std::vector<KillTool>
+	auto CollectTools(CGameEntitySystem* entitySystem, const HeroSnapshot& localHero, const KillStealerOffsets& offsets) -> std::vector<KillTool>
 	{
 		std::vector<KillTool> tools;
 		static constexpr std::array<WORD, 6> kAbilityKeys = {'Q', 'W', 'E', 'D', 'F', 'R'};
@@ -879,111 +778,49 @@ namespace
 			const auto* field = reinterpret_cast<const uint8_t*>(localHero.entity) + offsets.abilities;
 			if (ReadHandleArray(field, 48, abilityHandles))
 			{
-				if (logRejections)
-				{
-					int validCount = 0;
-					for (const auto& handle : abilityHandles)
-						validCount += handle.IsValid() ? 1 : 0;
-					DEV_LOG("[kill-stealer] tools: ability array size=%zu valid=%d\n", abilityHandles.size(), validCount);
-				}
-
 				int fallbackSlot = 0;
 				for (size_t slotIndex = 0; slotIndex < abilityHandles.size(); ++slotIndex)
 				{
 					const CHandle& handle = abilityHandles[slotIndex];
 					if (!handle.IsValid())
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): slot=%zu reason=invalid-handle\n", slotIndex);
 						continue;
-					}
 					auto* ability = entitySystem->GetBaseEntityFromHandle(handle);
 					if (!ability)
-					{
-						// A valid CHandle that fails to resolve to an entity -
-						// distinct from never having a handle at all. If this
-						// is where the ultimate goes missing, the handle array
-						// itself is stale/misaligned rather than any of the
-						// gates below being too strict.
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): slot=%zu reason=handle-does-not-resolve ent=%d\n",
-								slotIndex, handle.GetEntryIndex());
 						continue;
-					}
 
-					// Every reason an ability can be dropped, named, so "tools
-					// never grows past 3" is diagnosable instead of another
-					// round of guessing - this loop has been silent on failure
-					// from day one, and it was hiding exactly this.
 					const std::string abilityName = EntityName(ability);
 					const auto* data = FindDamageEntry(abilityName);
 					if (!data)
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name='%s' reason=no-damage-data-entry\n",
-								abilityName.empty() ? "<unnamed>" : abilityName.c_str());
 						continue;
-					}
 					if (!data->IsUsableDamage() || (!data->unitTarget && !data->noTarget && !data->pointTarget))
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=data-not-usable usable=%d unit=%d point=%d notarget=%d\n",
-								abilityName.c_str(), data->IsUsableDamage() ? 1 : 0,
-								data->unitTarget ? 1 : 0, data->pointTarget ? 1 : 0, data->noTarget ? 1 : 0);
 						continue;
-					}
 
 					const int level = ReadField<int>(ability, offsets.abilityLevel, 0);
 					if (level <= 0)
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=level<=0 level=%d\n", abilityName.c_str(), level);
 						continue;
-					}
 					if (offsets.hasAbilityActivated && !ReadField<bool>(ability, offsets.abilityActivated, true))
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=not-activated\n", abilityName.c_str());
 						continue;
-					}
 
 					const float cooldown = ReadField<float>(ability, offsets.abilityCooldown, 0.f);
 					if (std::isfinite(cooldown) && cooldown > 0.15f)
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=on-cooldown cd=%.2f\n", abilityName.c_str(), cooldown);
 						continue;
-					}
 
 					int manaCost = ReadField<int>(ability, offsets.abilityManaCost, 0);
 					if (manaCost <= 0)
 						manaCost = data->ManaForLevel(level);
 					if (manaCost > static_cast<int>(localHero.mana + 0.5f))
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=cant-afford mana_cost=%d have_mana=%.0f\n",
-								abilityName.c_str(), manaCost, localHero.mana);
 						continue;
-					}
 
 					const float rawDamage = data->DamageForLevel(level);
 					if (rawDamage <= 0.f)
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=zero-damage-for-level level=%d\n", abilityName.c_str(), level);
 						continue;
-					}
 
 					int preferredSlot = PreferredSlotForAbility(abilityName);
 					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
 						preferredSlot = fallbackSlot;
 					++fallbackSlot;
 					if (preferredSlot < 0 || preferredSlot >= static_cast<int>(kAbilityKeys.size()))
-					{
-						if (logRejections)
-							DEV_LOG("[kill-stealer] tool REJECTED (ability): name=%s reason=no-key-slot-available\n", abilityName.c_str());
 						continue;
-					}
 
 					KillTool tool{};
 					tool.kind = ToolKind::Ability;
@@ -996,15 +833,8 @@ namespace
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
 					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
-					if (logRejections)
-						DEV_LOG("[kill-stealer] tool ACCEPTED (ability): name=%s dmg=%.0f range=%.0f key=%c\n",
-							abilityName.c_str(), tool.rawDamage, tool.castRange, static_cast<char>(tool.key));
 					tools.push_back(tool);
 				}
-			}
-			else if (logRejections)
-			{
-				DEV_LOG("[kill-stealer] tools: ability array UNREADABLE (ReadHandleArray failed)\n");
 			}
 		}
 
@@ -1313,23 +1143,6 @@ namespace
 		return remainingDamage >= LethalThreshold(target.health);
 	}
 
-	// Diagnostic only - mirrors WindowReadyForInput()'s exact gate order so a
-	// failed cast can report specifically which condition blocked it, instead
-	// of leaving "why didn't it fire" as another guess.
-	auto DescribeInputBlockReason() -> const char*
-	{
-		auto* gui = GetAndromedaGUI();
-		if (!gui)
-			return "no GUI instance";
-		if (!gui->m_hCS2Window)
-			return "no CS2 window handle";
-		if (GetForegroundWindow() != gui->m_hCS2Window)
-			return "game window not focused";
-		if (gui->IsVisible())
-			return "Andromeda menu overlay is open (input is blocked while it's open)";
-		return "input checks passed - failure is elsewhere (key press/cursor)";
-	}
-
 	auto WindowReadyForInput() -> HWND
 	{
 		auto* gui = GetAndromedaGUI();
@@ -1367,30 +1180,16 @@ namespace
 		return SendInput(1, &input, sizeof(INPUT)) == 1;
 	}
 
-	auto MoveCursorToClientPoint(HWND window, const ImVec2& screen, POINT& previousOut, bool logDetail = false) -> bool
+	auto MoveCursorToClientPoint(HWND window, const ImVec2& screen, POINT& previousOut) -> bool
 	{
 		RECT client{};
-		if (!GetClientRect(window, &client))
-		{
-			if (logDetail)
-				DEV_LOG("[kill-stealer] cursor: GetClientRect FAILED (err=%lu)\n", GetLastError());
+		if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0)
 			return false;
-		}
-		if (client.right <= 0 || client.bottom <= 0)
-		{
-			if (logDetail)
-				DEV_LOG("[kill-stealer] cursor: degenerate client rect %ldx%ld\n", client.right, client.bottom);
-			return false;
-		}
 		const int x = std::clamp(static_cast<int>(std::lround(screen.x)), 0, static_cast<int>(client.right) - 1);
 		const int y = std::clamp(static_cast<int>(std::lround(screen.y)), 0, static_cast<int>(client.bottom) - 1);
 		POINT target{x, y};
 		if (!ClientToScreen(window, &target))
-		{
-			if (logDetail)
-				DEV_LOG("[kill-stealer] cursor: ClientToScreen FAILED (err=%lu)\n", GetLastError());
 			return false;
-		}
 		GetCursorPos(&previousOut);
 		// Primary move: SendInput, so the game's input stream actually sees a
 		// mouse-move event (see the comment on SendMouseMoveAbsolute). Fall
@@ -1400,19 +1199,6 @@ namespace
 		bool moved = SendMouseMoveAbsolute(target.x, target.y);
 		if (!moved)
 			moved = SetCursorPos(target.x, target.y) != FALSE;
-		if (logDetail)
-		{
-			// GetCursorPos read back after the move proves whether the OS
-			// cursor genuinely relocated, rather than trusting the move call's
-			// own return value - a game that has ClipCursor()'d the mouse to a
-			// region that excludes `target` can make the move "succeed" while
-			// the pointer never actually gets where we asked.
-			POINT verify{};
-			GetCursorPos(&verify);
-			DEV_LOG("[kill-stealer] cursor: proj_screen=(%.0f,%.0f) client=%ldx%ld clamped=(%d,%d) screen_target=(%ld,%ld) move_ok=%d verify_pos=(%ld,%ld) verify_match=%d\n",
-				screen.x, screen.y, client.right, client.bottom, x, y, target.x, target.y,
-				moved ? 1 : 0, verify.x, verify.y, (verify.x == target.x && verify.y == target.y) ? 1 : 0);
-		}
 		return moved;
 	}
 
@@ -1486,15 +1272,10 @@ namespace
 
 		ImVec2 screen{};
 		if (!ProjectTargetScreen(targetOrigin, screen))
-		{
-			if (Settings::KillStealer::DrawDebugInfo)
-				DEV_LOG("[kill-stealer] cursor: ProjectTargetScreen FAILED for target=(%.0f,%.0f,%.0f)\n",
-					targetOrigin.m_x, targetOrigin.m_y, targetOrigin.m_z);
 			return false;
-		}
 
 		POINT previous{};
-		if (!MoveCursorToClientPoint(window, screen, previous, Settings::KillStealer::DrawDebugInfo))
+		if (!MoveCursorToClientPoint(window, screen, previous))
 			return false;
 
 		const bool needsClick = action.kind == CKillStealer::PlanAction::Kind::Attack || !Settings::KillStealer::QuickCast;
@@ -1503,13 +1284,9 @@ namespace
 		// arrives - see the comment on ArmClick/TickPendingClick.
 		if (needsClick)
 			ArmClick(40);
-		const bool sent = keyOk;
-		if (Settings::KillStealer::DrawDebugInfo)
-			DEV_LOG("[kill-stealer] cursor: action=%s key=%c needs_click=%d key_sent=%d click_armed=%d overall_sent=%d\n",
-				action.name.c_str(), static_cast<char>(action.key), needsClick ? 1 : 0, keyOk ? 1 : 0, needsClick ? 1 : 0, sent ? 1 : 0);
 		// Cursor is deliberately left on the enemy after the cast, not
 		// restored to wherever it was before.
-		return sent;
+		return keyOk;
 	}
 
 	auto DrawMarkers(const HeroSnapshot& localHero, const std::vector<HeroSnapshot>& enemies,
@@ -1553,15 +1330,6 @@ auto CKillStealer::OnRenderInner() -> void
 
 	if (!Settings::KillStealer::Enable)
 	{
-		if (Settings::KillStealer::DrawDebugInfo)
-		{
-			static uint32_t lastLogTick = 0;
-			if (now - lastLogTick >= 3000)
-			{
-				DEV_LOG("[kill-stealer] debug blocked: Enable is OFF\n");
-				lastLogTick = now;
-			}
-		}
 		CancelPlan();
 		m_NextThinkTick = now;
 		return;
@@ -1575,59 +1343,20 @@ auto CKillStealer::OnRenderInner() -> void
 	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
 	if (!entitySystem || !offsets.resolved)
 	{
-		if (Settings::KillStealer::DrawDebugInfo)
-		{
-			static uint32_t lastLogTick = 0;
-			if (now - lastLogTick >= 3000)
-			{
-				DEV_LOG("[kill-stealer] debug blocked: entitySystem=%d offsets_resolved=%d\n",
-					entitySystem ? 1 : 0, offsets.resolved ? 1 : 0);
-				lastLogTick = now;
-			}
-		}
-		// Clear the readout instead of leaving the last good frame on screen - a
-		// stale "you: X / nearest: Y" would read as if detection were still
-		// running when in fact nothing is being evaluated at all.
-		m_Debug = {};
 		CancelPlan();
 		return;
 	}
 
-	// Scan-rejection logging walks names/classes for failed entities, so keep it
-	// to a slow cadence rather than every think tick.
-	static uint32_t s_LastScanLogTick = 0;
-	const bool logScanRejections = Settings::KillStealer::DrawDebugInfo && (now - s_LastScanLogTick >= 3000);
-	if (logScanRejections)
-		s_LastScanLogTick = now;
-
-	const auto heroes = ScanHeroes(entitySystem, offsets, logScanRejections);
+	const auto heroes = ScanHeroes(entitySystem, offsets);
 
 	HeroSnapshot localHero{};
 	if (!ResolveLocalHero(entitySystem, offsets, heroes, localHero))
 	{
-		m_Debug = {};
-		m_Debug.valid = true;
-		m_Debug.localResolved = false;
-		if (Settings::KillStealer::DrawDebugInfo)
-		{
-			static uint32_t lastLogTick = 0;
-			if (now - lastLogTick >= 3000)
-			{
-				DEV_LOG("[kill-stealer] debug blocked: local hero not resolved, heroes_seen=%zu\n", heroes.size());
-				lastLogTick = now;
-			}
-		}
 		CancelPlan();
 		return;
 	}
 
 	std::vector<HeroSnapshot> enemies;
-	float nearestEnemyDist = -1.f;
-	int nearestEnemyHp = 0;
-	int nearestEnemyMaxHp = 0;
-	std::string nearestEnemyName;
-	int totalOpposingTeamHeroes = 0;
-	int unpositionedEnemies = 0;
 	for (const auto& hero : heroes)
 	{
 		if (hero.entIndex == localHero.entIndex)
@@ -1638,100 +1367,12 @@ auto CKillStealer::OnRenderInner() -> void
 		// Reject only the never-replicated (0,0,0) placeholder - see
 		// HasTrustworthyPosition for why a real fog test is not available.
 		if (!HasTrustworthyPosition(hero))
-		{
-			++unpositionedEnemies;
 			continue;
-		}
 
-		++totalOpposingTeamHeroes;
 		const float distance = Distance2D(localHero.origin, hero.origin);
-		if (nearestEnemyDist < 0.f || distance < nearestEnemyDist)
-		{
-			nearestEnemyDist = distance;
-			nearestEnemyHp = hero.health;
-			nearestEnemyMaxHp = hero.maxHealth;
-			nearestEnemyName = hero.name;
-		}
-
-		const bool inRange = distance <= Settings::KillStealer::DetectRange;
-
-		// Log the moment an enemy crosses the range boundary in either
-		// direction. The previous capture contained no in-range sample at all
-		// (closest enemy all session: 7390 units), so the entry condition has
-		// never actually been observed - this records the crossing itself,
-		// including both positions it was derived from, rather than relying on
-		// catching it in a periodic sample.
-		if (Settings::KillStealer::DrawDebugInfo)
-		{
-			static std::vector<std::pair<int, bool>> s_LastInRange;
-			auto entry = std::find_if(s_LastInRange.begin(), s_LastInRange.end(),
-				[&](const auto& pair) { return pair.first == hero.entIndex; });
-
-			if (entry == s_LastInRange.end())
-				s_LastInRange.emplace_back(hero.entIndex, inRange);
-			else if (entry->second != inRange)
-			{
-				entry->second = inRange;
-				DEV_LOG("[kill-stealer] RANGE %s: %s dist=%.0f threshold=%.0f self=(%.0f,%.0f) enemy=(%.0f,%.0f) hp=%d/%d\n",
-					inRange ? "ENTER" : "EXIT", hero.name.c_str(), distance, Settings::KillStealer::DetectRange,
-					localHero.origin.m_x, localHero.origin.m_y, hero.origin.m_x, hero.origin.m_y,
-					hero.health, hero.maxHealth);
-			}
-		}
-
-		if (!inRange)
+		if (distance > Settings::KillStealer::DetectRange)
 			continue;
 		enemies.push_back(hero);
-	}
-
-	// Cache the resolved state for the live on-screen overlay (drawn every
-	// frame in OnRender, independent of this think-tick throttle).
-	m_Debug = {};
-	m_Debug.valid = true;
-	m_Debug.localResolved = true;
-	m_Debug.localName = localHero.name;
-	m_Debug.localSource = g_LastLocalHeroSource;
-	m_Debug.nearestEnemyName = nearestEnemyName;
-	m_Debug.nearestEnemyHp = nearestEnemyHp;
-	m_Debug.nearestEnemyMaxHp = nearestEnemyMaxHp;
-	m_Debug.nearestEnemyDist = nearestEnemyDist;
-	m_Debug.opposingCount = totalOpposingTeamHeroes;
-	m_Debug.inRangeCount = static_cast<int>(enemies.size());
-	m_Debug.noPositionCount = unpositionedEnemies;
-	m_Debug.planActive = m_Plan.active;
-
-	// Log once local hero is resolved. When any enemy is within detect range,
-	// sample fast (250ms) so a brief kill window can't slip between samples;
-	// otherwise keep it quiet (3s). The summary carries the local hero's own
-	// origin (so it can be cross-checked against other features' readings) and
-	// is followed by one line per opposing hero with its raw position - so a
-	// hero being dropped entirely, or read at a bogus position, is visible.
-	if (Settings::KillStealer::DrawDebugInfo)
-	{
-		static uint32_t lastDebugLogTick = 0;
-		const uint32_t interval = enemies.empty() ? 3000u : 250u;
-		if (now - lastDebugLogTick >= interval)
-		{
-			DEV_LOG("[kill-stealer] debug local=%s team=%u mana=%.0f local_pos=(%.0f,%.0f) nearest_enemy=%s hp=%d/%d dist=%.0f detect_range=%.0f opposing=%d no_position=%d heroes_seen=%zu in_range=%zu plan_active=%d\n",
-				localHero.name.c_str(), localHero.team, localHero.mana, localHero.origin.m_x, localHero.origin.m_y,
-				nearestEnemyName.empty() ? "<none>" : nearestEnemyName.c_str(),
-				nearestEnemyHp, nearestEnemyMaxHp, nearestEnemyDist, Settings::KillStealer::DetectRange,
-				totalOpposingTeamHeroes, unpositionedEnemies, heroes.size(), enemies.size(), m_Plan.active ? 1 : 0);
-
-			int engineSlot = -1;
-			TryLocalPlayerId(engineSlot);
-			DEV_LOG("[kill-stealer]   engineLocalPlayer=%d\n", engineSlot);
-			for (const auto& hero : heroes)
-			{
-				const bool sameTeam = hero.team == localHero.team;
-				const bool isSelf = hero.entIndex == localHero.entIndex;
-				DEV_LOG("[kill-stealer]   hero=%s team=%u pid=%d pos=(%.0f,%.0f) hp=%d/%d posrepl=%d magicres_raw=%.3f magicres_used=%.3f dist=%.0f %s\n",
-					hero.name.c_str(), hero.team, hero.playerId, hero.origin.m_x, hero.origin.m_y, hero.health, hero.maxHealth,
-					hero.originReplicated ? 1 : 0, hero.rawMagicResistance, hero.magicResistance,
-					Distance2D(localHero.origin, hero.origin), isSelf ? "[SELF]" : (sameTeam ? "[ally]" : "[ENEMY]"));
-			}
-			lastDebugLogTick = now;
-		}
 	}
 
 	if (enemies.empty())
@@ -1740,14 +1381,7 @@ auto CKillStealer::OnRenderInner() -> void
 		return;
 	}
 
-	// Same throttle pattern as the scan-rejection log: walks every ability's
-	// full name/class, so keep it off the hot path.
-	static uint32_t s_LastToolLogTick = 0;
-	const bool logToolRejections = Settings::KillStealer::DrawDebugInfo && (now - s_LastToolLogTick >= 3000);
-	if (logToolRejections)
-		s_LastToolLogTick = now;
-
-	const auto tools = CollectTools(entitySystem, localHero, offsets, logToolRejections);
+	const auto tools = CollectTools(entitySystem, localHero, offsets);
 	DrawMarkers(localHero, enemies, tools, now);
 
 	// Advance an in-flight plan.
@@ -1771,13 +1405,6 @@ auto CKillStealer::OnRenderInner() -> void
 
 			if (!target || target->health <= 0)
 			{
-				// Silent before this - the two most common causes are "target
-				// walked out of DetectRange between plan-build and this tick"
-				// and "target already died to something else". Both look
-				// identical from the outside as "the cast just never
-				// happened", so name which one it was.
-				if (Settings::KillStealer::DrawDebugInfo)
-					DEV_LOG("[kill-stealer] plan cancelled: %s\n", !target ? "target left enemy list (out of range/dead/unresolved)" : "target already at 0 hp");
 				CancelPlan();
 			}
 			else if (m_Plan.actionIndex >= m_Plan.actions.size())
@@ -1793,9 +1420,6 @@ auto CKillStealer::OnRenderInner() -> void
 				// the rest of the combo, ultimate included, for nothing: the
 				// code only checked "does the target still exist", never "is
 				// what's left of the plan still lethal".
-				if (Settings::KillStealer::DrawDebugInfo)
-					DEV_LOG("[kill-stealer] plan cancelled: target no longer killable with what's left - hp=%d/%d actions_left=%zu\n",
-						target->health, target->maxHealth, m_Plan.actions.size() - m_Plan.actionIndex);
 				CancelPlan();
 			}
 			else if (now >= m_Plan.nextActionTick)
@@ -1803,8 +1427,6 @@ auto CKillStealer::OnRenderInner() -> void
 				const auto& action = m_Plan.actions[m_Plan.actionIndex];
 				if (!CastPlanAction(action, target->origin))
 				{
-					if (Settings::KillStealer::DrawDebugInfo)
-						DEV_LOG("[kill-stealer] cast failed: action=%s reason=%s\n", action.name.c_str(), DescribeInputBlockReason());
 					CancelPlan();
 				}
 				else
@@ -1828,42 +1450,11 @@ auto CKillStealer::OnRenderInner() -> void
 	const HeroSnapshot* bestTarget = nullptr;
 	float bestOverkill = 3.4e38f;
 
-	// Sample fast (250ms) while there's a target to evaluate, so a fleeting
-	// close-and-low-HP kill window is actually captured instead of slipping
-	// between coarse 3s samples.
-	const bool debugEnemies = Settings::KillStealer::DrawDebugInfo;
-	static uint32_t lastEnemyLogTick = 0;
-	const bool shouldLogEnemies = debugEnemies && (now - lastEnemyLogTick >= 250);
-
 	for (const auto& enemy : enemies)
 	{
 		PlanState candidatePlan{};
 		KillPlanEvaluation candidateEvaluation{};
 		const bool lethal = BuildKillPlan(localHero, enemy, tools, now, candidatePlan, candidateEvaluation);
-
-		if (shouldLogEnemies)
-		{
-			// Upper-bound diagnostic: sum of every in-range tool's damage, not
-			// gated by the greedy search's early-exit-at-threshold - shows
-			// whether "not lethal" means "genuinely not enough damage in range"
-			// vs. something else (range, mana, cooldown filtering tools out).
-			float maxPossibleDamage = 0.f;
-			int inRangeToolCount = 0;
-			const float distance = Distance2D(localHero.origin, enemy.origin);
-			for (const auto& tool : tools)
-			{
-				if (!tool.noTarget && distance > tool.castRange + 75.f)
-					continue;
-				++inRangeToolCount;
-				maxPossibleDamage += EffectiveDamage(tool, localHero, enemy, false);
-			}
-
-			DEV_LOG("[kill-stealer] enemy hp=%d/%d dist=%.0f in_range_tools=%d/%zu max_possible_dmg=%.0f threshold=%.0f lethal=%d plan_actions=%zu plan_dmg=%.0f\n",
-				enemy.health, enemy.maxHealth, distance, inRangeToolCount, tools.size(), maxPossibleDamage,
-				LethalThreshold(enemy.health), lethal ? 1 : 0,
-				candidatePlan.actions.size(), candidateEvaluation.totalDamage);
-		}
-
 		if (!lethal)
 			continue;
 
@@ -1881,9 +1472,6 @@ auto CKillStealer::OnRenderInner() -> void
 		}
 	}
 
-	if (shouldLogEnemies)
-		lastEnemyLogTick = now;
-
 	if (!bestTarget)
 		return;
 
@@ -1894,113 +1482,9 @@ auto CKillStealer::OnRenderInner() -> void
 
 auto CKillStealer::OnRender() -> void
 {
-	// Must run every frame regardless of the branch below, or a cast's
-	// deferred confirm-click (see ArmClick/TickPendingClick) could sit
-	// pending far longer than intended.
+	// Must run every frame, or a cast's deferred confirm-click (see
+	// ArmClick/TickPendingClick) could sit pending far longer than intended.
 	TickPendingClick();
 
-	if (!Settings::KillStealer::DrawDebugInfo)
-	{
-		OnRenderInner();
-		return;
-	}
-
-	// Perf instrumentation, only when Debug Logs is on: worst OnRenderInner call
-	// time per 1s window, so a future slowdown shows up as a number instead of
-	// another round of guessing.
-	LARGE_INTEGER freq{};
-	LARGE_INTEGER t0{};
-	QueryPerformanceFrequency(&freq);
-	QueryPerformanceCounter(&t0);
-
 	OnRenderInner();
-
-	LARGE_INTEGER t1{};
-	QueryPerformanceCounter(&t1);
-	const double elapsedMs = freq.QuadPart ? (t1.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart) : 0.0;
-
-	static double worstMs = 0.0;
-	static uint32_t lastPerfLogTick = 0;
-	worstMs = (std::max)(worstMs, elapsedMs);
-
-	const uint32_t nowTick = GetTickCount();
-	if (!lastPerfLogTick || nowTick - lastPerfLogTick >= 1000)
-	{
-		DEV_LOG("[kill-stealer] perf worst_onrender_ms=%.3f\n", worstMs);
-		worstMs = 0.0;
-		lastPerfLogTick = nowTick;
-	}
-
-	// Drawn every frame (not throttled) so it stays stable instead of
-	// flickering at the think-tick rate.
-	DrawDebugOverlay();
-}
-
-auto CKillStealer::DrawDebugOverlay() -> void
-{
-	if (!Settings::KillStealer::DrawDebugInfo || !ImGui::GetCurrentContext())
-		return;
-
-	auto* drawList = ImGui::GetForegroundDrawList();
-	if (!drawList)
-		return;
-
-	const float x = 24.f;
-	float y = 150.f;
-	const auto line = [&](const char* text, ImU32 color)
-	{
-		drawList->AddText(ImVec2(x + 1.f, y + 1.f), IM_COL32(0, 0, 0, 200), text);
-		drawList->AddText(ImVec2(x, y), color, text);
-		y += 18.f;
-	};
-
-	constexpr ImU32 kHeader = IM_COL32(120, 200, 255, 255);
-	constexpr ImU32 kText = IM_COL32(235, 235, 235, 255);
-	constexpr ImU32 kWarn = IM_COL32(255, 190, 70, 255);
-	constexpr ImU32 kGood = IM_COL32(120, 240, 140, 255);
-
-	line("[Kill Stealer debug]", kHeader);
-
-	if (!Settings::KillStealer::Enable)
-	{
-		line("Enable is OFF", kWarn);
-		return;
-	}
-	if (!m_Debug.valid)
-	{
-		line("waiting for game state...", kWarn);
-		return;
-	}
-	if (!m_Debug.localResolved)
-	{
-		line("local hero NOT resolved", kWarn);
-		return;
-	}
-
-	char buf[256];
-	// Both remaining resolvers (playerid, controller) are identity matches, not
-	// guesses, so there is no "this might be wrong" state left to call out here
-	// - the source is shown purely for diagnosis, not as a trust signal.
-	std::snprintf(buf, sizeof(buf), "you: %s  [via %s]",
-		m_Debug.localName.c_str(), m_Debug.localSource.c_str());
-	line(buf, kText);
-
-	if (m_Debug.nearestEnemyDist < 0.f || m_Debug.nearestEnemyName.empty())
-	{
-		std::snprintf(buf, sizeof(buf), "no enemy heroes in scan (%d without position)", m_Debug.noPositionCount);
-		line(buf, kWarn);
-	}
-	else
-	{
-		const bool inRange = m_Debug.nearestEnemyDist <= Settings::KillStealer::DetectRange;
-		std::snprintf(buf, sizeof(buf), "nearest: %s  hp %d/%d  dist %.0f (range %.0f)",
-			m_Debug.nearestEnemyName.c_str(), m_Debug.nearestEnemyHp, m_Debug.nearestEnemyMaxHp,
-			m_Debug.nearestEnemyDist, Settings::KillStealer::DetectRange);
-		line(buf, inRange ? kGood : kWarn);
-
-		std::snprintf(buf, sizeof(buf), "opposing: %d   no-pos: %d   in range: %d   plan: %s",
-			m_Debug.opposingCount, m_Debug.noPositionCount, m_Debug.inRangeCount,
-			m_Debug.planActive ? "ACTIVE" : "idle");
-		line(buf, m_Debug.planActive ? kGood : kText);
-	}
 }

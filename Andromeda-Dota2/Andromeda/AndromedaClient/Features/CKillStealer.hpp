@@ -43,31 +43,7 @@ public:
 private:
 	auto OnRenderInner() -> void;
 	auto CancelPlan() -> void;
-	auto DrawDebugOverlay() -> void;
 
 	PlanState m_Plan{};
 	uint32_t m_NextThinkTick = 0;
-
-	// Cached snapshot of the last think-tick's state, drawn every frame as an
-	// on-screen readout when Debug Logs is on - so detection can be verified
-	// live in-game instead of only via debug.log after the fact.
-	struct DebugReadout
-	{
-		bool valid = false;
-		bool localResolved = false;
-		std::string localName;
-		// Which resolver picked localName, so a positional guess is visibly
-		// distinguishable from an authoritative match.
-		std::string localSource;
-		std::string nearestEnemyName;
-		int nearestEnemyHp = 0;
-		int nearestEnemyMaxHp = 0;
-		float nearestEnemyDist = -1.f;
-		int opposingCount = 0;
-		int inRangeCount = 0;
-		// Opposing heroes excluded for having no replicated position at all.
-		int noPositionCount = 0;
-		bool planActive = false;
-	};
-	DebugReadout m_Debug{};
 };

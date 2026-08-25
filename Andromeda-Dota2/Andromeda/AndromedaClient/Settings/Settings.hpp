@@ -50,7 +50,6 @@ namespace Settings
 		inline bool UseItems = true;
 		inline bool UseAutoAttack = true;
 		inline bool DrawKillableMarkers = true;
-		inline bool DrawDebugInfo = false;
 		// When on, CastPlanAction skips the confirm-click after the ability
 		// hotkey and relies on the press alone firing at the cursor - correct
 		// ONLY if Quickcast is enabled for that ability in Dota's own options.
@@ -61,11 +60,11 @@ namespace Settings
 		// "the spell didn't kill" when the plan and damage math were correct
 		// the whole time. Off is the setting that can't silently no-op casts.
 		inline bool QuickCast = false;
-		inline float HealthBuffer = 1.f;
+		inline float HealthBuffer = 20.f;
 		// Extra percentage of the target's current HP required on top of
 		// HealthBuffer before a plan counts as lethal - see LethalThreshold in
 		// CKillStealer.cpp.
-		inline float SafetyMarginPercent = 15.f;
+		inline float SafetyMarginPercent = 25.f;
 		inline int AttackKey = 'A';
 		// Lead the plan with Ethereal Blade (doubles magic damage taken) when it
 		// helps land the kill in fewer actions, instead of treating it as a
