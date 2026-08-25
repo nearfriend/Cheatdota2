@@ -1430,6 +1430,9 @@ auto CKillStealer::OnRenderInner() -> void
 
 			if (!target || target->health <= 0)
 			{
+				DEV_LOG("[kill-stealer] CANCEL: %s (step %zu/%zu)\n",
+					!target ? "target left enemy list" : "target already dead",
+					m_Plan.actionIndex, m_Plan.actions.size());
 				CancelPlan();
 			}
 			else if (m_Plan.actionIndex >= m_Plan.actions.size())
@@ -1445,12 +1448,19 @@ auto CKillStealer::OnRenderInner() -> void
 				// the rest of the combo, ultimate included, for nothing: the
 				// code only checked "does the target still exist", never "is
 				// what's left of the plan still lethal".
+				DEV_LOG("[kill-stealer] CANCEL: target no longer killable with what's left - hp=%d/%d mana=%.0f step=%zu/%zu next_action=%s\n",
+					target->health, target->maxHealth, localHero.mana,
+					m_Plan.actionIndex, m_Plan.actions.size(), m_Plan.actions[m_Plan.actionIndex].name.c_str());
 				CancelPlan();
 			}
 			else if (now >= m_Plan.nextActionTick)
 			{
 				const auto& action = m_Plan.actions[m_Plan.actionIndex];
-				if (!CastPlanAction(action, target->origin))
+				const bool castOk = CastPlanAction(action, target->origin);
+				DEV_LOG("[kill-stealer] CAST %s: %s key=%c step=%zu/%zu target_hp=%d\n",
+					castOk ? "ok" : "FAILED", action.name.c_str(), static_cast<char>(action.key),
+					m_Plan.actionIndex, m_Plan.actions.size(), target->health);
+				if (!castOk)
 				{
 					CancelPlan();
 				}
@@ -1503,6 +1513,18 @@ auto CKillStealer::OnRenderInner() -> void
 	m_Plan = bestPlan;
 	m_Plan.active = true;
 	m_Plan.nextActionTick = now;
+
+	DEV_LOG("[kill-stealer] PLAN target=%s hp=%d/%d threshold=%.0f total_dmg=%.0f actions=%zu\n",
+		bestTarget->name.c_str(), bestTarget->health, bestTarget->maxHealth,
+		LethalThreshold(bestTarget->health), bestEvaluation.totalDamage, m_Plan.actions.size());
+	for (const auto& action : m_Plan.actions)
+	{
+		const auto tool = std::find_if(tools.begin(), tools.end(),
+			[&](const KillTool& candidate) { return candidate.name == action.name; });
+		DEV_LOG("[kill-stealer]   step: %s key=%c mana_cost=%d\n",
+			action.name.c_str(), static_cast<char>(action.key), tool != tools.end() ? tool->manaCost : -1);
+	}
+	DEV_LOG("[kill-stealer]   caster mana=%.0f\n", localHero.mana);
 }
 
 auto CKillStealer::OnRender() -> void
