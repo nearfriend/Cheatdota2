@@ -143,6 +143,10 @@ namespace
 		bool pointTarget = false;
 		bool isDamageAmplifier = false;
 		uint32_t delayMs = 0;
+		// Mana cost at the level CollectTools read it at. Needed so a plan
+		// combining multiple actions can simulate them draining the SAME mana
+		// pool in sequence - see the cumulative check in BuildKillPlan.
+		int manaCost = 0;
 	};
 
 	struct KillPlanEvaluation
@@ -833,6 +837,7 @@ namespace
 					tool.unitTarget = data->unitTarget;
 					tool.pointTarget = data->pointTarget;
 					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
+					tool.manaCost = manaCost;
 					tools.push_back(tool);
 				}
 			}
@@ -888,6 +893,7 @@ namespace
 					tool.pointTarget = data->pointTarget;
 					tool.isDamageAmplifier = isEtherealBlade;
 					tool.delayMs = data->noTarget ? 90u : (Settings::KillStealer::QuickCast ? 120u : 180u);
+					tool.manaCost = manaCost;
 					tools.push_back(tool);
 				}
 			}
@@ -1014,15 +1020,34 @@ namespace
 
 			std::vector<size_t> chosen;
 			float total = 0.f;
+			// Tracks mana as it would actually deplete if these actions fired
+			// in sequence. CollectTools already confirmed each tool is
+			// individually affordable against the hero's current mana, but
+			// that check has no idea what else this same plan is about to
+			// spend first - two spells that are each affordable alone can
+			// easily add up to more than the hero actually has. Without this,
+			// a plan gets built assuming mana it won't have by the second
+			// action, the second action's own live re-check (see
+			// IsRemainingPlanStillLethal) then correctly finds it unaffordable
+			// and cancels, and the target is left alive at whatever HP the
+			// first action alone brought them to.
+			float manaRemaining = localHero.mana;
 			if (includeAmplifier)
+			{
 				chosen.push_back(usable[amplifierPos]);
+				manaRemaining -= static_cast<float>(tools[usable[amplifierPos]].manaCost);
+			}
 
 			for (size_t pos : order)
 			{
 				if (total >= threshold)
 					break;
-				const bool amp = includeAmplifier && tools[usable[pos]].damageType == AbilityDamageType::Magical;
-				total += EffectiveDamage(tools[usable[pos]], localHero, target, amp);
+				const auto& tool = tools[usable[pos]];
+				if (static_cast<float>(tool.manaCost) > manaRemaining + 0.5f)
+					continue;
+				manaRemaining -= static_cast<float>(tool.manaCost);
+				const bool amp = includeAmplifier && tool.damageType == AbilityDamageType::Magical;
+				total += EffectiveDamage(tool, localHero, target, amp);
 				chosen.push_back(usable[pos]);
 			}
 			return total >= threshold ? chosen : std::vector<size_t>{};
