@@ -1042,7 +1042,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 554.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : 180.f ) );
+			const float settingsCardHeight = killStealerPage ? 528.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : 180.f ) );
 			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
 			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
@@ -1057,7 +1057,6 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSwitchRow( "Quick Cast Mode" , "##killStealerQuickCast" , Settings::KillStealer::QuickCast , ReferenceIcon::Speed );
 				DrawSwitchRow( "Prioritize Ethereal Blade" , "##killStealerEtherealBlade" , Settings::KillStealer::PrioritizeEtherealBlade , ReferenceIcon::Sparkles );
 				DrawSwitchRow( "Draw Killable Markers" , "##killStealerMarkers" , Settings::KillStealer::DrawKillableMarkers , ReferenceIcon::Visible );
-				DrawSwitchRow( "Draw Detect Range Circle" , "##killStealerRangeCircle" , Settings::KillStealer::DrawDetectRangeCircle , ReferenceIcon::Radius );
 				DrawSwitchRow( "Debug Logs" , "##killStealerDebug" , Settings::KillStealer::DrawDebugInfo , ReferenceIcon::Code );
 				DrawSliderRow( "Health Buffer" , "##killStealerHealthBuffer" , Settings::KillStealer::HealthBuffer , 0.f , 250.f , "%.0f hp" , ReferenceIcon::Warning );
 				DrawSliderRow( "Safety Margin" , "##killStealerSafetyMargin" , Settings::KillStealer::SafetyMarginPercent , 0.f , 50.f , "%.0f%%" , ReferenceIcon::Warning );

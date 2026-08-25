@@ -1436,6 +1436,36 @@ namespace
 		return SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT)) == std::size(inputs);
 	}
 
+	// Without Dota's own Quickcast option enabled, casting a targeted ability
+	// is a two-step interaction: the hotkey arms a targeting reticle, and only
+	// a SEPARATE, later click confirms the target under it. Sending the key
+	// and the click back-to-back in the same call - as this used to do -
+	// raced that transition: the click could arrive before Source 2 had
+	// finished switching into targeting mode, so it was consumed as a stray
+	// click instead of a target confirmation, silently dropping the cast. A
+	// human always has some reaction-time gap between the two; deferring the
+	// click to a later, non-blocking tick reproduces that gap instead of
+	// requiring the player to have Quickcast on (which skips this step
+	// entirely) just to make automation reliable.
+	bool g_HasPendingClick = false;
+	ULONGLONG g_ClickAtTick = 0;
+
+	auto ArmClick(ULONGLONG delayMs) -> void
+	{
+		g_HasPendingClick = true;
+		g_ClickAtTick = GetTickCount64() + delayMs;
+	}
+
+	auto TickPendingClick() -> void
+	{
+		if (!g_HasPendingClick)
+			return;
+		if (GetTickCount64() < g_ClickAtTick)
+			return;
+		g_HasPendingClick = false;
+		SendLeftClick();
+	}
+
 	auto ProjectTargetScreen(const Vector3& origin, ImVec2& out) -> bool
 	{
 		Vector3 lifted = origin;
@@ -1469,11 +1499,14 @@ namespace
 
 		const bool needsClick = action.kind == CKillStealer::PlanAction::Kind::Attack || !Settings::KillStealer::QuickCast;
 		const bool keyOk = SendKeyPress(action.key);
-		const bool clickOk = !needsClick || SendLeftClick();
-		const bool sent = keyOk && clickOk;
+		// Give Source 2 a beat to switch into targeting mode before the click
+		// arrives - see the comment on ArmClick/TickPendingClick.
+		if (needsClick)
+			ArmClick(40);
+		const bool sent = keyOk;
 		if (Settings::KillStealer::DrawDebugInfo)
-			DEV_LOG("[kill-stealer] cursor: action=%s key=%c needs_click=%d key_sent=%d click_sent=%d overall_sent=%d\n",
-				action.name.c_str(), static_cast<char>(action.key), needsClick ? 1 : 0, keyOk ? 1 : 0, clickOk ? 1 : 0, sent ? 1 : 0);
+			DEV_LOG("[kill-stealer] cursor: action=%s key=%c needs_click=%d key_sent=%d click_armed=%d overall_sent=%d\n",
+				action.name.c_str(), static_cast<char>(action.key), needsClick ? 1 : 0, keyOk ? 1 : 0, needsClick ? 1 : 0, sent ? 1 : 0);
 		// Cursor is deliberately left on the enemy after the cast, not
 		// restored to wherever it was before.
 		return sent;
@@ -1507,71 +1540,6 @@ namespace
 		}
 	}
 
-	// Ported from CLastHitAssistant.cpp's DrawStyledWorldCircle/DrawScreenRangeFallback
-	// pair (same visual style, so both features read as one system). Traces the
-	// circle in world space and projects every point through WorldToScreen, so
-	// it foreshortens correctly with the camera instead of being a flat screen
-	// ellipse - unlike last-hit's copy, this one is actually wired up to render.
-	auto DrawStyledWorldCircle(ImDrawList* drawList, const Vector3& origin, float radius) -> bool
-	{
-		if (!drawList || radius <= 1.f)
-			return false;
-
-		constexpr int segments = 128;
-		constexpr float kTwoPi = 6.28318530718f;
-		std::array<ImVec2, segments> points{};
-		for (int index = 0; index < segments; ++index)
-		{
-			const float angle = static_cast<float>(index) * kTwoPi / static_cast<float>(segments);
-			const Vector3 world(origin.m_x + std::cos(angle) * radius,
-				origin.m_y + std::sin(angle) * radius, origin.m_z + 4.f);
-			if (!Math::WorldToScreen(world, points[index]))
-				return false;
-		}
-
-		drawList->AddConvexPolyFilled(points.data(), segments, IM_COL32(70, 170, 255, 8));
-		drawList->AddPolyline(points.data(), segments, IM_COL32(5, 9, 12, 125), ImDrawFlags_Closed, 4.0f);
-		drawList->AddPolyline(points.data(), segments, IM_COL32(65, 190, 255, 82), ImDrawFlags_Closed, 5.0f);
-		drawList->AddPolyline(points.data(), segments, IM_COL32(255, 232, 132, 235), ImDrawFlags_Closed, 2.0f);
-		drawList->AddPolyline(points.data(), segments, IM_COL32(155, 245, 255, 135), ImDrawFlags_Closed, 1.1f);
-		return true;
-	}
-
-	auto DrawStyledScreenCircle(ImDrawList* drawList, const ImVec2& center, float radius, int segments = 128) -> void
-	{
-		if (!drawList || radius <= 1.f)
-			return;
-
-		drawList->AddCircleFilled(center, radius, IM_COL32(70, 170, 255, 9), segments);
-		drawList->AddCircle(center, radius + 1.7f, IM_COL32(5, 9, 12, 125), segments, 4.0f);
-		drawList->AddCircle(center, radius, IM_COL32(65, 190, 255, 82), segments, 5.0f);
-		drawList->AddCircle(center, radius, IM_COL32(255, 232, 132, 235), segments, 2.0f);
-		drawList->AddCircle(center, (std::max)(1.f, radius - 2.4f), IM_COL32(155, 245, 255, 135), segments, 1.1f);
-	}
-
-	// When the world-space circle can't be projected (hero is off-screen, or
-	// the camera angle makes some rim points fail WorldToScreen), fall back to
-	// a flat screen-space circle sized from one known-good point on the rim -
-	// worse geometry, but still gives an honest sense of scale instead of
-	// nothing at all.
-	auto DrawScreenRangeFallback(ImDrawList* drawList, const Vector3& origin, float radius) -> void
-	{
-		Vector3 lifted = origin;
-		lifted.m_z += 64.f;
-		ImVec2 center{};
-		if (!Math::WorldToScreen(lifted, center) && !Math::WorldToScreen(origin, center))
-			return;
-
-		Vector3 sideWorld(origin.m_x + radius, origin.m_y, origin.m_z + 64.f);
-		ImVec2 side{};
-		float screenRadius = 150.f;
-		if (Math::WorldToScreen(sideWorld, side))
-			screenRadius = std::hypot(side.x - center.x, side.y - center.y);
-		screenRadius = std::clamp(screenRadius, 45.f, 420.f);
-
-		DrawStyledScreenCircle(drawList, center, screenRadius);
-		drawList->AddCircleFilled(center, 3.5f, IM_COL32(248, 250, 238, 210), 16);
-	}
 }
 
 auto CKillStealer::CancelPlan() -> void
@@ -1731,10 +1699,6 @@ auto CKillStealer::OnRenderInner() -> void
 	m_Debug.inRangeCount = static_cast<int>(enemies.size());
 	m_Debug.noPositionCount = unpositionedEnemies;
 	m_Debug.planActive = m_Plan.active;
-	m_Debug.localOriginX = localHero.origin.m_x;
-	m_Debug.localOriginY = localHero.origin.m_y;
-	m_Debug.localOriginZ = localHero.origin.m_z;
-	m_Debug.detectRange = Settings::KillStealer::DetectRange;
 
 	// Log once local hero is resolved. When any enemy is within detect range,
 	// sample fast (250ms) so a brief kill window can't slip between samples;
@@ -1930,14 +1894,14 @@ auto CKillStealer::OnRenderInner() -> void
 
 auto CKillStealer::OnRender() -> void
 {
+	// Must run every frame regardless of the branch below, or a cast's
+	// deferred confirm-click (see ArmClick/TickPendingClick) could sit
+	// pending far longer than intended.
+	TickPendingClick();
+
 	if (!Settings::KillStealer::DrawDebugInfo)
 	{
 		OnRenderInner();
-		// The range circle is a gameplay visual, not a diagnostic - it must
-		// keep drawing regardless of the Debug Logs toggle, using the cached
-		// think-tick state so it stays smooth every frame like the killable
-		// markers do.
-		DrawDetectRangeCircle();
 		return;
 	}
 
@@ -1967,28 +1931,9 @@ auto CKillStealer::OnRender() -> void
 		lastPerfLogTick = nowTick;
 	}
 
-	// Drawn every frame (not throttled) so both stay stable instead of
+	// Drawn every frame (not throttled) so it stays stable instead of
 	// flickering at the think-tick rate.
-	DrawDetectRangeCircle();
 	DrawDebugOverlay();
-}
-
-auto CKillStealer::DrawDetectRangeCircle() -> void
-{
-	if (!Settings::KillStealer::Enable || !Settings::KillStealer::DrawDetectRangeCircle)
-		return;
-	if (!ImGui::GetCurrentContext() || !m_Debug.valid || !m_Debug.localResolved)
-		return;
-
-	auto* drawList = ImGui::GetForegroundDrawList();
-	if (!drawList)
-		return;
-
-	const Vector3 origin(m_Debug.localOriginX, m_Debug.localOriginY, m_Debug.localOriginZ);
-	if (DrawStyledWorldCircle(drawList, origin, m_Debug.detectRange))
-		return;
-
-	DrawScreenRangeFallback(drawList, origin, m_Debug.detectRange);
 }
 
 auto CKillStealer::DrawDebugOverlay() -> void

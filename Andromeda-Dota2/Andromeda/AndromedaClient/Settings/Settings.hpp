@@ -50,7 +50,6 @@ namespace Settings
 		inline bool UseItems = true;
 		inline bool UseAutoAttack = true;
 		inline bool DrawKillableMarkers = true;
-		inline bool DrawDetectRangeCircle = true;
 		inline bool DrawDebugInfo = false;
 		// When on, CastPlanAction skips the confirm-click after the ability
 		// hotkey and relies on the press alone firing at the cursor - correct
