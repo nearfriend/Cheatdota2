@@ -9,6 +9,7 @@
 #include <Dota2/SDK/Update/Offsets.hpp>
 #include <Dota2/SDK/Types/CHandle.hpp>
 #include <Dota2/SDK/Types/CEntityData.hpp>
+#include <Dota2/SDK/Interface/CLocalHeroResolver.hpp>
 
 #define MAX_ENTITIES_IN_LIST 512
 #define MAX_ENTITY_LISTS 64
@@ -77,6 +78,22 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 	if ( !pGES )
 		return nullptr;
 
+	auto* pSchema = GetSchemaOffset();
+	if ( !pSchema )
+		return nullptr;
+
+	// IMPORTANT: GetSchemaClassName() returns null for entities reached via
+	// the identity-chunk walk on this build (verified by CAutoCombo's raw
+	// dump - every chunk-walked entity printed class='<null>'). It therefore
+	// must never be a hard gate anywhere in this function: with the old
+	// className filter every controller was skipped before any strategy ran,
+	// which is why the Steam-ID and local-flag strategies "never worked" and
+	// pCUserCmd stayed null in Hook_OnCreateMove.
+	uint32_t assignedHeroOffset = 0;
+	const bool hasAssignedHeroOffset =
+		pSchema->TryGetOffset( "C_DOTAPlayerController" , "m_hAssignedHero" , assignedHeroOffset ) &&
+		assignedHeroOffset != 0 && assignedHeroOffset < 0x4000;
+
 	static CHandle s_CachedHandle{ INVALID_EHANDLE_INDEX };
 	static ULONGLONG s_LastSearchTick = 0;
 
@@ -87,20 +104,27 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 		auto* pCached = pGES->GetBaseEntityFromHandle( s_CachedHandle );
 		if ( !pCached )
 			return nullptr;
-		const char* className = pCached->GetSchemaClassName();
-		if ( !className || std::strstr( className , "DOTAPlayerController" ) == nullptr )
-			return nullptr;
-		return static_cast<C_DOTAPlayerController*>( pCached );
+		// Class name works for some entities; when it is null, accept the
+		// cached entity if it still carries a plausible assigned-hero handle
+		// at the controller offset (an unrelated entity reusing the slot is
+		// very unlikely to have valid handle bits exactly there).
+		if ( const char* className = pCached->GetSchemaClassName();
+			className && std::strstr( className , "DOTAPlayerController" ) != nullptr )
+			return static_cast<C_DOTAPlayerController*>( pCached );
+		if ( hasAssignedHeroOffset )
+		{
+			CHandle assigned{ INVALID_EHANDLE_INDEX };
+			std::memcpy( &assigned , reinterpret_cast<const uint8_t*>( pCached ) + assignedHeroOffset , sizeof( CHandle ) );
+			if ( assigned.IsValid() )
+				return static_cast<C_DOTAPlayerController*>( pCached );
+		}
+		return nullptr;
 	};
 
 	if ( auto* pCached = CachedController() )
 		return pCached;
 
 	s_CachedHandle = CHandle{ INVALID_EHANDLE_INDEX };
-
-	auto* pSchema = GetSchemaOffset();
-	if ( !pSchema )
-		return nullptr;
 
 	const ULONGLONG now = GetTickCount64();
 	if ( s_LastSearchTick != 0 && now - s_LastSearchTick < 250 )
@@ -168,8 +192,27 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 			reinterpret_cast<uintptr_t>( controller ) + isLocalControllerOffset );
 	};
 
+	// Hero-match strategy: the player-id path (see CLocalHeroResolver) is the
+	// only local-identity method proven to work on this build. Resolve our
+	// hero first, then pick the entity whose m_hAssignedHero points at it -
+	// including entities whose class name cannot be read (see the note at the
+	// top of this function), which is the common case here.
+	C_BaseEntity* localHero = nullptr;
+	int localHeroEntIndex = -1;
+	const bool haveLocalHero = hasAssignedHeroOffset &&
+		CLocalHeroResolver::ResolveByPlayerIdOnly( pGES , localHero , localHeroEntIndex );
+
 	C_DOTAPlayerController* flagFallback = nullptr;
 	CHandle flagFallbackHandle{ INVALID_EHANDLE_INDEX };
+
+	// Hero-matching entities that could NOT be confirmed controllers by class
+	// name. Accepted after the loop only when the match is unambiguous, since
+	// in theory an unrelated entity could carry hero-handle-shaped bytes at
+	// the controller's m_hAssignedHero offset.
+	C_DOTAPlayerController* unclassifiedMatch = nullptr;
+	CHandle unclassifiedMatchHandle{ INVALID_EHANDLE_INDEX };
+	int unclassifiedMatchCount = 0;
+
 	for ( int chunkIndex = 0; chunkIndex < MAX_ENTITY_LISTS; ++chunkIndex )
 	{
 		auto* chunk = pGES->m_pIdentityChunks[chunkIndex];
@@ -183,26 +226,64 @@ inline auto CGameEntitySystem::ResolveLocalPlayerControllerBySchema() -> C_DOTAP
 			if ( !entity )
 				continue;
 
-			const char* className = entity->GetSchemaClassName();
-			if ( !className || std::strstr( className , "DOTAPlayerController" ) == nullptr )
+			auto* pController = static_cast<C_DOTAPlayerController*>( entity );
+
+			// Strongest signal, checked on EVERY entity: our own 64-bit Steam
+			// ID at the controller's m_steamID offset. A full 64-bit equality
+			// cannot realistically false-positive on unrelated entity bytes,
+			// so no class-name confirmation is needed.
+			if ( localSteamId != 0 && entity != localHero &&
+				ControllerSteamId( pController ) == localSteamId )
+			{
+				s_CachedHandle = identity->Handle();
+				return pController;
+			}
+
+			bool heroMatch = false;
+			if ( haveLocalHero && entity != localHero )
+			{
+				CHandle assigned{ INVALID_EHANDLE_INDEX };
+				std::memcpy( &assigned , reinterpret_cast<const uint8_t*>( entity ) + assignedHeroOffset , sizeof( CHandle ) );
+				heroMatch = assigned.IsValid() &&
+					static_cast<int>( static_cast<uint16_t>( assigned.GetEntryIndex() ) & ENT_ENTRY_MASK ) == localHeroEntIndex;
+			}
+			if ( !heroMatch )
 				continue;
 
-			auto* pController = static_cast<C_DOTAPlayerController*>( entity );
-			if ( localSteamId != 0 )
+			const char* className = entity->GetSchemaClassName();
+			if ( className && std::strstr( className , "DOTAPlayerController" ) != nullptr )
 			{
-				const uint64_t steamId = ControllerSteamId( pController );
-				if ( steamId != 0 && steamId == localSteamId )
-				{
-					s_CachedHandle = identity->Handle();
-					return pController;
-				}
+				// Confirmed controller pointing at our hero.
+				s_CachedHandle = identity->Handle();
+				return pController;
 			}
+
+			// Unconfirmed (class name unreadable). Require a plausible Steam64
+			// id (0x01100001 universe/type prefix) at the steam-id offset too,
+			// so hero-handle-shaped garbage on unrelated entities can't slip
+			// in; the real controller always carries one.
+			if ( hasControllerSteamId && ( ControllerSteamId( pController ) >> 32 ) != 0x01100001ull )
+				continue;
+
+			++unclassifiedMatchCount;
+			if ( !unclassifiedMatch )
+			{
+				unclassifiedMatch = pController;
+				unclassifiedMatchHandle = identity->Handle();
+			}
+
 			if ( !flagFallback && HasLocalFlag( pController ) )
 			{
 				flagFallback = pController;
 				flagFallbackHandle = identity->Handle();
 			}
 		}
+	}
+
+	if ( unclassifiedMatch && unclassifiedMatchCount == 1 )
+	{
+		s_CachedHandle = unclassifiedMatchHandle;
+		return unclassifiedMatch;
 	}
 
 	if ( flagFallback )

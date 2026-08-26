@@ -25,4 +25,10 @@ public:
 	// On success, outEntity/outEntIndex identify the local hero. Safe to call
 	// every frame - internally throttled/cached like GetLocalPlayerController().
 	static auto Resolve( CGameEntitySystem* entitySystem , C_BaseEntity*& outEntity , int& outEntIndex ) -> bool;
+
+	// Player-id-only resolution, no controller fallback and no cache. This is
+	// the variant CGameEntitySystem::GetLocalPlayerController() itself may
+	// call (its hero-match strategy) - the full Resolve() falls back to
+	// GetLocalPlayerController() and would recurse.
+	static auto ResolveByPlayerIdOnly( CGameEntitySystem* entitySystem , C_BaseEntity*& outEntity , int& outEntIndex ) -> bool;
 };

@@ -1,6 +1,8 @@
 #include "CAutoCombo.hpp"
 
+#include <AndromedaClient/CAndromedaClient.hpp>
 #include <AndromedaClient/CAndromedaGUI.hpp>
+#include <AndromedaClient/Heroes/Invoker/CInvokerController.hpp>
 #include <AndromedaClient/Data/AbilityDamageData.hpp>
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <Common/DevLog.hpp>
@@ -549,13 +551,32 @@ namespace
 		}
 	}
 
-	auto CollectTools( CGameEntitySystem* entitySystem , const UnitSnapshot& localUnit , const AutoComboOffsets& offsets ) -> std::vector<ComboTool>
+	// Heroes whose spells can't be cast by static slot hotkeys. Invoker's real
+	// spells are invoked dynamically into D/F via orb sequences - pressing
+	// Q/W/E just switches orbs - so his spell casting is delegated to
+	// CInvokerController's orb-sequence combo instead.
+	auto IsSlotlessKitHero( const std::string& heroName ) -> bool
+	{
+		return heroName.find( "npc_dota_hero_invoker" ) != std::string::npos;
+	}
+
+	auto LocalHeroName( const UnitSnapshot& localUnit ) -> std::string
+	{
+		if ( !localUnit.entity )
+			return {};
+		return EntityName( localUnit.entity , localUnit.entity->pEntityIdentity() );
+	}
+
+	// includeAbilities=false leaves only items and the auto-attack in the plan
+	// (used for slotless-kit heroes, whose spells go through their own
+	// controller).
+	auto CollectTools( CGameEntitySystem* entitySystem , const UnitSnapshot& localUnit , const AutoComboOffsets& offsets , bool includeAbilities ) -> std::vector<ComboTool>
 	{
 		std::vector<ComboTool> tools;
 		static constexpr std::array<WORD, 6> kAbilityKeys = { 'Q' , 'W' , 'E' , 'D' , 'F' , 'R' };
 		static constexpr std::array<WORD, 6> kItemKeys = { 'Z' , 'X' , 'C' , 'V' , 'B' , 'N' };
 
-		if ( Settings::AutoCombo::UseAbilities )
+		if ( includeAbilities && Settings::AutoCombo::UseAbilities )
 		{
 			std::vector<CHandle> abilityHandles;
 			const auto* field = reinterpret_cast<const void*>( reinterpret_cast<uintptr_t>( localUnit.entity ) + offsets.abilities );
@@ -724,13 +745,22 @@ namespace
 		return SetCursorPos( target.x , target.y ) != FALSE;
 	}
 
+	// Key events must carry a scan code, not just a virtual key: Dota
+	// (Source 2 / SDL) consumes raw input, where a wVk-only event has no
+	// usable scan code and gets ignored - see CInvokerController.cpp, where
+	// this silently swallowed every orb/Invoke press.
 	auto SendKeyPress( WORD key ) -> bool
 	{
-		INPUT inputs[2]{};
-		inputs[0].type = INPUT_KEYBOARD;
-		inputs[0].ki.wVk = key;
-		inputs[1] = inputs[0];
-		inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+		auto MakeKeyInput = []( WORD vk , bool keyUp )
+		{
+			INPUT input{};
+			input.type = INPUT_KEYBOARD;
+			input.ki.wVk = 0;
+			input.ki.wScan = static_cast<WORD>( MapVirtualKeyW( vk , MAPVK_VK_TO_VSC ) );
+			input.ki.dwFlags = KEYEVENTF_SCANCODE | ( keyUp ? KEYEVENTF_KEYUP : 0 );
+			return input;
+		};
+		INPUT inputs[2] = { MakeKeyInput( key , false ) , MakeKeyInput( key , true ) };
 		return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
 	}
 
@@ -744,19 +774,26 @@ namespace
 		return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
 	}
 
-	auto ProjectTargetScreen( const Vector3& origin , ImVec2& out ) -> bool
+	// Raising the aim point helps land the cursor on a UNIT's model, but for a
+	// ground-targeted spell it is actively wrong: a point above the hero
+	// projects higher on screen, and the ground under that screen pixel lies
+	// further from the camera - so the spell lands BEHIND the target.
+	auto ProjectTargetScreen( const Vector3& origin , bool groundTargeted , ImVec2& out ) -> bool
 	{
-		Vector3 targetPoint = origin;
-		targetPoint.m_z += 80.f;
-		if ( Math::WorldToScreen( targetPoint , out ) )
-			return true;
+		if ( !groundTargeted )
+		{
+			Vector3 targetPoint = origin;
+			targetPoint.m_z += 80.f;
+			if ( Math::WorldToScreen( targetPoint , out ) )
+				return true;
+		}
 		return Math::WorldToScreen( origin , out );
 	}
 
-	auto AimCursorAtTarget( HWND window , const Vector3& targetOrigin ) -> bool
+	auto AimCursorAtTarget( HWND window , const Vector3& targetOrigin , bool groundTargeted ) -> bool
 	{
 		ImVec2 screen{};
-		if ( !ProjectTargetScreen( targetOrigin , screen ) )
+		if ( !ProjectTargetScreen( targetOrigin , groundTargeted , screen ) )
 			return false;
 		POINT previous{};
 		return MoveCursorToClientPoint( window , screen , previous );
@@ -884,9 +921,15 @@ auto CAutoCombo::OnRender() -> void
 				{
 				case CastPhase::Aim:
 				{
+					// Re-select our hero first: the previous action in this plan
+					// left-clicked the enemy to aim, and a left-click on an enemy
+					// unit selects it - after which every ability hotkey applies
+					// to nothing. Dota's default "Select Hero" bind.
+					SendKeyPress( VK_F1 );
+
 					POINT previous{};
 					GetCursorPos( &previous );
-					if ( !AimCursorAtTarget( window , target.origin ) )
+					if ( !AimCursorAtTarget( window , target.origin , action.pointTarget ) )
 					{
 						CancelPlan( "Cast failed" );
 						break;
@@ -902,7 +945,7 @@ auto CAutoCombo::OnRender() -> void
 				{
 					// Re-aim right before the press - the target may have moved
 					// during the settle window.
-					AimCursorAtTarget( window , target.origin );
+					AimCursorAtTarget( window , target.origin , action.pointTarget );
 					const bool needsClick = action.kind == ComboPlanAction::Kind::Attack || !Settings::AutoCombo::QuickCast;
 					if ( !SendKeyPress( static_cast<WORD>( action.key ) ) || ( needsClick && !SendLeftClick() ) )
 					{
@@ -961,7 +1004,25 @@ auto CAutoCombo::OnRender() -> void
 		}
 		else if ( localUnit.entity && resolvedTargetIndex >= 0 && target.entity )
 		{
-			const auto tools = CollectTools( entitySystem , localUnit , offsets );
+			// Slotless-kit heroes (Invoker): spells go through the hero's own
+			// controller, the generic plan carries only items/auto-attack.
+			const bool slotlessKit = IsSlotlessKitHero( LocalHeroName( localUnit ) );
+			bool invokerComboRequested = false;
+			if ( slotlessKit && Settings::AutoCombo::UseAbilities )
+			{
+				if ( auto* pClient = GetAndromedaClient() )
+				{
+					// The Invoker combo aims its final cast at its own target
+					// setting (and refuses targeted spells without one), so hand
+					// it the target this combo press resolved.
+					Settings::Heroes::Invoker::TargetEntIndex = resolvedTargetIndex;
+					pClient->GetInvokerController().RequestCombo();
+					invokerComboRequested = true;
+					DEV_LOG( "[auto-combo] invoker kit detected - delegated spell cast to CInvokerController (target=%d)\n" , resolvedTargetIndex );
+				}
+			}
+
+			const auto tools = CollectTools( entitySystem , localUnit , offsets , !slotlessKit );
 			const float distance = Distance2D( localUnit.origin , target.origin );
 
 			ComboPlanState plan{};
@@ -989,7 +1050,8 @@ auto CAutoCombo::OnRender() -> void
 
 			if ( plan.actions.empty() )
 			{
-				m_Status = "No usable abilities/items in range";
+				m_Status = invokerComboRequested ? "Invoker combo delegated (no usable items)"
+					: "No usable abilities/items in range";
 			}
 			else
 			{
@@ -997,7 +1059,7 @@ auto CAutoCombo::OnRender() -> void
 				plan.nextActionTick = now;
 				plan.expiresAt = now + 8000u;
 				m_Plan = plan;
-				m_Status = "Combo started";
+				m_Status = invokerComboRequested ? "Invoker combo delegated + items started" : "Combo started";
 				DEV_LOG( "[auto-combo] plan started with %zu actions vs entindex=%d\n" , plan.actions.size() , plan.targetEntIndex );
 			}
 		}

@@ -7,6 +7,7 @@
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <AndromedaClient/Data/HeroData.hpp>
 #include <AndromedaClient/Scripting/LuaManager.hpp>
+#include <AndromedaClient/Heroes/Invoker/CInvokerController.hpp>
 #include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
 #include <Dota2/Hook/Hook_GetProtoCDOTAGameAccountPlus.hpp>
 #include <DllLauncher.hpp>
@@ -1162,56 +1163,114 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				ImGui::SameLine();
 				ImGui::TextDisabled( "-1 = auto-target nearest enemy hero" );
 
-				ImGui::Spacing();
-				ImGui::Separator();
-				ImGui::Text( "Spell order" );
-				ImGui::SameLine();
-				if ( ImGui::SmallButton( "Reset##spellOrder" ) )
-				{
-					for ( int i = 0; i < Settings::AutoCombo::SpellSlotCount; ++i )
-					{
-						Settings::AutoCombo::SpellOrder[i] = i;
-						Settings::AutoCombo::SpellEnabled[i] = true;
-					}
-				}
-				ImGui::SameLine();
-				ImGui::TextDisabled( "top = cast first, uncheck = skip that spell" );
-
-				static const char* kSlotKeys[Settings::AutoCombo::SpellSlotCount] = { "Q" , "W" , "E" , "D" , "F" , "R" };
-
 				const std::array<std::string , 6>* slotNames = nullptr;
 				if ( auto* pClient = GetAndromedaClient() )
 					slotNames = &pClient->GetAutoCombo().GetSlotNames();
 
-				for ( int position = 0; position < Settings::AutoCombo::SpellSlotCount; ++position )
+				bool playingInvoker = false;
+				if ( slotNames )
 				{
-					const int slot = Settings::AutoCombo::SpellOrder[position];
-					if ( slot < 0 || slot >= Settings::AutoCombo::SpellSlotCount )
-						continue;
-
-					ImGui::PushID( position );
-					ImGui::Checkbox( "##spellEnabled" , &Settings::AutoCombo::SpellEnabled[slot] );
-					ImGui::SameLine();
-					ImGui::BeginDisabled( position == 0 );
-					if ( ImGui::ArrowButton( "##spellUp" , ImGuiDir_Up ) )
-						std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position - 1] );
-					ImGui::EndDisabled();
-					ImGui::SameLine();
-					ImGui::BeginDisabled( position == Settings::AutoCombo::SpellSlotCount - 1 );
-					if ( ImGui::ArrowButton( "##spellDown" , ImGuiDir_Down ) )
-						std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position + 1] );
-					ImGui::EndDisabled();
-					ImGui::SameLine();
-
-					const char* liveName = slotNames && !( *slotNames )[slot].empty() ? ( *slotNames )[slot].c_str() : nullptr;
-					if ( !Settings::AutoCombo::SpellEnabled[slot] )
-						ImGui::TextDisabled( "%d. [%s] %s (skipped)" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
-					else
-						ImGui::Text( "%d. [%s] %s" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
-					ImGui::PopID();
+					for ( const auto& slotName : *slotNames )
+						playingInvoker = playingInvoker || slotName.rfind( "invoker_" , 0 ) == 0;
 				}
-				if ( !slotNames || ( *slotNames )[0].empty() )
-					ImGui::TextDisabled( "Spell names appear once you're in a match with your hero." );
+
+				ImGui::Spacing();
+				ImGui::Separator();
+
+				if ( playingInvoker )
+				{
+					// Invoker's spells aren't slot hotkeys - the combo delegates
+					// to CInvokerController, which casts this sequence via orb
+					// combinations + Invoke.
+					ImGui::Text( "Invoker spell order" );
+					ImGui::SameLine();
+					if ( ImGui::SmallButton( "Reset##invokerSpellOrder" ) )
+					{
+						for ( int i = 0; i < Settings::Heroes::Invoker::SpellCount; ++i )
+						{
+							Settings::Heroes::Invoker::SpellOrder[i] = Settings::Heroes::Invoker::DefaultSpellOrder[i];
+							Settings::Heroes::Invoker::SpellEnabled[i] = Settings::Heroes::Invoker::DefaultSpellEnabled[i];
+						}
+					}
+					ImGui::SameLine();
+					ImGui::TextDisabled( "top = cast first, uncheck = skip" );
+
+					for ( int position = 0; position < Settings::Heroes::Invoker::SpellCount; ++position )
+					{
+						const int spell = Settings::Heroes::Invoker::SpellOrder[position];
+						if ( spell < 0 || spell >= Settings::Heroes::Invoker::SpellCount )
+							continue;
+
+						ImGui::PushID( position );
+						ImGui::Checkbox( "##invokerSpellEnabled" , &Settings::Heroes::Invoker::SpellEnabled[spell] );
+						ImGui::SameLine();
+						ImGui::BeginDisabled( position == 0 );
+						if ( ImGui::ArrowButton( "##invokerSpellUp" , ImGuiDir_Up ) )
+							std::swap( Settings::Heroes::Invoker::SpellOrder[position] , Settings::Heroes::Invoker::SpellOrder[position - 1] );
+						ImGui::EndDisabled();
+						ImGui::SameLine();
+						ImGui::BeginDisabled( position == Settings::Heroes::Invoker::SpellCount - 1 );
+						if ( ImGui::ArrowButton( "##invokerSpellDown" , ImGuiDir_Down ) )
+							std::swap( Settings::Heroes::Invoker::SpellOrder[position] , Settings::Heroes::Invoker::SpellOrder[position + 1] );
+						ImGui::EndDisabled();
+						ImGui::SameLine();
+
+						const char* spellName = CInvokerController::GetSpellDisplayName( spell );
+						if ( !Settings::Heroes::Invoker::SpellEnabled[spell] )
+							ImGui::TextDisabled( "%d. %s (skipped)" , position + 1 , spellName );
+						else
+							ImGui::Text( "%d. %s" , position + 1 , spellName );
+						ImGui::PopID();
+					}
+					ImGui::TextDisabled( "Cast via orb sequence + Invoke; spells retry while Invoke is on cooldown." );
+				}
+				else
+				{
+					ImGui::Text( "Spell order" );
+					ImGui::SameLine();
+					if ( ImGui::SmallButton( "Reset##spellOrder" ) )
+					{
+						for ( int i = 0; i < Settings::AutoCombo::SpellSlotCount; ++i )
+						{
+							Settings::AutoCombo::SpellOrder[i] = i;
+							Settings::AutoCombo::SpellEnabled[i] = true;
+						}
+					}
+					ImGui::SameLine();
+					ImGui::TextDisabled( "top = cast first, uncheck = skip that spell" );
+
+					static const char* kSlotKeys[Settings::AutoCombo::SpellSlotCount] = { "Q" , "W" , "E" , "D" , "F" , "R" };
+
+					for ( int position = 0; position < Settings::AutoCombo::SpellSlotCount; ++position )
+					{
+						const int slot = Settings::AutoCombo::SpellOrder[position];
+						if ( slot < 0 || slot >= Settings::AutoCombo::SpellSlotCount )
+							continue;
+
+						ImGui::PushID( position );
+						ImGui::Checkbox( "##spellEnabled" , &Settings::AutoCombo::SpellEnabled[slot] );
+						ImGui::SameLine();
+						ImGui::BeginDisabled( position == 0 );
+						if ( ImGui::ArrowButton( "##spellUp" , ImGuiDir_Up ) )
+							std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position - 1] );
+						ImGui::EndDisabled();
+						ImGui::SameLine();
+						ImGui::BeginDisabled( position == Settings::AutoCombo::SpellSlotCount - 1 );
+						if ( ImGui::ArrowButton( "##spellDown" , ImGuiDir_Down ) )
+							std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position + 1] );
+						ImGui::EndDisabled();
+						ImGui::SameLine();
+
+						const char* liveName = slotNames && !( *slotNames )[slot].empty() ? ( *slotNames )[slot].c_str() : nullptr;
+						if ( !Settings::AutoCombo::SpellEnabled[slot] )
+							ImGui::TextDisabled( "%d. [%s] %s (skipped)" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
+						else
+							ImGui::Text( "%d. [%s] %s" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
+						ImGui::PopID();
+					}
+					if ( !slotNames || ( *slotNames )[0].empty() )
+						ImGui::TextDisabled( "Spell names appear once you're in a match with your hero." );
+				}
 
 				ImGui::EndDisabled();
 

@@ -214,6 +214,11 @@ namespace
 	}
 }
 
+auto CLocalHeroResolver::ResolveByPlayerIdOnly( CGameEntitySystem* entitySystem , C_BaseEntity*& outEntity , int& outEntIndex ) -> bool
+{
+	return ResolveByPlayerId( entitySystem , outEntity , outEntIndex );
+}
+
 auto CLocalHeroResolver::Resolve( CGameEntitySystem* entitySystem , C_BaseEntity*& outEntity , int& outEntIndex ) -> bool
 {
 	// Reuse the last trusted hero while the primary path is briefly

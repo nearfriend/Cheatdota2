@@ -4118,9 +4118,12 @@ auto CAndromedaClient::OnCreateMove( CDOTAInput* pCDOTAInput , CUserCmd* pCUserC
 			SetCameraDistance( Settings::Camera::Distance );
 	}
 
-	// Skip hero/Lua work until we have a real usercmd (match fully loaded).
-	if ( !pCUserCmd )
-		return;
+	// Deliberately NO usercmd gate here: pCUserCmd stayed null for entire
+	// sessions on this build (see "[createmove] no usercmd" in debug.log)
+	// while the local-controller resolve inside the hook was broken, and
+	// neither controller below consumes the usercmd anyway - each resolves
+	// the local hero itself (CLocalHeroResolver) and gates on that. Blocking
+	// on pCUserCmd silently disabled the Invoker and Meepo pipelines.
 
 	// Pick up fog controllers that existed before the entity hook was installed.
 	// Work is bounded so map startup remains smooth.
