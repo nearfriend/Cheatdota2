@@ -1076,8 +1076,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSwitchRow( "Enable" , "##lastHitEnable" , Settings::LastHitAssistant::Enable , ReferenceIcon::Info );
 				ImGui::Spacing();
 				ImGui::TextDisabled( "When enabled, Last Hit Helper is always active." );
-				ImGui::TextDisabled( "The circle shows a fixed 700 range around your hero." );
+				ImGui::TextDisabled( "Only lane creeps are marked - never jungle camps, buildings, wards or summons." );
 				ImGui::TextDisabled( "Gold stars mark one-attack enemy last hits, and red stars mark one-attack allied denies." );
+				ImGui::TextDisabled( "Auto attack only fires at starred creeps already inside your attack range." );
 			}
 			else if ( cameraPage )
 			{

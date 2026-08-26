@@ -6,6 +6,7 @@
 #include <Common/MemoryEngine.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
 #include <Dota2/SDK/Interface/CGameEntitySystem.hpp>
+#include <Dota2/SDK/Interface/CLocalHeroResolver.hpp>
 #include <Dota2/SDK/Math/Math.hpp>
 #include <Dota2/SDK/SDK.hpp>
 
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -24,6 +26,25 @@ namespace
 	constexpr ULONGLONG kScanIntervalMs = 100;
 	constexpr int kMaxScannedEntityIndex = MAX_TOTAL_ENTITIES - 1;
 	constexpr size_t kMaxLoggedEnemyHp = 24;
+	// Attack orders only go out for creeps the hero can hit roughly where it
+	// stands. Using the 700-unit detect radius instead (which is what the
+	// scan/overlay uses) turned every star into a "walk into the lane" order.
+	constexpr float kAttackReachLeeway = 150.f;
+	constexpr ULONGLONG kAutoAttackIntervalMs = 500;
+	// 'A' arms Dota's attack cursor; the click that commits it has to arrive
+	// on a later tick (see PendingAttack below).
+	constexpr ULONGLONG kAttackClickDelayMs = 45;
+	constexpr ULONGLONG kCursorRestoreDelayMs = 30;
+	// Two creeps standing on top of each other project to nearly the same
+	// screen point; a click meant for the low one then lands on the healthy
+	// one in front. Below kMinClickSeparationPx the click is pushed toward the
+	// target's far side, and if that still is not enough the attack is skipped.
+	constexpr float kMinClickSeparationPx = 26.f;
+	constexpr float kMaxClickNudgePx = 12.f;
+	// Once a creep has been ordered on, stay on it: mid-wave the "lowest hp"
+	// answer flips constantly, and re-targeting every 500 ms cancels the
+	// wind-up before any attack lands.
+	constexpr ULONGLONG kTargetLockMs = 1200;
 
 	struct LastHitOffsets
 	{
@@ -36,6 +57,7 @@ namespace
 		uint32_t damageMax = 0;
 		uint32_t damageBonus = 0;
 		uint32_t attackRange = 0;
+		uint32_t maxMana = 0;
 		uint32_t playerOwnerId = 0;
 		uint32_t heroPlayerId = 0;
 		uint32_t assignedHero = 0;
@@ -47,6 +69,7 @@ namespace
 		bool usable = false;
 		bool combatUsable = false;
 		bool hasDamageMax = false;
+		bool hasMaxMana = false;
 		bool hasPlayerOwnerId = false;
 		bool hasHeroPlayerId = false;
 		bool hasAssignedHero = false;
@@ -69,13 +92,35 @@ namespace
 
 	struct CreepCandidate
 	{
+		// Kept so the order can be re-validated against the live entity right
+		// before it is issued - the candidate list itself is up to
+		// kScanIntervalMs stale, which is long enough for a creep to die.
+		int entIndex = -1;
 		Vector3 origin{};
 		int health = 0;
 		int maxHealth = 0;
+		float distance = 0.f;
 		float lethalHealth = 0.f;
 		bool deny = false;
 		bool killable = false;
+		bool inAttackRange = false;
 	};
+
+	// Every lane creep near the hero, healthy ones included. The candidate
+	// list only holds one-shot creeps, but it is the HEALTHY neighbour that
+	// swallows a click meant for the creep behind it, so the click test needs
+	// to see them too.
+	struct CreepMarker
+	{
+		int entIndex = -1;
+		Vector3 origin{};
+	};
+
+	auto NearbyCreepCache() -> std::vector<CreepMarker> &
+	{
+		static std::vector<CreepMarker> creeps;
+		return creeps;
+	}
 
 	struct EnemyCreepSnapshot
 	{
@@ -130,6 +175,10 @@ namespace
 		offsets.hasDamageMax = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageMax", offsets.damageMax);
 		const bool hasDamageBonus = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageBonus", offsets.damageBonus);
 		const bool hasAttackRange = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iAttackRange", offsets.attackRange);
+		// Only heroes and casting summons carry a mana pool - lane creeps have
+		// none - so this is what lets the classifier accept a creep on stats
+		// alone without letting a low-health hero in behind it.
+		offsets.hasMaxMana = schema->TryGetOffset("C_DOTA_BaseNPC", "m_flMaxMana", offsets.maxMana);
 		offsets.hasHeroPlayerId = schema->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_iPlayerID", offsets.heroPlayerId) ||
 								  schema->TryGetOffset("C_DOTA_BaseNPC", "m_iPlayerID", offsets.heroPlayerId);
 		offsets.hasPlayerOwnerId = schema->TryGetOffset("C_DOTA_BaseNPC", "m_nPlayerOwnerID", offsets.playerOwnerId);
@@ -225,11 +274,6 @@ namespace
 		return -1;
 	}
 
-	auto IsPlayerControlledUnit(const C_BaseEntity *entity, const LastHitOffsets &offsets) -> bool
-	{
-		return IsLikelyPlayerId(UnitPlayerId(entity, offsets));
-	}
-
 	auto TextContains(const char *text, const char *needle) -> bool
 	{
 		return text && needle && std::strstr(text, needle) != nullptr;
@@ -271,15 +315,6 @@ namespace
 		return "";
 	}
 
-	auto EntityTextContains(C_BaseEntity *entity, const char *needle) -> bool
-	{
-		if (!entity || !needle)
-			return false;
-		const char *name = EntityDesignerOrName(entity);
-		const char *className = entity->GetSchemaClassName();
-		return TextContains(name, needle) || TextContains(className, needle);
-	}
-
 	auto LooksLikePlayerControllerEntity(C_BaseEntity *entity) -> bool
 	{
 		if (!entity)
@@ -288,38 +323,98 @@ namespace
 		return TextContains(className, "DOTAPlayerController");
 	}
 
-	auto LooksLikeExcludedLaneTarget(C_BaseEntity *entity) -> bool
+	auto ContainsNoCase(const char *text, const char *needle) -> bool
 	{
-		return EntityTextContains(entity, "neutral") || EntityTextContains(entity, "Neutral") ||
-			   EntityTextContains(entity, "tower") || EntityTextContains(entity, "Tower") ||
-			   EntityTextContains(entity, "fort") || EntityTextContains(entity, "Fort") ||
-			   EntityTextContains(entity, "barracks") || EntityTextContains(entity, "Barracks") ||
-			   EntityTextContains(entity, "rax") || EntityTextContains(entity, "ward") ||
-			   EntityTextContains(entity, "Ward") || EntityTextContains(entity, "courier") ||
-			   EntityTextContains(entity, "Courier") || EntityTextContains(entity, "hero") ||
-			   EntityTextContains(entity, "Hero");
-	}
-
-	auto LooksLikeLaneCreepByName(C_BaseEntity *entity) -> bool
-	{
-		if (LooksLikeExcludedLaneTarget(entity))
+		if (!text || !needle || !needle[0])
 			return false;
 
-		return EntityTextContains(entity, "npc_dota_creep") ||
-			   EntityTextContains(entity, "npc_dota_goodguys_siege") ||
-			   EntityTextContains(entity, "npc_dota_badguys_siege") ||
-			   EntityTextContains(entity, "siege") ||
-			   EntityTextContains(entity, "Siege") ||
-			   EntityTextContains(entity, "Creep_Lane") ||
-			   EntityTextContains(entity, "creep_lane") ||
-			   EntityTextContains(entity, "BaseNPC_Creep") ||
-			   EntityTextContains(entity, "BaseNPC_Creep_Lane") ||
-			   EntityTextContains(entity, "BaseNPC");
+		for (const char *scan = text; *scan; ++scan)
+		{
+			const char *left = scan;
+			const char *right = needle;
+			while (*left && *right &&
+				   std::tolower(static_cast<unsigned char>(*left)) ==
+					   std::tolower(static_cast<unsigned char>(*right)))
+			{
+				++left;
+				++right;
+			}
+			if (!*right)
+				return true;
+		}
+		return false;
+	}
+
+	// Identity is matched case-insensitively against the entity's designer /
+	// entity name, with the schema class name only as a bonus: on this build
+	// GetSchemaClassName() comes back empty for every entity (the feature's
+	// own reject log recorded "class":"" for all 5407 samples), while the
+	// designer name resolves fine ("npc_dota_roshan",
+	// "npc_dota_unit_warlock_imp", ...). The old filter leaned on the class
+	// name containing "BaseNPC", which therefore never matched anything, and
+	// on case-sensitive needles that missed half their spellings.
+	auto EntityNameContains(C_BaseEntity *entity, const char *needle) -> bool
+	{
+		if (!entity)
+			return false;
+		return ContainsNoCase(EntityDesignerOrName(entity), needle) ||
+			   ContainsNoCase(entity->GetSchemaClassName(), needle);
+	}
+
+	// Everything the overlay must never mark: jungle camps and Roshan, every
+	// building, wards, couriers, heroes, and hero-summoned units. Summons all
+	// spawn under the "npc_dota_unit_" prefix (the reject log shows
+	// "npc_dota_unit_warlock_imp"), so that one needle covers imps, wolves,
+	// spiderlings and friends without listing every hero's unit by hand.
+	auto LooksLikeNonCreepTarget(C_BaseEntity *entity) -> bool
+	{
+		// Needles are matched against the whole name, so each one must be a
+		// string that cannot occur inside a lane creep's name
+		// ("npc_dota_creep_goodguys_melee", "npc_dota_badguys_siege", ...).
+		static constexpr const char *kDenyNeedles[] = {
+			"neutral", "roshan", "ancient",
+			"tower", "fort", "barracks", "rax", "building", "filler",
+			"healer", "shrine", "outpost", "watch", "effigy",
+			"ward", "courier", "hero", "thinker", "additive", "player",
+			// Summoned units. Most carry the "npc_dota_unit_" prefix, but the
+			// manaless ones that do not (spirit bear, wolves, treants) would
+			// otherwise sail through the stats envelope in IsLaneCreep.
+			"npc_dota_unit_", "bear", "wolf", "treant", "spiderling",
+			"eidolon", "familiar", "zombie", "golem", "boar", "hawk",
+			"necronomicon", "illusion", "clone", "spirit"};
+
+		for (const char *needle : kDenyNeedles)
+		{
+			if (EntityNameContains(entity, needle))
+				return true;
+		}
+		return false;
+	}
+
+	// Lane creeps only - melee, ranged and siege, on either playing team.
+	// Dota names them "npc_dota_creep_lane" / "npc_dota_creep_siege" with unit
+	// names like "npc_dota_creep_goodguys_melee" and "npc_dota_badguys_siege",
+	// so a creep-prefixed or siege-flavoured name that survived the deny list
+	// above is a lane creep.
+	auto LooksLikeLaneCreepByName(C_BaseEntity *entity) -> bool
+	{
+		if (LooksLikeNonCreepTarget(entity))
+			return false;
+
+		return EntityNameContains(entity, "npc_dota_creep") ||
+			   EntityNameContains(entity, "creep_lane") ||
+			   EntityNameContains(entity, "creep_siege") ||
+			   EntityNameContains(entity, "basenpc_creep") ||
+			   EntityNameContains(entity, "siege") ||
+			   EntityNameContains(entity, "goodguys_melee") ||
+			   EntityNameContains(entity, "goodguys_ranged") ||
+			   EntityNameContains(entity, "badguys_melee") ||
+			   EntityNameContains(entity, "badguys_ranged");
 	}
 
 	auto DetectRangeForHero(float) -> float
 	{
-		return 700.f;
+		return 1200.f;
 	}
 
 	auto LastHitAssistantActive() -> bool
@@ -583,6 +678,26 @@ namespace
 		const bool hasLocalPlayerId = TryLocalPlayerId(localPlayerId);
 		const uint8_t preferredTeam = 0; // no team filter until a hero is actually found
 
+		// Shared resolver first (Dota2/SDK/Interface/CLocalHeroResolver.hpp).
+		// It carries the player-slot match that CKillStealer and CAutoCombo
+		// already proved on this build, so the screen-center guess further
+		// down - which can lock onto an ENEMY hero standing near the middle of
+		// the screen, and with it flip every ally/enemy creep colour and the
+		// attack decision - is now genuinely a last resort.
+		{
+			C_BaseEntity *resolved = nullptr;
+			int resolvedIndex = -1;
+			if (CLocalHeroResolver::Resolve(entitySystem, resolved, resolvedIndex) &&
+				TryBuildLocalHero(resolved, offsets, out))
+			{
+				cachedHeroIndex = resolvedIndex;
+				cachedHeroFromScreenCenter = false;
+				cachedLocalTeam = out.team;
+				out.screenCenterFallback = false;
+				return true;
+			}
+		}
+
 		// Try GetLocalPlayerController() first - this is the most reliable Valve engine path
 		auto *controller = CGameEntitySystem::GetLocalPlayerController();
 		if (controller)
@@ -712,29 +827,83 @@ namespace
 		return false;
 	}
 
-	auto IsCreepPlayerControlled(const C_BaseEntity *entity, const LastHitOffsets &offsets) -> bool
+	// The one place that decides whether an entity may be starred/attacked.
+	//
+	// Ownership deliberately plays no part here: m_nPlayerOwnerID reads back
+	// 0 - a perfectly valid player slot - for units nobody owns, so the old
+	// "is this player-controlled?" test answered yes for Roshan and neutrals
+	// alike (reject log: every sample, including team-4 Roshan, came out
+	// playerOwned=1). Summons are excluded by name instead.
+	auto IsLaneCreep(C_BaseEntity *entity, const LastHitOffsets &offsets,
+					 int health, int maxHealth, uint8_t team) -> bool
 	{
-		if (offsets.hasPlayerOwnerId)
-		{
-			const int ownerPlayerId = ReadField<int>(entity, offsets.playerOwnerId, -1);
-			if (IsLikelyPlayerId(ownerPlayerId))
-				return true;
-		}
-		return false;
-	}
-
-	auto LooksLikeLaneCreepByStats(C_BaseEntity *entity, const LastHitOffsets &offsets,
-								   int health, int maxHealth, uint8_t team) -> bool
-	{
-		if (!entity || health <= 5)
+		if (!entity || health <= 0 || maxHealth <= 0)
 			return false;
-		if (LooksLikeExcludedLaneTarget(entity))
+		// Jungle camps and Roshan sit on the neutral team; a lane creep always
+		// belongs to one of the two playing teams. This alone keeps the whole
+		// jungle out of the overlay even if a camp were ever named oddly.
+		if (!IsPlayableTeam(team))
+			return false;
+		if (LooksLikeHeroEntity(entity) || LooksLikeNonCreepTarget(entity))
 			return false;
 		if (LooksLikeLaneCreepByName(entity))
 			return true;
-		if (maxHealth < 80 || maxHealth > 2500)
+
+		// Anything else on a playing team is accepted on its stats alone. An
+		// allow-list of names cannot be complete - creeps that carry a name
+		// nobody anticipated (or none at all) were being dropped even at 1 hp -
+		// so the name is only ever used to REJECT, never as a requirement.
+		//
+		// What the envelope still keeps out, now that the deny list has had
+		// its say: heroes and casting summons (only they have a mana pool),
+		// towers/barracks/the ancient (all above the health cap - mega melee
+		// creeps top out near 1100 hp, a tier-1 tower starts at 1800), and
+		// wards, couriers and barracks again (no attack at all).
+		if (maxHealth < 80 || maxHealth > 1600)
 			return false;
-		return !IsCreepPlayerControlled(entity, offsets);
+		if (offsets.hasMaxMana && ReadField<float>(entity, offsets.maxMana, 0.f) > 0.f)
+			return false;
+
+		const int damageMin = ReadField<int>(entity, offsets.damageMin);
+		const int attackRange = ReadField<int>(entity, offsets.attackRange);
+		return damageMin >= 1 && attackRange >= 50 && attackRange <= 1000;
+	}
+
+	// Names every creep-plausible unit the classifier turned down, once per
+	// distinct name per 5s window. A creep that never gets a star can then be
+	// identified from the log by name and stats instead of guessed at.
+	auto LogUnstarredUnit(C_BaseEntity *entity, const LastHitOffsets &offsets,
+						  int health, int maxHealth, uint8_t team) -> void
+	{
+		static std::array<std::array<char, 64>, 16> seenNames{};
+		static size_t seenCount = 0;
+		static ULONGLONG windowStart = 0;
+
+		const ULONGLONG now = GetTickCount64();
+		if (!windowStart || now - windowStart >= 5000)
+		{
+			windowStart = now;
+			seenCount = 0;
+		}
+		if (seenCount >= seenNames.size())
+			return;
+
+		const char *name = EntityDesignerOrName(entity);
+		if (!name)
+			name = "";
+		for (size_t index = 0; index < seenCount; ++index)
+		{
+			if (std::strcmp(seenNames[index].data(), name) == 0)
+				return;
+		}
+		std::snprintf(seenNames[seenCount].data(), seenNames[seenCount].size(), "%s", name);
+		++seenCount;
+
+		DEV_LOG("[last-hit] unstarred name=\"%s\" hp=%d/%d team=%u damage=%d range=%d maxMana=%.0f\n",
+				name, health, maxHealth, static_cast<unsigned int>(team),
+				ReadField<int>(entity, offsets.damageMin),
+				ReadField<int>(entity, offsets.attackRange),
+				offsets.hasMaxMana ? ReadField<float>(entity, offsets.maxMana, 0.f) : -1.f);
 	}
 
 	auto LogLastHitScan(const char *reason, const LocalHeroInfo &hero,
@@ -777,6 +946,7 @@ namespace
 	auto CollectCandidatesFresh(LocalHeroInfo &heroOut) -> std::vector<CreepCandidate>
 	{
 		heroOut = {};
+		NearbyCreepCache().clear();
 		std::vector<CreepCandidate> candidates;
 		std::vector<EnemyCreepSnapshot> enemyCreeps;
 		LastHitScanStats stats{};
@@ -799,7 +969,27 @@ namespace
 		heroOut = hero;
 		const float scanRange = hero.detectRange + 35.f;
 		const float scanRangeSq = scanRange * scanRange;
+		const float attackReach = hero.attackRange + kAttackReachLeeway;
+		const float attackReachSq = attackReach * attackReach;
 		const float lethalHealth = static_cast<float>(hero.attackDamage);
+
+		// One pass produces the whole feature: the stars that get drawn and
+		// the orders that get issued. It used to be two - a chunk walk here
+		// and a second, differently-filtered index walk inside OnRender - so
+		// the overlay and the attack could disagree about what a creep even
+		// was, and every creep in both lists got its star drawn twice.
+		//
+		// The allocated identity chunks are walked directly rather than
+		// indexing 1..GetHighestEntityIndex(). That index is build-dependent
+		// and under-reports on this build - CKillStealer.cpp switched away
+		// from it after our own hero failed to appear in an index-bounded
+		// scan for an entire session, and CAndromedaClient.cpp's hero-vitals
+		// scan says the same. Indexing it here quietly truncated the creep
+		// list to whatever happened to sit below the reported bound (the
+		// "8 creeps nearby but only 2 listed" case). Chunk N covers indices
+		// N*512..N*512+511, so this is a strict superset. Entities reached
+		// this way have no schema class name, which is why identity is
+		// matched on the designer name (see EntityNameContains).
 		for (int chunkIndex = 0; chunkIndex < MAX_ENTITY_LISTS; ++chunkIndex)
 		{
 			auto *chunk = entitySystem->m_pIdentityChunks[chunkIndex];
@@ -808,17 +998,25 @@ namespace
 
 			for (int entryIndex = 0; entryIndex < MAX_ENTITIES_IN_LIST; ++entryIndex)
 			{
-				auto *identity = &chunk->m_pIdentities[entryIndex];
-				auto *entity = identity->pBaseEntity();
+				auto *entity = chunk->m_pIdentities[entryIndex].pBaseEntity();
 				if (!entity || entity == hero.entity)
 					continue;
+				const int index = chunkIndex * MAX_ENTITIES_IN_LIST + entryIndex;
 				++stats.scanned;
 
 				const int health = ReadField<int>(entity, offsets.health);
 				const int maxHealth = ReadField<int>(entity, offsets.maxHealth);
 				const uint8_t team = ReadField<uint8_t>(entity, offsets.team);
-				if (!LooksLikeLaneCreepByStats(entity, offsets, health, maxHealth, team))
+				if (!IsLaneCreep(entity, offsets, health, maxHealth, team))
+				{
+					// Only creep-plausible rejects are worth naming: alive, on a
+					// playing team, and small enough to be a creep rather than a
+					// building.
+					if (health > 0 && maxHealth > 0 && maxHealth <= 2000 && IsPlayableTeam(team) &&
+						!LooksLikeHeroEntity(entity))
+						LogUnstarredUnit(entity, offsets, health, maxHealth, team);
 					continue;
+				}
 				++stats.laneLike;
 
 				const bool allied = team == hero.team;
@@ -845,42 +1043,62 @@ namespace
 					stats.nearestTeam = team;
 				}
 
+				const bool inScanRange = distanceSq <= scanRangeSq;
+				const bool killable = static_cast<float>(health) <= lethalHealth;
+
 				EnemyCreepSnapshot snapshot{};
 				snapshot.health = health;
 				snapshot.maxHealth = maxHealth;
 				snapshot.distance = distance;
 				snapshot.team = team;
-				snapshot.inRange = distanceSq <= scanRangeSq;
-				snapshot.killable = static_cast<float>(health) <= lethalHealth;
+				snapshot.inRange = inScanRange;
+				snapshot.killable = killable;
 				if (!allied)
 					enemyCreeps.push_back(snapshot);
 
-				if (!snapshot.inRange)
-					continue;
-				if (!allied)
-					++stats.enemyInRange;
-				++stats.inRange;
+				if (inScanRange)
+				{
+					if (!allied)
+						++stats.enemyInRange;
+					++stats.inRange;
+					NearbyCreepCache().push_back({index, origin});
+				}
 
-				if (static_cast<float>(health) > lethalHealth)
+				// Distance decides whether an ATTACK is issued (candidate.
+				// inAttackRange below), never whether a star is drawn. Gating the
+				// star on the 700-unit scan radius silently hid every one-shot
+				// creep past it - creeps in the next wave over, or in a lane the
+				// camera is looking at from a distance.
+				if (!killable)
 					continue;
 				if (!allied)
 					++stats.enemyKillable;
 				++stats.lethal;
 
-				candidates.push_back({origin, health, maxHealth, lethalHealth, allied, true});
+				CreepCandidate candidate{};
+				candidate.entIndex = index;
+				candidate.origin = origin;
+				candidate.health = health;
+				candidate.maxHealth = maxHealth;
+				candidate.distance = distance;
+				candidate.lethalHealth = lethalHealth;
+				candidate.deny = allied;
+				candidate.killable = true;
+				candidate.inAttackRange = distanceSq <= attackReachSq;
+				candidates.push_back(candidate);
 				++stats.candidates;
 			}
 		}
 
+		// Enemy last hits pay gold, so they outrank a deny; within a side take
+		// the creep closest to dying, then the nearer one.
 		std::sort(candidates.begin(), candidates.end(), [](const CreepCandidate &left, const CreepCandidate &right)
 				  {
-			if ( left.killable != right.killable )
-				return left.killable;
 			if (left.deny != right.deny)
 				return !left.deny;
-			const float leftUrgency = static_cast<float>( left.health ) / (std::max)( left.lethalHealth , 1.f );
-			const float rightUrgency = static_cast<float>( right.health ) / (std::max)( right.lethalHealth , 1.f );
-			return leftUrgency < rightUrgency; });
+			if (left.health != right.health)
+				return left.health < right.health;
+			return left.distance < right.distance; });
 
 		std::sort(enemyCreeps.begin(), enemyCreeps.end(), [](const EnemyCreepSnapshot &left, const EnemyCreepSnapshot &right)
 				  { return left.distance < right.distance; });
@@ -999,10 +1217,15 @@ namespace
 		return Math::WorldToScreen(origin, out);
 	}
 
+	// Aimed at the creep's torso rather than its head: at +80 the point sits
+	// at or above the top of a melee creep's model, so a slightly high camera
+	// angle put the click on the ground behind it - and a click on ground is
+	// what turns an attack order into an attack-MOVE that the engine then
+	// re-targets on its own.
 	auto ProjectClickTargetScreen(const Vector3 &origin, ImVec2 &out) -> bool
 	{
 		Vector3 clickOrigin = origin;
-		clickOrigin.m_z += 80.f;
+		clickOrigin.m_z += 50.f;
 		if (Math::WorldToScreen(clickOrigin, out))
 			return true;
 		return Math::WorldToScreen(origin, out);
@@ -1017,19 +1240,52 @@ namespace
 		return window;
 	}
 
+	// SetCursorPos does not go through the raw-input path Source 2 reads, so a
+	// SetCursorPos-only move relocates the Windows arrow while the game keeps
+	// aiming wherever the player's cursor already was - the attack then lands
+	// on whatever was under the OLD position. CKillStealer.cpp documents the
+	// same trap at length; routing the move through SendInput puts it in the
+	// same synthetic-input stream as the key press and click that follow.
+	auto SendMouseMoveAbsolute(int screenX, int screenY) -> bool
+	{
+		const int virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+		const int virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+		const int virtualW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+		const int virtualH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+		if (virtualW <= 1 || virtualH <= 1)
+			return false;
+
+		INPUT input{};
+		input.type = INPUT_MOUSE;
+		input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+		input.mi.dx = static_cast<LONG>((static_cast<long long>(screenX - virtualX) * 65535LL) / (virtualW - 1));
+		input.mi.dy = static_cast<LONG>((static_cast<long long>(screenY - virtualY) * 65535LL) / (virtualH - 1));
+		return SendInput(1, &input, sizeof(INPUT)) == 1;
+	}
+
 	auto MoveCursorToClientPoint(HWND window, const ImVec2 &screen, POINT &previousOut) -> bool
 	{
 		RECT client{};
 		if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0)
 			return false;
 
-		const int x = std::clamp(static_cast<int>(std::lround(screen.x)), 0, static_cast<int>(client.right) - 1);
-		const int y = std::clamp(static_cast<int>(std::lround(screen.y)), 0, static_cast<int>(client.bottom) - 1);
+		// A point outside the client area means the creep is not actually on
+		// screen: Math::WorldToScreen only rejects negative coordinates, never
+		// ones past the right/bottom edge. Clamping such a point - which this
+		// used to do - parks the cursor on the screen border and makes the
+		// attack order land on whatever happens to be sitting there.
+		const int x = static_cast<int>(std::lround(screen.x));
+		const int y = static_cast<int>(std::lround(screen.y));
+		if (x < 0 || y < 0 || x >= static_cast<int>(client.right) || y >= static_cast<int>(client.bottom))
+			return false;
+
 		POINT target{x, y};
 		if (!ClientToScreen(window, &target))
 			return false;
 
 		GetCursorPos(&previousOut);
+		if (SendMouseMoveAbsolute(target.x, target.y))
+			return true;
 		return SetCursorPos(target.x, target.y) != FALSE;
 	}
 
@@ -1051,6 +1307,284 @@ namespace
 		inputs[1].type = INPUT_MOUSE;
 		inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
 		return SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT)) == std::size(inputs);
+	}
+
+	auto SendRightClick() -> bool
+	{
+		INPUT inputs[2]{};
+		inputs[0].type = INPUT_MOUSE;
+		inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+		inputs[1].type = INPUT_MOUSE;
+		inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+		return SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT)) == std::size(inputs);
+	}
+
+	// Issuing an attack is a three-beat sequence, not one burst:
+	//   1. move the cursor onto the creep and press 'A' (arms Dota's
+	//      attack cursor),
+	//   2. a tick or two later, click - sending the click in the same breath
+	//      as the key raced the mode switch and the click got eaten as a stray
+	//      click, which is the same bug CKillStealer.cpp hit with targeted
+	//      casts,
+	//   3. only then put the cursor back. The old code restored it
+	//      immediately after the click, so the click and the restore could
+	//      reach the game in the wrong order and the order landed at the
+	//      player's original cursor position instead of on the creep.
+	struct PendingAttack
+	{
+		int stage = 0; // 0 = idle, 1 = click due, 2 = cursor restore due
+		bool rightButton = false;
+		ULONGLONG dueTick = 0;
+		POINT previousCursor{};
+	};
+
+	auto PendingAttackState() -> PendingAttack &
+	{
+		static PendingAttack state{};
+		return state;
+	}
+
+	auto RestoreCursor(const POINT &previous) -> void
+	{
+		if (!SendMouseMoveAbsolute(previous.x, previous.y))
+			SetCursorPos(previous.x, previous.y);
+	}
+
+	auto TickPendingAttack() -> void
+	{
+		auto &pending = PendingAttackState();
+		if (pending.stage == 0 || GetTickCount64() < pending.dueTick)
+			return;
+
+		if (pending.stage == 1)
+		{
+			if (pending.rightButton)
+				SendRightClick();
+			else
+				SendLeftClick();
+			pending.stage = 2;
+			pending.dueTick = GetTickCount64() + kCursorRestoreDelayMs;
+			return;
+		}
+
+		RestoreCursor(pending.previousCursor);
+		pending.stage = 0;
+	}
+
+	struct TargetLock
+	{
+		int entIndex = -1;
+		ULONGLONG tick = 0;
+	};
+
+	auto TargetLockState() -> TargetLock &
+	{
+		static TargetLock lock{};
+		return lock;
+	}
+
+	auto LockedTargetIndex() -> int
+	{
+		auto &lock = TargetLockState();
+		if (lock.entIndex < 0)
+			return -1;
+		if (GetTickCount64() - lock.tick > kTargetLockMs)
+		{
+			lock.entIndex = -1;
+			return -1;
+		}
+		return lock.entIndex;
+	}
+
+	auto BetterAttackTarget(const CreepCandidate &left, const CreepCandidate &right) -> bool
+	{
+		if (left.deny != right.deny)
+			return !left.deny;
+		if (left.health != right.health)
+			return left.health < right.health;
+		return left.distance < right.distance;
+	}
+
+	// Re-reads every in-reach candidate off its live entity before anything is
+	// clicked. The candidate list is up to kScanIntervalMs old - long enough
+	// for the creep to have died, been healed back over the one-shot
+	// threshold, moved, or for its entity slot to have been recycled into a
+	// different unit entirely - and the old code clicked the stale origin of
+	// candidates[0] regardless.
+	auto TrySelectAttackTarget(const LocalHeroInfo &hero, const std::vector<CreepCandidate> &candidates,
+							   CreepCandidate &out) -> bool
+	{
+		auto *entitySystem = SDK::Interfaces::GameEntitySystem();
+		auto &offsets = ResolveOffsets();
+		if (!entitySystem || !offsets.usable)
+			return false;
+
+		const float attackReach = hero.attackRange + kAttackReachLeeway;
+		const float attackReachSq = attackReach * attackReach;
+		bool found = false;
+
+		for (const auto &candidate : candidates)
+		{
+			if (!candidate.inAttackRange || candidate.entIndex < 0)
+				continue;
+
+			auto *entity = entitySystem->GetBaseEntity<C_BaseEntity>(candidate.entIndex);
+			if (!entity || entity == hero.entity)
+				continue;
+
+			const int health = ReadField<int>(entity, offsets.health);
+			const int maxHealth = ReadField<int>(entity, offsets.maxHealth);
+			const uint8_t team = ReadField<uint8_t>(entity, offsets.team);
+			if (!IsLaneCreep(entity, offsets, health, maxHealth, team))
+				continue;
+			if (static_cast<float>(health) > candidate.lethalHealth)
+				continue;
+
+			Vector3 origin{};
+			if (!ReadOrigin(entity, offsets, origin))
+				continue;
+
+			const float dx = origin.m_x - hero.origin.m_x;
+			const float dy = origin.m_y - hero.origin.m_y;
+			const float distanceSq = dx * dx + dy * dy;
+			if (distanceSq > attackReachSq)
+				continue;
+
+			CreepCandidate fresh = candidate;
+			fresh.origin = origin;
+			fresh.health = health;
+			fresh.maxHealth = maxHealth;
+			fresh.distance = std::sqrt(distanceSq);
+			fresh.deny = team == hero.team;
+
+			// Stay on the creep already ordered on while it is still a valid
+			// one-shot in reach. Without this the pick flips as soon as any
+			// other creep in the wave drops a point of health lower, and each
+			// flip cancels the attack that was mid-wind-up - the hero swings
+			// at nothing while both creeps stay alive.
+			if (fresh.entIndex == LockedTargetIndex())
+			{
+				out = fresh;
+				return true;
+			}
+
+			if (!found || BetterAttackTarget(fresh, out))
+			{
+				out = fresh;
+				found = true;
+			}
+		}
+
+		return found;
+	}
+
+	// The click has to land on the target's own model. Dota reads whatever is
+	// under the cursor, so a click that clips the healthy creep standing in
+	// front becomes an order on THAT creep, and a click that slips onto ground
+	// becomes an attack-move the engine re-targets by its own rules - usually
+	// onto the nearest healthy creep. Both produce exactly the reported
+	// symptom: the star sits on the low creep, the hero hits the full one.
+	auto TryResolveClickPoint(const CreepCandidate &target, ImVec2 &out) -> bool
+	{
+		if (!ProjectClickTargetScreen(target.origin, out))
+			return false;
+
+		ImVec2 nearestNeighbour{};
+		float nearestDistance = 3.4e38f;
+		for (const auto &creep : NearbyCreepCache())
+		{
+			if (creep.entIndex == target.entIndex)
+				continue;
+
+			ImVec2 screen{};
+			if (!ProjectClickTargetScreen(creep.origin, screen))
+				continue;
+
+			const float dx = screen.x - out.x;
+			const float dy = screen.y - out.y;
+			const float distance = std::sqrt(dx * dx + dy * dy);
+			if (distance < nearestDistance)
+			{
+				nearestDistance = distance;
+				nearestNeighbour = screen;
+			}
+		}
+
+		if (nearestDistance >= kMinClickSeparationPx)
+			return true;
+
+		// Push the click toward the target's far side, away from the neighbour
+		// that could swallow it. The nudge stays small enough to remain on the
+		// model - overshooting it would put the click on ground instead.
+		const float dx = out.x - nearestNeighbour.x;
+		const float dy = out.y - nearestNeighbour.y;
+		const float length = std::sqrt(dx * dx + dy * dy);
+		if (length < 1.f)
+			return false;
+
+		out.x += dx * (kMaxClickNudgePx / length);
+		out.y += dy * (kMaxClickNudgePx / length);
+
+		// Still overlapping even after the nudge: skip. A missed last hit
+		// costs one creep; hitting the wrong one pulls the wave.
+		return nearestDistance + kMaxClickNudgePx >= kMinClickSeparationPx;
+	}
+
+	// Enemy creeps are ordered with a plain RIGHT click, denies with 'A' + a
+	// left click.
+	//
+	// Both used to go through 'A' + left click, on the reasoning that it can
+	// never turn into a move order. That is true, but the failure it does have
+	// is worse: 'A' on anything other than the unit itself is an attack-MOVE,
+	// and the engine then chooses the target - reliably the healthy creep
+	// nearest the hero rather than the starred one. A right click that misses
+	// only walks the hero a step, and one that lands attacks exactly the unit
+	// under it. Denying an ally still requires the force-attack, so that path
+	// keeps 'A' and leans on the click-separation test above instead.
+	auto TickAutoAttack(const LocalHeroInfo &hero, const std::vector<CreepCandidate> &candidates) -> void
+	{
+		auto &pending = PendingAttackState();
+		if (pending.stage != 0)
+			return;
+
+		static ULONGLONG lastAttackTick = 0;
+		const ULONGLONG now = GetTickCount64();
+		if (lastAttackTick && now - lastAttackTick < kAutoAttackIntervalMs)
+			return;
+
+		const HWND window = WindowReadyForInput();
+		if (!window)
+			return;
+
+		CreepCandidate target{};
+		if (!TrySelectAttackTarget(hero, candidates, target))
+			return;
+
+		ImVec2 screen{};
+		if (!TryResolveClickPoint(target, screen))
+		{
+			// Overlapping creeps - do not guess. Retry on the next tick, by
+			// which point the wave has moved.
+			lastAttackTick = now;
+			return;
+		}
+
+		POINT previous{};
+		if (!MoveCursorToClientPoint(window, screen, previous))
+			return;
+
+		lastAttackTick = now;
+		if (target.deny && !SendKeyPress('A'))
+		{
+			RestoreCursor(previous);
+			return;
+		}
+
+		TargetLockState() = {target.entIndex, now};
+		pending.stage = 1;
+		pending.rightButton = !target.deny;
+		pending.dueTick = now + kAttackClickDelayMs;
+		pending.previousCursor = previous;
 	}
 
 	auto DrawScreenRangeFallback(ImDrawList *drawList, const LocalHeroInfo &hero) -> void
@@ -1088,203 +1622,48 @@ auto CLastHitAssistant::OnRender() -> void
 	if (!ImGui::GetCurrentContext() || !LastHitAssistantActive())
 		return;
 
-	const auto &offsets = ResolveOffsets();
 	LocalHeroInfo hero{};
 	const auto &candidates = CollectCandidates(hero);
-	auto *drawList = ImGui::GetForegroundDrawList();
-
 	if (!hero.entity)
 		return;
 
-	// ---------------------------------------------------------------
-	// Universal lane-creep overlay (no range circle).
-	// Draws star+HP for every low-HP lane creep on-screen, including allies.
-	//
-	// Low-HP condition matches the one-attack threshold:
-	// health <= localHero.attackDamage
-	// ---------------------------------------------------------------
-	{
-		const float lethalHealth = static_cast<float>(hero.attackDamage);
-		const float scanRange = hero.detectRange + 35.f;
-		const float scanRangeSq = scanRange * scanRange;
-		int totalAlive = 0;
-		int passedStats = 0;
-		int passedExclude = 0;
-		int aliveOnTeam = 0;
-		int aboveLethal = 0;
-		int skippedByDedupe = 0;
-		int skippedByOrigin = 0;
-		int skippedByProjection = 0;
-		int drawnUniversal = 0;
-
-		auto *entitySystem = SDK::Interfaces::GameEntitySystem();
-		if (entitySystem)
-		{
-			const int highest = entitySystem->GetHighestEntityIndex();
-			for (int i = 1; i <= highest; ++i)
-			{
-				auto *ent = entitySystem->GetBaseEntity<C_BaseEntity>(i);
-				if (!ent || ent == hero.entity)
-					continue;
-
-				const int health = ReadField<int>(ent, offsets.health);
-				const int maxHealth = ReadField<int>(ent, offsets.maxHealth);
-				const uint8_t team = ReadField<uint8_t>(ent, offsets.team);
-
-				if (health <= 5 || maxHealth <= 0)
-					continue;
-				++totalAlive;
-
-				if (LooksLikeExcludedLaneTarget(ent))
-					continue;
-				++passedExclude;
-
-				if (LooksLikeHeroEntity(ent))
-					continue;
-
-				// Diagnostic: log rejected entities to understand filter failures
-				const bool passedLaneCreep = LooksLikeLaneCreepByStats(ent, offsets, health, maxHealth, team);
-				if (!passedLaneCreep)
-				{
-					static ULONGLONG lastRejectLogTick = 0;
-					static int rejectLogCount = 0;
-					const ULONGLONG nowReject = GetTickCount64();
-					if (!lastRejectLogTick || nowReject - lastRejectLogTick >= 5000)
-					{
-						lastRejectLogTick = nowReject;
-						rejectLogCount = 0;
-					}
-					if (rejectLogCount < 12)
-					{
-						const char *designerName = EntityDesignerOrName(ent);
-						const char *className = ent->GetSchemaClassName();
-						const bool nameMatch = LooksLikeLaneCreepByName(ent);
-						const bool excluded = LooksLikeExcludedLaneTarget(ent);
-						const bool playerOwned = IsPlayerControlledUnit(ent, offsets);
-						char rejectData[512]{};
-						std::snprintf(rejectData, sizeof(rejectData),
-									  "{\"designer\":\"%s\",\"class\":\"%s\",\"hp\":%d,\"maxHp\":%d,\"team\":%u,\"nameMatch\":%d,\"excluded\":%d,\"playerOwned\":%d}",
-									  designerName ? designerName : "", className ? className : "",
-									  health, maxHealth, static_cast<unsigned int>(team),
-									  nameMatch ? 1 : 0, excluded ? 1 : 0, playerOwned ? 1 : 0);
-						++rejectLogCount;
-					}
-					continue;
-				}
-				++passedStats;
-
-				if (static_cast<float>(health) > lethalHealth)
-				{
-					++aboveLethal;
-					continue;
-				}
-
-				Vector3 origin{};
-				if (!ReadOrigin(ent, offsets, origin))
-				{
-					++skippedByOrigin;
-					continue;
-				}
-
-				ImVec2 screen{};
-				Vector3 markerOrigin = origin;
-				markerOrigin.m_z += 140.f;
-				if (!Math::WorldToScreen(markerOrigin, screen) && !Math::WorldToScreen(origin, screen))
-				{
-					++skippedByProjection;
-					continue;
-				}
-
-				const bool allied = team == hero.team;
-				const ImU32 fillColor = allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
-				const ImU32 outlineColor = allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
-				DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
-				++drawnUniversal;
-			}
-		}
-	}
-
-	int candidateProjected = 0;
-	int candidateOffscreen = 0;
+	// Every entry in `candidates` is already a one-attack lane creep (see
+	// IsLaneCreep / CollectCandidatesFresh), so the overlay is just a draw
+	// pass over it. Gold marks an enemy creep to last hit, red an allied
+	// creep to deny.
+	auto *drawList = ImGui::GetForegroundDrawList();
+	int drawn = 0;
+	int offscreen = 0;
 	for (const auto &candidate : candidates)
 	{
 		ImVec2 screen{};
 		if (!ProjectStarTargetScreen(candidate.origin, screen))
 		{
-			++candidateOffscreen;
+			++offscreen;
 			continue;
 		}
-		++candidateProjected;
 
-		const bool allied = candidate.deny;
-		const ImU32 fillColor = allied ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
-		const ImU32 outlineColor = allied ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
+		const ImU32 fillColor = candidate.deny ? IM_COL32(255, 112, 112, 245) : IM_COL32(255, 221, 32, 245);
+		const ImU32 outlineColor = candidate.deny ? IM_COL32(255, 198, 198, 255) : IM_COL32(255, 246, 154, 255);
 		DrawStarMarker(drawList, screen, 9.f, fillColor, outlineColor);
+		++drawn;
 	}
 
-	// #region agent log
+	// Runs unconditionally: a sequence already in flight has to finish (click,
+	// then cursor restore) even if the setting is switched off mid-attack,
+	// otherwise the player's cursor stays parked on the creep.
+	TickPendingAttack();
+
+	if (Settings::LastHitAssistant::EnableAutoAttack)
+		TickAutoAttack(hero, candidates);
+
+	static ULONGLONG lastOverlayLogTick = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (!lastOverlayLogTick || now - lastOverlayLogTick >= 3000)
 	{
-		static ULONGLONG lastCandidateLogTick = 0;
-		const ULONGLONG now = GetTickCount64();
-		if (!lastCandidateLogTick || now - lastCandidateLogTick >= 1000)
-		{
-			char data[192]{};
-			std::snprintf(data, sizeof(data),
-						  "{\"candidateCount\":%d,\"candidateProjected\":%d,\"candidateOffscreen\":%d}",
-						  static_cast<int>(candidates.size()), candidateProjected, candidateOffscreen);
-			lastCandidateLogTick = now;
-		}
+		DEV_LOG("[last-hit] overlay candidates=%zu drawn=%d offscreen=%d autoAttack=%d\n",
+				candidates.size(), drawn, offscreen,
+				Settings::LastHitAssistant::EnableAutoAttack ? 1 : 0);
+		lastOverlayLogTick = now;
 	}
-
-	// Auto-attack for last-hit starred creeps
-	if (Settings::LastHitAssistant::EnableAutoAttack && !candidates.empty())
-	{
-		static ULONGLONG lastAutoAttackTick = 0;
-		const ULONGLONG now = GetTickCount64();
-
-		const HWND window = WindowReadyForInput();
-		if (window && now - lastAutoAttackTick >= 500)
-		{
-			// Candidates are already sorted with killable creeps first.
-			// Pick the first candidate and keep the click aligned with the star marker.
-			CreepCandidate target = candidates[0];
-			if (static_cast<float>(target.health) > target.lethalHealth)
-			{
-				for (const auto &c : candidates)
-				{
-					if (static_cast<float>(c.health) <= c.lethalHealth)
-					{
-						// Rebind to the first truly starred target.
-						target = c;
-						break;
-					}
-				}
-			}
-
-			// Click the creep body, not the star anchor.
-			ImVec2 screenPos{};
-			if (ProjectClickTargetScreen(target.origin, screenPos))
-			{
-				// Move cursor to the target position in client space.
-				POINT prevPos{};
-				if (!MoveCursorToClientPoint(window, screenPos, prevPos))
-				{
-					lastAutoAttackTick = now;
-					return;
-				}
-
-				// Send attack key press ('A')
-				SendKeyPress('A');
-
-				// Send left click
-				SendLeftClick();
-
-				// Restore cursor position
-				SetCursorPos(prevPos.x, prevPos.y);
-			}
-
-			lastAutoAttackTick = now;
-		}
-	}
-	// #endregion
 }
