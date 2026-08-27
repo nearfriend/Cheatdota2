@@ -1226,6 +1226,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		const bool infoOverlayPage = selectedCategory == 2 && selectedItem == 3;
 		const bool visibleByEnemyPage = selectedCategory == 2 && selectedItem == 8;
 		const bool autoComboPage = selectedCategory == 0 && selectedItem == IM_ARRAYSIZE( g_GeneralNavigation ) - 1;
+		const bool dodgerPage = selectedCategory == 0 && selectedItem == 3;
 		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
 
 		if ( infoOverlayPage )
@@ -1268,6 +1269,56 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			DrawSettingsComboRow( "Show" , "##wardShowMode" , Settings::InfoOverlay::WardShowMode , wardShowModes , IM_ARRAYSIZE( wardShowModes ) , ReferenceIcon::Visible );
 			DrawSettingsComboRow( "World Render" , "##wardWorldRenderMode" , Settings::InfoOverlay::WardWorldRenderMode , wardWorldRenderModes , IM_ARRAYSIZE( wardWorldRenderModes ) , ReferenceIcon::Radius );
 			ImGui::EndDisabled();
+			ImGui::EndChild();
+		}
+		else if ( dodgerPage )
+		{
+			// Two columns rather than one tall card: what the dodger reacts to
+			// and how hard it is tuned are separate decisions, and sixteen rows
+			// stacked in a single 502px card put everything past "Save Allies"
+			// below the fold.
+			const float cardGap = 12.f;
+			const float columnWidth = ( settingsCardWidth - cardGap ) * 0.5f;
+			const float cardHeight = 430.f;
+
+			ImGui::BeginChild( "##dodgerReactionCard" , ImVec2( columnWidth , cardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Reaction Settings" );
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+			DrawSwitchRow( "Enable" , "##dodgerEnable" , Settings::Dodger::Enable , ReferenceIcon::Hidden );
+			ImGui::BeginDisabled( !Settings::Dodger::Enable );
+			DrawSwitchRow( "Dodge My Hero" , "##dodgerSelf" , Settings::Dodger::DodgeSelf , ReferenceIcon::Aggro );
+			DrawSwitchRow( "React To Enemy Blink" , "##dodgerEnemyBlink" , Settings::Dodger::DodgeEnemyBlink , ReferenceIcon::Distance );
+			DrawSwitchRow( "Save Allies" , "##dodgerAllies" , Settings::Dodger::SaveAllies , ReferenceIcon::Allies );
+			DrawSwitchRow( "Panic Save On Low HP" , "##dodgerPanic" , Settings::Dodger::PanicSaveEnable , ReferenceIcon::Warning );
+			DrawSwitchRow( "Use Items" , "##dodgerItems" , Settings::Dodger::UseItems , ReferenceIcon::Items );
+			DrawSwitchRow( "Use Abilities" , "##dodgerAbilities" , Settings::Dodger::UseAbilities , ReferenceIcon::Sparkles );
+			DrawSwitchRow( "Escape With Blink" , "##dodgerBlink" , Settings::Dodger::UseBlink , ReferenceIcon::Speed );
+			DrawSwitchRow( "Quick Cast Mode" , "##dodgerQuickCast" , Settings::Dodger::QuickCast , ReferenceIcon::Speed );
+			DrawSwitchRow( "Draw Threat Markers" , "##dodgerMarkers" , Settings::Dodger::DrawThreatMarkers , ReferenceIcon::Visible );
+			ImGui::EndDisabled();
+			ImGui::EndChild();
+
+			ImGui::SameLine( 0.f , cardGap );
+			ImGui::BeginChild( "##dodgerTuningCard" , ImVec2( columnWidth , cardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Threat Tuning" );
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+			ImGui::BeginDisabled( !Settings::Dodger::Enable );
+			DrawSliderRow( "Trigger Range" , "##dodgerTriggerRange" , Settings::Dodger::TriggerRange , 600.f , 3000.f , "%.0f" , ReferenceIcon::Radius );
+			DrawSliderRow( "Reaction Delay" , "##dodgerReaction" , Settings::Dodger::ReactionDelayMs , 0.f , 400.f , "%.0f ms" , ReferenceIcon::Duration );
+			DrawSliderRow( "Min Danger Damage" , "##dodgerMinDamage" , Settings::Dodger::MinDangerDamage , 0.f , 600.f , "%.0f" , ReferenceIcon::Warning );
+			DrawSliderRow( "Nuke vs My Health" , "##dodgerThreatHealth" , Settings::Dodger::MinThreatHealthPercent , 0.f , 100.f , "%.0f%%" , ReferenceIcon::Warning );
+			DrawSliderRow( "Ally Save Health" , "##dodgerAllyHealth" , Settings::Dodger::AllySaveHealthPercent , 5.f , 90.f , "%.0f%%" , ReferenceIcon::Allies );
+			DrawSliderRow( "Panic Health" , "##dodgerPanicHealth" , Settings::Dodger::PanicHealthPercent , 5.f , 50.f , "%.0f%%" , ReferenceIcon::Warning );
+			ImGui::EndDisabled();
+
+			ImGui::Spacing();
+			ImGui::TextDisabled( "Hard disables trigger even at zero damage; other spells need Min Danger Damage." );
+			ImGui::TextDisabled( "Known pairs go first: Counterspell blocks Finger, Manta answers Reverse Polarity," );
+			ImGui::TextDisabled( "Eul's rides out Thundergod's Wrath. Global ults ignore Trigger Range." );
+			ImGui::TextDisabled( "A BKB is never spent on pure/physical or immunity-piercing casts." );
+
+			if ( auto* pClient = GetAndromedaClient() )
+				ImGui::Text( "Status: %s" , pClient->GetDodger().GetStatus().c_str() );
 			ImGui::EndChild();
 		}
 		else

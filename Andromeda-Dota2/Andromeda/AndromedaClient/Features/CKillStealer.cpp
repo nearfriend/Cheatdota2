@@ -96,6 +96,9 @@ namespace
 		bool hasArmor = false;
 		bool hasMagicResistance = false;
 		bool hasSpellAmp = false;
+		// True when spellAmp resolved to m_nSpellAmp, which is a whole-number
+		// percentage in an int rather than a 0-1 float.
+		bool spellAmpIsPercentInt = false;
 		bool hasDamageBonus = false;
 		bool hasAttackRange = false;
 		bool hasIsIllusion = false;
@@ -277,7 +280,15 @@ namespace
 		const bool hasAbilityCooldown = schema->TryGetOffset("C_DOTABaseAbility", "m_flCooldown", offsets.abilityCooldown) ||
 			schema->TryGetOffset("C_DOTABaseAbility", "m_fCooldown", offsets.abilityCooldown);
 		const bool hasAbilityMana = schema->TryGetOffset("C_DOTABaseAbility", "m_iManaCost", offsets.abilityManaCost);
-		schema->TryGetOffset("C_DOTABaseAbility", "m_flCastRange", offsets.abilityCastRange);
+		// m_nCastRange is the name this build actually uses - a scan of
+		// client.dll's schema strings finds m_nCastRange (and
+		// m_nCastRangeBuffer / m_bCastRangeRequired) but no m_flCastRange at
+		// all. Asking only for m_flCastRange left abilityCastRange at 0, so
+		// ReadCastRange silently returned the JSON catalog value for every
+		// ability - and that value is the MAX over all levels (see
+		// AssignCastRange), i.e. an overestimate at every level but the last.
+		schema->TryGetOffset("C_DOTABaseAbility", "m_nCastRange", offsets.abilityCastRange) ||
+			schema->TryGetOffset("C_DOTABaseAbility", "m_flCastRange", offsets.abilityCastRange);
 		offsets.hasAbilityActivated = schema->TryGetOffset("C_DOTABaseAbility", "m_bIsActivated", offsets.abilityActivated) ||
 			schema->TryGetOffset("C_DOTABaseAbility", "m_bActivated", offsets.abilityActivated);
 
@@ -292,7 +303,16 @@ namespace
 		offsets.hasArmor = schema->TryGetOffset("C_DOTA_BaseNPC", "m_flPhysicalArmorValue", offsets.armor);
 		offsets.hasMagicResistance = schema->TryGetOffset("C_DOTA_BaseNPC", "m_flMagicalResistanceValue", offsets.magicResistance) ||
 			schema->TryGetOffset("C_DOTA_BaseNPC", "m_flMagicalResistance", offsets.magicResistance);
-		offsets.hasSpellAmp = schema->TryGetOffset("C_DOTA_BaseNPC", "m_flSpellAmplification", offsets.spellAmp) ||
+		// m_nSpellAmp is the name this build uses, and it is an INT percentage
+		// (see BuildSnapshot for the conversion). None of the three float
+		// spellings below exist in client.dll's schema strings at all, so this
+		// lookup used to always fail - meaning every damage estimate here has
+		// been computed with spell amp fixed at zero, i.e. underestimating our
+		// own damage on every hero carrying any.
+		offsets.spellAmpIsPercentInt = schema->TryGetOffset("C_DOTA_BaseNPC", "m_nSpellAmp", offsets.spellAmp) ||
+			schema->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_nSpellAmp", offsets.spellAmp);
+		offsets.hasSpellAmp = offsets.spellAmpIsPercentInt ||
+			schema->TryGetOffset("C_DOTA_BaseNPC", "m_flSpellAmplification", offsets.spellAmp) ||
 			schema->TryGetOffset("C_DOTA_BaseNPC", "m_flSpellAmp", offsets.spellAmp) ||
 			schema->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_flSpellAmplification", offsets.spellAmp);
 		schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageMin", offsets.damageMin);
@@ -424,7 +444,22 @@ namespace
 		{
 			out.magicResistance = 0.25f;
 		}
-		out.spellAmp = offsets.hasSpellAmp ? std::clamp(ReadField<float>(entity, offsets.spellAmp, 0.f), -0.75f, 3.0f) : 0.f;
+		if (!offsets.hasSpellAmp)
+		{
+			out.spellAmp = 0.f;
+		}
+		else if (offsets.spellAmpIsPercentInt)
+		{
+			// m_nSpellAmp holds e.g. 8 for +8% spell damage. Reading those
+			// four bytes as a float would produce a denormal, not 8 - hence
+			// the separate path rather than one shared read.
+			const int rawSpellAmp = ReadField<int>(entity, offsets.spellAmp, 0);
+			out.spellAmp = std::clamp(static_cast<float>(rawSpellAmp) * 0.01f, -0.75f, 3.0f);
+		}
+		else
+		{
+			out.spellAmp = std::clamp(ReadField<float>(entity, offsets.spellAmp, 0.f), -0.75f, 3.0f);
+		}
 		out.attackDamage = static_cast<float>((std::max)(1,
 			ReadField<int>(entity, offsets.damageMin, 0) + (offsets.hasDamageBonus ? ReadField<int>(entity, offsets.damageBonus, 0) : 0)));
 		out.attackRange = offsets.hasAttackRange
@@ -1524,7 +1559,13 @@ auto CKillStealer::OnRenderInner() -> void
 		DEV_LOG("[kill-stealer]   step: %s key=%c mana_cost=%d\n",
 			action.name.c_str(), static_cast<char>(action.key), tool != tools.end() ? tool->manaCost : -1);
 	}
-	DEV_LOG("[kill-stealer]   caster mana=%.0f\n", localHero.mana);
+	// spell_amp/resist are printed because both come from schema fields whose
+	// names had to be corrected once already (m_nSpellAmp, and the
+	// percentage-vs-fraction rescale in BuildSnapshot) - if a future build
+	// renames them again, a plan that suddenly misjudges damage shows it here
+	// as a 0.00 that should not be 0.
+	DEV_LOG("[kill-stealer]   caster mana=%.0f spell_amp=%.2f target_resist=%.2f (raw %.2f)\n",
+		localHero.mana, localHero.spellAmp, bestTarget->magicResistance, bestTarget->rawMagicResistance);
 }
 
 auto CKillStealer::OnRender() -> void

@@ -449,8 +449,28 @@ auto CAbilityDamageData::LoadHeroSkillBarFromFile( const std::string& path ) -> 
 
 auto CAbilityDamageData::Find( std::string_view name ) const -> const AbilityDamageEntry*
 {
-	const auto it = m_Entries.find( std::string( name ) );
-	return it == m_Entries.end() ? nullptr : &it->second;
+	auto it = m_Entries.find( std::string( name ) );
+	if ( it != m_Entries.end() )
+		return &it->second;
+
+	// items.json (odota dotaconstants) keys every item WITHOUT the "item_"
+	// prefix that the game's entity names carry: "black_king_bar", never
+	// "item_black_king_bar" - while abilities.json contains no item_ key at
+	// all. So a lookup by the entity name missed for EVERY item, and callers
+	// that drop what the catalog doesn't know (CKillStealer/CAutoCombo's
+	// CollectTools both `continue` on a null entry) silently never used an
+	// item at all - which is why "Use Items" and "Prioritize Ethereal Blade"
+	// had no observable effect. Abilities are unaffected: no ability name
+	// starts with "item_", so this retry can only ever hit an item entry.
+	constexpr std::string_view kItemPrefix = "item_";
+	if ( name.size() > kItemPrefix.size() && name.substr( 0 , kItemPrefix.size() ) == kItemPrefix )
+	{
+		it = m_Entries.find( std::string( name.substr( kItemPrefix.size() ) ) );
+		if ( it != m_Entries.end() )
+			return &it->second;
+	}
+
+	return nullptr;
 }
 
 auto CAbilityDamageData::PreferredSlot( std::string_view abilityName ) const -> int

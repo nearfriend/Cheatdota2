@@ -76,6 +76,51 @@ namespace Settings
 		// reach them - noise at best, wasted work at worst.
 		inline float DetectRange = 1200.f;
 	}
+	namespace Dodger
+	{
+		// Reactive defense (see CDodger.cpp): answers an enemy cast that can
+		// reach us - or a low ally - with the best counter we own.
+		inline bool Enable = false;
+		inline bool DodgeSelf = true;
+		// React to an enemy blinking onto us (detected as a position jump, see
+		// CDodger.cpp) as well as to the spells themselves.
+		inline bool DodgeEnemyBlink = true;
+		inline bool SaveAllies = true;
+		inline bool UseItems = true;
+		inline bool UseAbilities = true;
+		// Blinking away is the loudest reaction there is (it moves the hero),
+		// so it gets its own switch even though blink items are just items.
+		inline bool UseBlink = true;
+		inline bool DrawThreatMarkers = true;
+		// Same meaning as KillStealer::QuickCast: on, the confirming click
+		// after the hotkey is skipped, which is only correct when Dota's own
+		// Quickcast is enabled for that item/ability. Off can never silently
+		// no-op a cast, so off is the default.
+		inline bool QuickCast = false;
+		// Casters farther than this are ignored even if the spell could
+		// technically reach - a global ult from across the map is not
+		// something an item reaction is going to help with.
+		inline float TriggerRange = 1500.f;
+		// Only save an ally already below this much of their max health.
+		inline float AllySaveHealthPercent = 40.f;
+		// Health-driven rescue for the cases no cast detection can catch: the
+		// burst already landed, or the fight is simply lost. Fires for us and
+		// (when Save Allies is on) for a nearby ally, but only with an enemy
+		// hero close by - dying to a tower is not an item's problem.
+		inline bool PanicSaveEnable = true;
+		inline float PanicHealthPercent = 18.f;
+		// Deliberate pause between spotting the cast and answering it. 0 is
+		// the fastest and least human-looking.
+		inline float ReactionDelayMs = 60.f;
+		// Damage bar an ability not in CDodger's curated danger table has to
+		// clear before it is worth an item.
+		inline float MinDangerDamage = 150.f;
+		// A damage-only spell (no stun/hex/root) is answered only when its
+		// catalog damage is at least this share of the health we have left -
+		// otherwise a Zeus ult at full health would cost a Eul's every time.
+		// Disables ignore this and are always answered.
+		inline float MinThreatHealthPercent = 35.f;
+	}
 	namespace LastHitAssistant
 	{
 		inline bool Enable = false;

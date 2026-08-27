@@ -10,6 +10,7 @@
 #include <AndromedaClient/Features/CKillStealer.hpp>
 #include <AndromedaClient/Features/CLastHitAssistant.hpp>
 #include <AndromedaClient/Features/CAutoCombo.hpp>
+#include <AndromedaClient/Features/CDodger.hpp>
 
 #include <array>
 #include <atomic>
@@ -113,6 +114,8 @@ private:
 
 public:
 	CAutoCombo& GetAutoCombo() { return m_AutoCombo; }
+	CDodger& GetDodger() { return m_Dodger; }
+	const CDodger& GetDodger() const { return m_Dodger; }
 	const CAutoCombo& GetAutoCombo() const { return m_AutoCombo; }
 
 private:
@@ -121,6 +124,7 @@ private:
 	CInvokerController m_InvokerController;
 	CMeepoController m_MeepoController;
 	CAutoCombo m_AutoCombo;
+	CDodger m_Dodger;
 };
 
 auto GetAndromedaClient() -> CAndromedaClient*;

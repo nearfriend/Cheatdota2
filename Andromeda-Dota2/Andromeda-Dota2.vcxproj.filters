@@ -153,6 +153,12 @@
     <ClCompile Include="Andromeda\AndromedaClient\Features\CAutoCombo.cpp">
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClCompile>
+    <ClCompile Include="Andromeda\AndromedaClient\Features\CDodger.cpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClCompile>
+    <ClCompile Include="Andromeda\AndromedaClient\Features\FeatureSupport.cpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClCompile>
     <ClCompile Include="Andromeda\AndromedaClient\Fonts\CFont.cpp">
       <Filter>Andromeda\AndromedaClient\Fonts</Filter>
     </ClCompile>
@@ -543,6 +549,12 @@
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\Features\CAutoCombo.hpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\AndromedaClient\Features\CDodger.hpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\AndromedaClient\Features\FeatureSupport.hpp">
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\Fonts\CFont.hpp">

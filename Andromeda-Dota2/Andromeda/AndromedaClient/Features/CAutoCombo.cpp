@@ -358,7 +358,12 @@ namespace
 		const bool hasAbilityCooldown = schema->TryGetOffset( "C_DOTABaseAbility" , "m_flCooldown" , offsets.abilityCooldown ) ||
 			schema->TryGetOffset( "C_DOTABaseAbility" , "m_fCooldown" , offsets.abilityCooldown );
 		const bool hasAbilityMana = schema->TryGetOffset( "C_DOTABaseAbility" , "m_iManaCost" , offsets.abilityManaCost );
-		schema->TryGetOffset( "C_DOTABaseAbility" , "m_flCastRange" , offsets.abilityCastRange );
+		// m_nCastRange, not m_flCastRange - see the same fix in CKillStealer's
+		// ResolveOffsets. m_flCastRange does not exist in this build, so this
+		// lookup always failed and every cast range fell back to the JSON
+		// catalog's max-over-levels value.
+		schema->TryGetOffset( "C_DOTABaseAbility" , "m_nCastRange" , offsets.abilityCastRange ) ||
+			schema->TryGetOffset( "C_DOTABaseAbility" , "m_flCastRange" , offsets.abilityCastRange );
 		offsets.hasAbilityActivated = schema->TryGetOffset( "C_DOTABaseAbility" , "m_bIsActivated" , offsets.abilityActivated ) ||
 			schema->TryGetOffset( "C_DOTABaseAbility" , "m_bActivated" , offsets.abilityActivated );
 
@@ -655,6 +660,17 @@ namespace
 					const std::string itemName = EntityName( item , identity );
 					const auto* data = FindDamageEntry( itemName );
 					if ( !data || ( !data->unitTarget && !data->noTarget && !data->pointTarget ) )
+						continue;
+
+					// Only damage items belong in a burst combo, exactly as this
+					// feature's header comment says. The filter matters now in a
+					// way it did not before: item lookups used to miss the
+					// catalog entirely (items are keyed without the "item_"
+					// prefix - see CAbilityDamageData::Find), so this loop never
+					// produced a single item. With lookups fixed, an unfiltered
+					// loop would happily press a Town Portal Scroll (Point
+					// Target) and click the ground in the middle of a fight.
+					if ( !data->IsUsableDamage() )
 						continue;
 
 					const int level = (std::max)( 1 , ReadField<int>( item , offsets.abilityLevel , 1 ) );
