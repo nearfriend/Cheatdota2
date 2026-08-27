@@ -5,6 +5,7 @@
 #include <AndromedaClient/Data/AbilityDamageData.hpp>
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <Common/DevLog.hpp>
+#include <Dota2/SDK/CSchemaOffset.hpp>
 #include <Dota2/SDK/Interface/CGameEntitySystem.hpp>
 #include <Dota2/SDK/Interface/CLocalHeroResolver.hpp>
 #include <Dota2/SDK/Math/Math.hpp>
@@ -106,6 +107,11 @@ namespace
 		// targeting (manta, glimmer) cannot answer these; only a status
 		// answer can - immunity, a reflect, a spell block, or Eul's.
 		kInstant = 1 << 6,
+		// Aimed at one unit. Spell blocks and reflects (Counterspell, Lotus
+		// Orb, Linken's) only ever answer these - a live capture caught the
+		// flag matcher handing Thundergod's Wrath, a global no-target ult, to
+		// Anti-Mage's Counterspell, which does nothing about it.
+		kSingleTarget = 1 << 7,
 	};
 
 	struct DangerEntry
@@ -248,6 +254,9 @@ namespace
 		bool magicOnly;
 		// A hero ability rather than an item (gated by "Use Abilities").
 		bool isAbility;
+		// Only answers a cast aimed at one unit - a spell block or a reflect
+		// has nothing to catch when the spell is a global or an area.
+		bool needsSingleTarget;
 		// Works by moving the hero or breaking the caster's targeting. Useless
 		// against a kInstant threat, which has already landed on you by the
 		// time anything moves.
@@ -256,45 +265,45 @@ namespace
 
 	constexpr ResponseDef kResponses[] =
 	{
-		{ "item_black_king_bar" , ResponseKind::NoTarget , kMagical | kDisable , 10 , false , false , true , false , false },
-		{ "item_cyclone" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 20 , true , false , false , false , false },
-		{ "item_wind_waker" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 21 , true , false , false , false , false },
-		{ "item_manta" , ResponseKind::NoTarget , kProjectile | kDisable , 30 , false , false , false , false , true },
-		{ "item_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 40 , false , true , false , false , true },
-		{ "item_swift_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 41 , false , true , false , false , true },
-		{ "item_arcane_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 42 , false , true , false , false , true },
-		{ "item_overwhelming_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 43 , false , true , false , false , true },
-		{ "item_lotus_orb" , ResponseKind::UnitTarget , kDisable | kMagical , 50 , true , false , false , false , false },
-		{ "item_force_staff" , ResponseKind::UnitTarget , kProjectile | kDisable , 60 , true , false , false , false , true },
-		{ "item_hurricane_pike" , ResponseKind::UnitTarget , kProjectile | kDisable , 61 , true , false , false , false , true },
-		{ "item_glimmer_cape" , ResponseKind::UnitTarget , kProjectile | kMagical , 70 , true , false , false , false , true },
-		{ "item_ghost" , ResponseKind::NoTarget , kPhysical , 80 , false , false , false , false , false },
+		{ "item_black_king_bar" , ResponseKind::NoTarget , kMagical | kDisable , 10 , false , false , true , false , false , false },
+		{ "item_cyclone" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 20 , true , false , false , false , false , false },
+		{ "item_wind_waker" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 21 , true , false , false , false , false , false },
+		{ "item_manta" , ResponseKind::NoTarget , kProjectile | kDisable , 30 , false , false , false , false , false , true },
+		{ "item_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 40 , false , true , false , false , false , true },
+		{ "item_swift_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 41 , false , true , false , false , false , true },
+		{ "item_arcane_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 42 , false , true , false , false , false , true },
+		{ "item_overwhelming_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 43 , false , true , false , false , false , true },
+		{ "item_lotus_orb" , ResponseKind::UnitTarget , kDisable | kMagical , 50 , true , false , false , false , true , false },
+		{ "item_force_staff" , ResponseKind::UnitTarget , kProjectile | kDisable , 60 , true , false , false , false , false , true },
+		{ "item_hurricane_pike" , ResponseKind::UnitTarget , kProjectile | kDisable , 61 , true , false , false , false , false , true },
+		{ "item_glimmer_cape" , ResponseKind::UnitTarget , kProjectile | kMagical , 70 , true , false , false , false , false , true },
+		{ "item_ghost" , ResponseKind::NoTarget , kPhysical , 80 , false , false , false , false , false , false },
 		// Spell blocks and phase-outs: these beat even an instant targeted
 		// nuke, which is what makes Anti-Mage's Counterspell the right answer
 		// to a Finger of Death and nothing else in this list is.
-		{ "antimage_counterspell" , ResponseKind::NoTarget , kMagical | kDisable , 11 , false , false , true , true , false },
-		{ "antimage_counterspell_ally" , ResponseKind::NoTarget , kMagical | kDisable , 11 , false , false , true , true , false },
-		{ "nyx_assassin_spiked_carapace" , ResponseKind::NoTarget , kMagical | kPhysical | kDisable , 17 , false , false , false , true , false },
-		{ "templar_assassin_refraction" , ResponseKind::NoTarget , kMagical | kPhysical | kPure , 18 , false , false , false , true , false },
-		{ "void_spirit_dissimilate" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 19 , false , false , false , true , true },
-		{ "dark_willow_shadow_realm" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 22 , false , false , false , true , true },
+		{ "antimage_counterspell" , ResponseKind::NoTarget , kMagical | kDisable , 11 , false , false , true , true , true , false },
+		{ "antimage_counterspell_ally" , ResponseKind::NoTarget , kMagical | kDisable , 11 , false , false , true , true , true , false },
+		{ "nyx_assassin_spiked_carapace" , ResponseKind::NoTarget , kMagical | kPhysical | kDisable , 17 , false , false , false , true , false , false },
+		{ "templar_assassin_refraction" , ResponseKind::NoTarget , kMagical | kPhysical | kPure , 18 , false , false , false , true , false , false },
+		{ "void_spirit_dissimilate" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 19 , false , false , false , true , false , true },
+		{ "dark_willow_shadow_realm" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 22 , false , false , false , true , false , true },
 		// Self-preservation abilities that need no target and no aim.
-		{ "puck_phase_shift" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 15 , false , false , false , true , false },
-		{ "juggernaut_blade_fury" , ResponseKind::NoTarget , kMagical , 16 , false , false , true , true , false },
-		{ "weaver_shukuchi" , ResponseKind::NoTarget , kProjectile | kPhysical , 25 , false , false , false , true , true },
-		{ "life_stealer_rage" , ResponseKind::NoTarget , kMagical | kDisable , 26 , false , false , true , true , false },
-		{ "phantom_lancer_doppelwalk" , ResponseKind::NoTarget , kProjectile | kDisable , 27 , false , false , false , true , true },
-		{ "slark_dark_pact" , ResponseKind::NoTarget , kDisable | kMagical , 28 , false , false , false , true , false },
-		{ "windrunner_windrun" , ResponseKind::NoTarget , kPhysical | kProjectile , 29 , false , false , false , true , false },
-		{ "omniknight_guardian_angel" , ResponseKind::NoTarget , kPhysical , 31 , false , false , false , true , false },
-		{ "antimage_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 44 , false , true , false , true , true },
-		{ "queenofpain_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 45 , false , true , false , true , true },
+		{ "puck_phase_shift" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 15 , false , false , false , true , false , false },
+		{ "juggernaut_blade_fury" , ResponseKind::NoTarget , kMagical , 16 , false , false , true , true , false , false },
+		{ "weaver_shukuchi" , ResponseKind::NoTarget , kProjectile | kPhysical , 25 , false , false , false , true , false , true },
+		{ "life_stealer_rage" , ResponseKind::NoTarget , kMagical | kDisable , 26 , false , false , true , true , false , false },
+		{ "phantom_lancer_doppelwalk" , ResponseKind::NoTarget , kProjectile | kDisable , 27 , false , false , false , true , false , true },
+		{ "slark_dark_pact" , ResponseKind::NoTarget , kDisable | kMagical , 28 , false , false , false , true , false , false },
+		{ "windrunner_windrun" , ResponseKind::NoTarget , kPhysical | kProjectile , 29 , false , false , false , true , false , false },
+		{ "omniknight_guardian_angel" , ResponseKind::NoTarget , kPhysical , 31 , false , false , false , true , false , false },
+		{ "antimage_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 44 , false , true , false , true , false , true },
+		{ "queenofpain_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 45 , false , true , false , true , false , true },
 		// Ally saves (all also work on ourselves).
-		{ "dazzle_shallow_grave" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 12 , true , false , false , true , false },
-		{ "oracle_false_promise" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 13 , true , false , false , true , false },
-		{ "oracle_fates_edict" , ResponseKind::UnitTarget , kMagical , 13 , true , false , true , true , false },
-		{ "abaddon_aphotic_shield" , ResponseKind::UnitTarget , kMagical | kPhysical | kDisable , 14 , true , false , false , true , false },
-		{ "winter_wyvern_cold_embrace" , ResponseKind::UnitTarget , kPhysical , 14 , true , false , false , true , false },
+		{ "dazzle_shallow_grave" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 12 , true , false , false , true , false , false },
+		{ "oracle_false_promise" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 13 , true , false , false , true , false , false },
+		{ "oracle_fates_edict" , ResponseKind::UnitTarget , kMagical , 13 , true , false , true , true , false , false },
+		{ "abaddon_aphotic_shield" , ResponseKind::UnitTarget , kMagical | kPhysical | kDisable , 14 , true , false , false , true , false , false },
+		{ "winter_wyvern_cold_embrace" , ResponseKind::UnitTarget , kPhysical , 14 , true , false , false , true , false , false },
 	};
 
 	// Per-spell answers, best first, for the cases where the generic flag
@@ -329,6 +338,25 @@ namespace
 		{ "enigma_black_hole" , { "item_blink" , "item_black_king_bar" , "item_cyclone" , nullptr , nullptr } },
 		{ "pudge_meat_hook" , { "item_cyclone" , "item_blink" , "item_manta" , nullptr , nullptr } },
 		{ "mirana_arrow" , { "item_blink" , "item_cyclone" , "item_manta" , nullptr , nullptr } },
+		// Everything below is here for the same reason Thundergod's Wrath is:
+		// these all deserve an answer on their own merit, and being listed
+		// exempts them from the proportion-of-health check that would
+		// otherwise hold fire on a spell whose catalog damage looks modest.
+		{ "ancient_apparition_ice_blast" , { "item_blink" , "item_manta" , "item_cyclone" , nullptr , nullptr } },
+		{ "sniper_assassinate" , { "item_blink" , "item_cyclone" , "item_manta" , nullptr , nullptr } },
+		{ "lich_chain_frost" , { "item_blink" , "item_manta" , "item_cyclone" , nullptr , nullptr } },
+		{ "invoker_sun_strike" , { "item_blink" , "item_cyclone" , "item_manta" , nullptr , nullptr } },
+		{ "skywrath_mage_mystic_flare" , { "item_blink" , "item_cyclone" , "item_manta" , nullptr , nullptr } },
+		{ "crystal_maiden_freezing_field" , { "item_blink" , "item_black_king_bar" , "item_cyclone" , nullptr , nullptr } },
+		{ "witch_doctor_death_ward" , { "item_ghost" , "item_blink" , "item_cyclone" , nullptr , nullptr } },
+		{ "earthshaker_echo_slam" , { "item_blink" , "item_black_king_bar" , "item_cyclone" , nullptr , nullptr } },
+		{ "beastmaster_primal_roar" , { "item_black_king_bar" , "item_cyclone" , "item_blink" , nullptr , nullptr } },
+		{ "bane_fiends_grip" , { "item_black_king_bar" , "item_manta" , "item_cyclone" , nullptr , nullptr } },
+		{ "shadow_shaman_shackles" , { "item_black_king_bar" , "item_manta" , "item_cyclone" , nullptr , nullptr } },
+		{ "silencer_global_silence" , { "item_black_king_bar" , "item_manta" , "item_cyclone" , nullptr , nullptr } },
+		{ "storm_spirit_electric_vortex" , { "item_cyclone" , "item_manta" , "item_blink" , nullptr , nullptr } },
+		{ "primal_beast_pulverize" , { "antimage_counterspell" , "item_lotus_orb" , "item_cyclone" , nullptr , nullptr } },
+		{ "lion_impale" , { "item_blink" , "item_cyclone" , "item_manta" , nullptr , nullptr } },
 	};
 
 	struct HeroSnapshot
@@ -367,6 +395,16 @@ namespace
 		return nullptr;
 	}
 
+	auto HasPreferredCounter( const std::string& threatName ) -> bool
+	{
+		for ( const auto& entry : kPreferredCounters )
+		{
+			if ( threatName == entry.threat )
+				return true;
+		}
+		return false;
+	}
+
 	auto FindResponseDef( const std::string& loweredName ) -> const ResponseDef*
 	{
 		for ( const auto& entry : kResponses )
@@ -394,10 +432,15 @@ namespace
 	{
 		outReach = 0.f;
 
+		// Whether the spell picks one unit comes from the catalog in both
+		// paths - the curated table describes what a spell DOES, not how it is
+		// aimed.
+		const uint8_t targeting = ( entry && entry->unitTarget ) ? kSingleTarget : 0u;
+
 		if ( const auto* danger = FindDangerEntry( loweredName ) )
 		{
 			outReach = danger->reach;
-			return danger->flags;
+			return static_cast<uint8_t>( danger->flags | targeting );
 		}
 
 		if ( !entry || !entry->targetEnemy || !entry->IsUsableDamage() )
@@ -411,7 +454,7 @@ namespace
 		// it was aimed.
 		if ( entry->unitTarget )
 			flags |= kProjectile;
-		return flags;
+		return static_cast<uint8_t>( flags | targeting );
 	}
 
 	auto ScanHeroes( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets ) -> std::vector<HeroSnapshot>
@@ -484,7 +527,7 @@ namespace
 		return heroes;
 	}
 
-	auto CollectResponses( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets , const HeroSnapshot& local ) -> std::vector<ReadyResponse>
+	auto CollectResponses( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets , const HeroSnapshot& local , bool allowItems , bool allowAbilities ) -> std::vector<ReadyResponse>
 	{
 		std::vector<ReadyResponse> ready;
 		static constexpr std::array<WORD , 6> kItemKeys = { 'Z' , 'X' , 'C' , 'V' , 'B' , 'N' };
@@ -502,7 +545,7 @@ namespace
 			return manaCost <= static_cast<int>( local.mana + 0.5f );
 		};
 
-		if ( Settings::Dodger::UseItems )
+		if ( Settings::Dodger::UseItems && allowItems )
 		{
 			std::vector<CHandle> itemHandles;
 			if ( FS::ReadInventoryHandles( local.entity , offsets , itemHandles ) )
@@ -534,7 +577,7 @@ namespace
 			}
 		}
 
-		if ( Settings::Dodger::UseAbilities )
+		if ( Settings::Dodger::UseAbilities && allowAbilities )
 		{
 			std::vector<CHandle> abilityHandles;
 			if ( FS::ReadAbilityHandles( local.entity , offsets , abilityHandles ) )
@@ -595,6 +638,9 @@ namespace
 		// Blinking away or breaking targeting does nothing about a spell that
 		// resolves on you the moment it is cast.
 		if ( def->positional && ( threatFlags & kInstant ) != 0 )
+			return false;
+		// A spell block or a reflect needs a single-target cast to catch.
+		if ( def->needsSingleTarget && ( threatFlags & kSingleTarget ) == 0 )
 			return false;
 		if ( againstAlly )
 		{
@@ -732,7 +778,7 @@ namespace
 auto CDodger::CancelCast( const char* reason ) -> void
 {
 	if ( m_Cast.hasPrevCursor )
-		SetCursorPos( m_Cast.prevCursorX , m_Cast.prevCursorY );
+		FS::MoveCursorToScreen( m_Cast.prevCursorX , m_Cast.prevCursorY );
 	m_Cast = {};
 	if ( reason )
 	{
@@ -820,7 +866,7 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 	{
 		if ( m_Cast.hasPrevCursor )
 		{
-			SetCursorPos( m_Cast.prevCursorX , m_Cast.prevCursorY );
+			FS::MoveCursorToScreen( m_Cast.prevCursorX , m_Cast.prevCursorY );
 			m_Cast.hasPrevCursor = false;
 		}
 		// The confirming click landed on a unit - our own hero for a self
@@ -925,11 +971,23 @@ auto CDodger::OnRender() -> void
 			}
 		}
 
-		DEV_LOG( "[dodger] detectors: cast-phase=%s cooldown-edge=yes facing-gate=%s cast-range=%s state-gates=%d%d%d\n" ,
+		DEV_LOG( "[dodger] detectors: cast-phase=%s cooldown-edge=yes facing-gate=%s cast-range=%s unit-state=%s\n" ,
 			offsets.hasAbilityInPhase ? "yes" : "NO (m_bInAbilityPhase unresolved)" ,
 			offsets.hasRotation ? "yes" : "no" ,
 			offsets.abilityCastRange ? "live" : "catalog-only" ,
-			offsets.hasMagicImmune ? 1 : 0 , offsets.hasInvulnerable ? 1 : 0 , offsets.hasStunned ? 1 : 0 );
+			offsets.hasUnitState ? "m_nUnitState64" : "NONE (state guards inert)" );
+
+		// A live capture logged cast-range=catalog-only, so neither
+		// m_nCastRange nor m_flCastRange is a replicated field on this build's
+		// ability class. The catalog fallback is correct but generous (it is
+		// the max over all levels), so dump whatever range-ish fields the
+		// class really has - one line, once, and the next log says which name
+		// to use.
+		if ( !offsets.abilityCastRange )
+		{
+			if ( auto* schema = GetSchemaOffset() )
+				schema->LogFieldsMatching( "C_DOTABaseAbility" , "range" );
+		}
 	}
 
 	C_BaseEntity* localEntity = nullptr;
@@ -977,15 +1035,30 @@ auto CDodger::OnRender() -> void
 	// seconds of a stun would leave every enemy ability holding a two-second-old
 	// sample, and the first tick afterwards would read that as a fresh cast and
 	// dodge a spell that already resolved.
-	const bool stunned = offsets.hasStunned && FS::ReadField<bool>( local->entity , offsets.stunned , false );
-	const bool invulnerable = offsets.hasInvulnerable && FS::ReadField<bool>( local->entity , offsets.invulnerable , false );
-	const bool canAct = !stunned && !invulnerable;
+	uint64_t localState = 0;
+	const bool haveState = FS::TryReadUnitState( local->entity , offsets , localState );
+
+	// Anything that takes the hero's orders away. COMMAND_RESTRICTED is in
+	// here for a specific reason: our own Eul's puts us in exactly that state,
+	// and arming a second answer while cycloned just spends another item.
+	const bool cannotAct = haveState && (
+		FS::HasUnitState( localState , FS::kStateStunned ) ||
+		FS::HasUnitState( localState , FS::kStateHexed ) ||
+		FS::HasUnitState( localState , FS::kStateNightmared ) ||
+		FS::HasUnitState( localState , FS::kStateCommandRestricted ) );
+	const bool invulnerable = haveState && FS::HasUnitState( localState , FS::kStateInvulnerable );
+	// Silence blocks abilities, mute blocks items - separately, so a silenced
+	// hero can still pop a BKB and a muted one can still Phase Shift.
+	const bool silenced = haveState && FS::HasUnitState( localState , FS::kStateSilenced );
+	const bool muted = haveState && FS::HasUnitState( localState , FS::kStateMuted );
+	const bool canAct = !cannotAct && !invulnerable && !( silenced && muted );
 	if ( !canAct )
-		m_Status = stunned ? "Stunned - cannot act" : "Invulnerable";
+		m_Status = invulnerable ? "Invulnerable" : "Disabled - cannot act";
 	// Already under a BKB: only damage/disables that go through spell immunity
 	// are still worth answering.
-	const bool alreadyImmune = offsets.hasMagicImmune &&
-		FS::ReadField<bool>( local->entity , offsets.magicImmune , false );
+	const bool alreadyImmune = haveState
+		? FS::HasUnitState( localState , FS::kStateMagicImmune )
+		: ( offsets.hasMagicImmune && FS::ReadField<bool>( local->entity , offsets.magicImmune , false ) );
 
 	const float triggerRange = Settings::Dodger::TriggerRange;
 	bool threatHandled = false;
@@ -1031,7 +1104,7 @@ auto CDodger::OnRender() -> void
 		if ( !canAct || m_Cast.active || now < m_NextDodgeTick )
 			return;
 
-		const auto ready = CollectResponses( entitySystem , offsets , *local );
+		const auto ready = CollectResponses( entitySystem , offsets , *local , !muted , !silenced );
 		// The explicit per-spell answer wins when we own it; the flag matcher
 		// is the fallback for everything not in that table.
 		const auto* chosen = SelectPreferredResponse( ready , threatName , flags , againstAlly , allyDistance );
@@ -1202,11 +1275,23 @@ auto CDodger::OnRender() -> void
 			const auto* entry = FS::FindAbilityEntry( cast.name );
 			const uint8_t flags = ClassifyThreat( cast.name , entry , cast.level , tableReach );
 			if ( flags == 0 )
+			{
+				// Logged because "nothing happened" is otherwise indistinguishable
+				// from "never saw the cast", and those have completely different
+				// fixes: this line means detection works and the spell simply is
+				// not on the danger list / under Min Danger Damage.
+				DEV_LOG( "[dodger] seen: %s cast %s - not treated as dangerous\n" ,
+					enemy.name.c_str() , cast.name.c_str() );
 				continue;
+			}
 			// A magical nuke or a normal disable is already handled by the
 			// spell immunity we are standing in.
 			if ( alreadyImmune && ( flags & ( kPure | kPhysical | kPierces ) ) == 0 )
+			{
+				DEV_LOG( "[dodger] %s cast %s - ignored: already spell immune\n" ,
+					enemy.name.c_str() , cast.name.c_str() );
 				continue;
+			}
 
 			float reach = FS::ReadCastRange( cast.ability , offsets , entry ? entry->castRange : 0.f );
 			reach = (std::max)( reach , tableReach );
@@ -1232,12 +1317,26 @@ auto CDodger::OnRender() -> void
 			// this: being stunned at full health is the thing to avoid. The
 			// damage here is the catalog's pre-mitigation number, so this is a
 			// proportion check, not a lethality calculation.
+			// A spell with an explicit counter in kPreferredCounters is exempt:
+			// naming the pair IS the decision that this spell gets answered.
+			// Thundergod's Wrath is the case that made this necessary - ~440
+			// magic damage is under a third of a healthy hero's pool, so the
+			// proportion check quietly held the Eul's back on exactly the
+			// spell the pair table says to use it for.
+			const bool knownPair = HasPreferredCounter( cast.name );
+
 			bool worthAnItem = true;
-			if ( ( flags & kDisable ) == 0 && entry && entry->IsUsableDamage() && local->health > 0 )
+			if ( !knownPair && ( flags & kDisable ) == 0 && entry && entry->IsUsableDamage() && local->health > 0 )
 			{
 				const float damage = entry->DamageForLevel( cast.level );
 				const float percentOfHealth = 100.f * damage / static_cast<float>( local->health );
 				worthAnItem = percentOfHealth >= Settings::Dodger::MinThreatHealthPercent;
+				if ( !worthAnItem )
+				{
+					DEV_LOG( "[dodger] %s cast %s - ignored: %.0f damage is %.0f%% of my %d hp, under Nuke vs My Health (%.0f%%)\n" ,
+						enemy.name.c_str() , cast.name.c_str() , damage , percentOfHealth , local->health ,
+						Settings::Dodger::MinThreatHealthPercent );
+				}
 			}
 
 			const float distanceToLocal = FS::Distance2D( enemy.origin , local->origin );
@@ -1288,7 +1387,18 @@ auto CDodger::OnRender() -> void
 			}
 
 			if ( !threatensLocal && !ally )
+			{
+				// The other silent case: the cast was classified dangerous but
+				// decided not to be OUR problem. Print the numbers that made
+				// that call so a wrong reach or a wrong facing read is visible
+				// instead of looking like a missed detection.
+				DEV_LOG( "[dodger] %s cast %s (flags=%u) - not aimed at us: distance=%.0f reach=%.0f%s%s\n" ,
+					enemy.name.c_str() , cast.name.c_str() , static_cast<unsigned>( flags ) ,
+					distanceToLocal , reach ,
+					hasFacing ? " facing-gated" : "" ,
+					worthAnItem ? "" : " below-health-threshold" );
 				continue;
+			}
 
 			ArmResponse( cast.name , enemy , threatensLocal ? nullptr : ally , flags , allyDistance );
 			threatHandled = true;

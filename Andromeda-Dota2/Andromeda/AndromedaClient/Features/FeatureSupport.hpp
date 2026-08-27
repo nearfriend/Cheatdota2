@@ -57,6 +57,12 @@ namespace FeatureSupport
 		uint32_t waitingToSpawn = 0;
 		// Unit state. Optional - a build that does not replicate these simply
 		// leaves the has* flag false and callers fall back to not knowing.
+		//
+		// m_nUnitState64 is the one that actually resolves on this build: the
+		// individual m_bStunned / m_bMagicImmune / m_bInvulnerable booleans all
+		// came back unresolved in a live capture (the dodger logged
+		// state-gates=000), so every state guard was silently inert.
+		uint32_t unitState = 0;
 		uint32_t magicImmune = 0;
 		uint32_t invulnerable = 0;
 		uint32_t stunned = 0;
@@ -68,6 +74,7 @@ namespace FeatureSupport
 		bool hasIsIllusion = false;
 		bool hasIsClone = false;
 		bool hasWaitingToSpawn = false;
+		bool hasUnitState = false;
 		bool hasMagicImmune = false;
 		bool hasInvulnerable = false;
 		bool hasStunned = false;
@@ -77,6 +84,35 @@ namespace FeatureSupport
 	// Retries internally (throttled) until the schema system is up, so it is
 	// safe to call every tick.
 	auto ResolveOffsets() -> const UnitOffsets&;
+
+	// Bit positions in m_nUnitState64 (Dota's MODIFIER_STATE enum).
+	//
+	// These indices are not guessed: the enum's names live in client.dll as a
+	// contiguous string table in declaration order, starting at
+	// MODIFIER_STATE_ROOTED, so the position of each name in that table IS its
+	// value. Re-derive with:
+	//   grep -a -b -o "MODIFIER_STATE_[A-Z_]*" client.dll | sort -n
+	enum UnitStateBit : uint32_t
+	{
+		kStateRooted = 0,
+		kStateDisarmed = 1,
+		kStateAttackImmune = 2,
+		kStateSilenced = 3,
+		kStateMuted = 4,
+		kStateStunned = 5,
+		kStateHexed = 6,
+		kStateInvisible = 7,
+		kStateInvulnerable = 8,
+		kStateMagicImmune = 9,
+		kStateNightmared = 11,
+		kStateFrozen = 19,
+		kStateCommandRestricted = 20,
+	};
+
+	// Returns false when this build does not replicate the mask at all, so
+	// callers can tell "no states set" from "we cannot see states".
+	auto TryReadUnitState( C_BaseEntity* unit , const UnitOffsets& offsets , uint64_t& out ) -> bool;
+	auto HasUnitState( uint64_t stateMask , UnitStateBit bit ) -> bool;
 
 	auto IsReadableRuntimeMemory( const void* ptr , size_t size = 1 ) -> bool;
 
@@ -145,6 +181,10 @@ namespace FeatureSupport
 	// usable scan code and is ignored outright.
 	auto SendKeyPress( WORD key ) -> bool;
 	auto SendLeftClick() -> bool;
+	// Absolute cursor move through SendInput, NOT SetCursorPos - the game only
+	// sees the former. Use this for restoring the cursor too, so the game's
+	// crosshair goes back with the Windows one.
+	auto MoveCursorToScreen( int screenX , int screenY ) -> bool;
 	auto MoveCursorToClientPoint( HWND window , const ImVec2& screen , POINT& previousOut ) -> bool;
 	// groundTargeted=false raises the aim point onto the unit's model;
 	// ground-targeted casts must aim at the origin itself or they land behind

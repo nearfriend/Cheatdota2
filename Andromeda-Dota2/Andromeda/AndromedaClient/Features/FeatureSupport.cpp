@@ -101,6 +101,12 @@ auto FeatureSupport::ResolveOffsets() -> const UnitOffsets&
 	offsets.hasIsIllusion = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsIllusion" , offsets.isIllusion );
 	offsets.hasIsClone = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsClone" , offsets.isClone );
 	offsets.hasWaitingToSpawn = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_bIsWaitingToSpawn" , offsets.waitingToSpawn );
+	// The real one: a live capture showed none of the individual state
+	// booleans below resolving, while Dota keeps every unit state in this
+	// single 64-bit mask.
+	offsets.hasUnitState = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_nUnitState64" , offsets.unitState ) ||
+		schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_nUnitState" , offsets.unitState );
+
 	// Both spellings appear in this build's client.dll strings; which one (if
 	// either) is a replicated C_DOTA_BaseNPC field is a runtime question, so
 	// ask for both and let the has* flag say whether anyone answered.
@@ -114,6 +120,19 @@ auto FeatureSupport::ResolveOffsets() -> const UnitOffsets&
 		hasSceneNode && hasAbsOrigin && hasAbilityLevel && hasAbilityCooldown && hasAbilityMana;
 
 	return offsets;
+}
+
+auto FeatureSupport::TryReadUnitState( C_BaseEntity* unit , const UnitOffsets& offsets , uint64_t& out ) -> bool
+{
+	out = 0;
+	if ( !unit || !offsets.hasUnitState )
+		return false;
+	return TryReadField( unit , offsets.unitState , out );
+}
+
+auto FeatureSupport::HasUnitState( uint64_t stateMask , UnitStateBit bit ) -> bool
+{
+	return ( stateMask & ( 1ULL << static_cast<uint32_t>( bit ) ) ) != 0;
 }
 
 auto FeatureSupport::ToLower( const std::string& value ) -> std::string
@@ -369,6 +388,42 @@ auto FeatureSupport::SendLeftClick() -> bool
 	return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
 }
 
+auto FeatureSupport::MoveCursorToScreen( int screenX , int screenY ) -> bool
+{
+	// SetCursorPos teleports the OS cursor directly - it does NOT go through
+	// the same input pipeline as a real mouse move, so it never generates a
+	// WM_INPUT / raw-input mouse event. Source 2 reads raw input to decide
+	// where the player is pointing, so a SetCursorPos-only move relocates the
+	// Windows arrow while the game's own crosshair - the thing that decides
+	// where a targeted cast lands - never moves. The targeted cast then
+	// resolves at whatever the player's real cursor was sitting on, which
+	// reads in game as "the item did nothing".
+	//
+	// This is the same conclusion CKillStealer and CLastHitAssistant each
+	// reached independently; routing the move through SendInput puts it in
+	// the exact same synthetic-input stream as the key press and click that
+	// follow it.
+	const int virtualX = GetSystemMetrics( SM_XVIRTUALSCREEN );
+	const int virtualY = GetSystemMetrics( SM_YVIRTUALSCREEN );
+	const int virtualW = GetSystemMetrics( SM_CXVIRTUALSCREEN );
+	const int virtualH = GetSystemMetrics( SM_CYVIRTUALSCREEN );
+
+	if ( virtualW > 1 && virtualH > 1 )
+	{
+		INPUT input{};
+		input.type = INPUT_MOUSE;
+		input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+		input.mi.dx = static_cast<LONG>( ( static_cast<long long>( screenX - virtualX ) * 65535LL ) / ( virtualW - 1 ) );
+		input.mi.dy = static_cast<LONG>( ( static_cast<long long>( screenY - virtualY ) * 65535LL ) / ( virtualH - 1 ) );
+		if ( SendInput( 1 , &input , sizeof( INPUT ) ) == 1 )
+			return true;
+	}
+
+	// Fall back only when SendInput could not be queued at all (no valid
+	// virtual-screen metrics) - a visibly wrong position beats not moving.
+	return SetCursorPos( screenX , screenY ) != FALSE;
+}
+
 auto FeatureSupport::MoveCursorToClientPoint( HWND window , const ImVec2& screen , POINT& previousOut ) -> bool
 {
 	RECT client{};
@@ -382,7 +437,7 @@ auto FeatureSupport::MoveCursorToClientPoint( HWND window , const ImVec2& screen
 		return false;
 
 	GetCursorPos( &previousOut );
-	return SetCursorPos( target.x , target.y ) != FALSE;
+	return MoveCursorToScreen( target.x , target.y );
 }
 
 auto FeatureSupport::AimCursorAtWorld( HWND window , const Vector3& worldPoint , bool groundTargeted ) -> bool
