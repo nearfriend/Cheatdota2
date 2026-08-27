@@ -57,7 +57,6 @@ namespace
 		uint32_t damageMax = 0;
 		uint32_t damageBonus = 0;
 		uint32_t attackRange = 0;
-		uint32_t maxMana = 0;
 		uint32_t playerOwnerId = 0;
 		uint32_t heroPlayerId = 0;
 		uint32_t assignedHero = 0;
@@ -69,7 +68,6 @@ namespace
 		bool usable = false;
 		bool combatUsable = false;
 		bool hasDamageMax = false;
-		bool hasMaxMana = false;
 		bool hasPlayerOwnerId = false;
 		bool hasHeroPlayerId = false;
 		bool hasAssignedHero = false;
@@ -175,10 +173,6 @@ namespace
 		offsets.hasDamageMax = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageMax", offsets.damageMax);
 		const bool hasDamageBonus = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageBonus", offsets.damageBonus);
 		const bool hasAttackRange = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iAttackRange", offsets.attackRange);
-		// Only heroes and casting summons carry a mana pool - lane creeps have
-		// none - so this is what lets the classifier accept a creep on stats
-		// alone without letting a low-health hero in behind it.
-		offsets.hasMaxMana = schema->TryGetOffset("C_DOTA_BaseNPC", "m_flMaxMana", offsets.maxMana);
 		offsets.hasHeroPlayerId = schema->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_iPlayerID", offsets.heroPlayerId) ||
 								  schema->TryGetOffset("C_DOTA_BaseNPC", "m_iPlayerID", offsets.heroPlayerId);
 		offsets.hasPlayerOwnerId = schema->TryGetOffset("C_DOTA_BaseNPC", "m_nPlayerOwnerID", offsets.playerOwnerId);
@@ -404,7 +398,10 @@ namespace
 		return EntityNameContains(entity, "npc_dota_creep") ||
 			   EntityNameContains(entity, "creep_lane") ||
 			   EntityNameContains(entity, "creep_siege") ||
+			   EntityNameContains(entity, "creep_melee") ||
+			   EntityNameContains(entity, "creep_ranged") ||
 			   EntityNameContains(entity, "basenpc_creep") ||
+			   EntityNameContains(entity, "flagbearer") ||
 			   EntityNameContains(entity, "siege") ||
 			   EntityNameContains(entity, "goodguys_melee") ||
 			   EntityNameContains(entity, "goodguys_ranged") ||
@@ -834,7 +831,7 @@ namespace
 	// "is this player-controlled?" test answered yes for Roshan and neutrals
 	// alike (reject log: every sample, including team-4 Roshan, came out
 	// playerOwned=1). Summons are excluded by name instead.
-	auto IsLaneCreep(C_BaseEntity *entity, const LastHitOffsets &offsets,
+	auto IsLaneCreep(C_BaseEntity *entity,
 					 int health, int maxHealth, uint8_t team) -> bool
 	{
 		if (!entity || health <= 0 || maxHealth <= 0)
@@ -846,34 +843,40 @@ namespace
 			return false;
 		if (LooksLikeHeroEntity(entity) || LooksLikeNonCreepTarget(entity))
 			return false;
-		if (LooksLikeLaneCreepByName(entity))
-			return true;
 
-		// Anything else on a playing team is accepted on its stats alone. An
-		// allow-list of names cannot be complete - creeps that carry a name
-		// nobody anticipated (or none at all) were being dropped even at 1 hp -
-		// so the name is only ever used to REJECT, never as a requirement.
+		// A creep must NAME itself as one. There was briefly a fallback that
+		// accepted any unit fitting a creep-shaped stats envelope (health
+		// band, has an attack, no mana pool) on the theory that the name
+		// allow-list could not be complete - that is what put stars on trees
+		// and towers.
 		//
-		// What the envelope still keeps out, now that the deny list has had
-		// its say: heroes and casting summons (only they have a mana pool),
-		// towers/barracks/the ancient (all above the health cap - mega melee
-		// creeps top out near 1100 hp, a tier-1 tower starts at 1800), and
-		// wards, couriers and barracks again (no attack at all).
-		if (maxHealth < 80 || maxHealth > 1600)
-			return false;
-		if (offsets.hasMaxMana && ReadField<float>(entity, offsets.maxMana, 0.f) > 0.f)
-			return false;
-
-		const int damageMin = ReadField<int>(entity, offsets.damageMin);
-		const int attackRange = ReadField<int>(entity, offsets.attackRange);
-		return damageMin >= 1 && attackRange >= 50 && attackRange <= 1000;
+		// Two reasons it can never come back. The health/damage/mana reads it
+		// leaned on are C_DOTA_BaseNPC fields: on a tree, a prop, or any of
+		// the thousands of non-NPC entities the chunk walk now reaches, those
+		// offsets land outside the object entirely, so the "stats" being
+		// tested were unrelated memory that passed the envelope by accident.
+		// And the creeps it was meant to rescue were never missing for want of
+		// a name - they were missing because the scan was bounded by
+		// GetHighestEntityIndex() (see CollectCandidatesFresh). With that
+		// fixed, the name is the only identity signal this build actually
+		// gives us, so it decides.
+		//
+		// If a creep ever does go unstarred, the "unstarred" log line below
+		// prints its name: the fix is one more needle here, never a return to
+		// guessing from stats.
+		return LooksLikeLaneCreepByName(entity);
 	}
 
 	// Names every creep-plausible unit the classifier turned down, once per
-	// distinct name per 5s window. A creep that never gets a star can then be
-	// identified from the log by name and stats instead of guessed at.
-	auto LogUnstarredUnit(C_BaseEntity *entity, const LastHitOffsets &offsets,
-						  int health, int maxHealth, uint8_t team) -> void
+	// distinct name per 5s window, so a creep that never gets a star can be
+	// identified by name instead of guessed at.
+	//
+	// Deliberately reads nothing but m_iHealth / m_iMaxHealth / m_iTeamNum -
+	// the three fields every entity actually has. Printing damage or mana here
+	// would mean reaching into C_DOTA_BaseNPC offsets on entities that are not
+	// NPCs at all, which is the same out-of-bounds read that used to star
+	// trees.
+	auto LogUnstarredUnit(C_BaseEntity *entity, int health, int maxHealth, uint8_t team) -> void
 	{
 		static std::array<std::array<char, 64>, 16> seenNames{};
 		static size_t seenCount = 0;
@@ -899,11 +902,8 @@ namespace
 		std::snprintf(seenNames[seenCount].data(), seenNames[seenCount].size(), "%s", name);
 		++seenCount;
 
-		DEV_LOG("[last-hit] unstarred name=\"%s\" hp=%d/%d team=%u damage=%d range=%d maxMana=%.0f\n",
-				name, health, maxHealth, static_cast<unsigned int>(team),
-				ReadField<int>(entity, offsets.damageMin),
-				ReadField<int>(entity, offsets.attackRange),
-				offsets.hasMaxMana ? ReadField<float>(entity, offsets.maxMana, 0.f) : -1.f);
+		DEV_LOG("[last-hit] unstarred name=\"%s\" hp=%d/%d team=%u\n",
+				name, health, maxHealth, static_cast<unsigned int>(team));
 	}
 
 	auto LogLastHitScan(const char *reason, const LocalHeroInfo &hero,
@@ -1007,14 +1007,14 @@ namespace
 				const int health = ReadField<int>(entity, offsets.health);
 				const int maxHealth = ReadField<int>(entity, offsets.maxHealth);
 				const uint8_t team = ReadField<uint8_t>(entity, offsets.team);
-				if (!IsLaneCreep(entity, offsets, health, maxHealth, team))
+				if (!IsLaneCreep(entity, health, maxHealth, team))
 				{
 					// Only creep-plausible rejects are worth naming: alive, on a
 					// playing team, and small enough to be a creep rather than a
 					// building.
 					if (health > 0 && maxHealth > 0 && maxHealth <= 2000 && IsPlayableTeam(team) &&
 						!LooksLikeHeroEntity(entity))
-						LogUnstarredUnit(entity, offsets, health, maxHealth, team);
+						LogUnstarredUnit(entity, health, maxHealth, team);
 					continue;
 				}
 				++stats.laneLike;
@@ -1435,7 +1435,7 @@ namespace
 			const int health = ReadField<int>(entity, offsets.health);
 			const int maxHealth = ReadField<int>(entity, offsets.maxHealth);
 			const uint8_t team = ReadField<uint8_t>(entity, offsets.team);
-			if (!IsLaneCreep(entity, offsets, health, maxHealth, team))
+			if (!IsLaneCreep(entity, health, maxHealth, team))
 				continue;
 			if (static_cast<float>(health) > candidate.lethalHealth)
 				continue;
