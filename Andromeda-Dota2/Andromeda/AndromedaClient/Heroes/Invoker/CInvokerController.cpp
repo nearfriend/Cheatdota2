@@ -625,6 +625,11 @@ const char* CInvokerController::GetSpellDisplayName( int index )
 	return index >= 0 && index < kInvokerSpellCount ? kInvokerSpells[index].displayName : "?";
 }
 
+const char* CInvokerController::GetSpellAbilityName( int index )
+{
+	return index >= 0 && index < kInvokerSpellCount ? kInvokerSpells[index].abilityName : "";
+}
+
 // Builds the cast queue from the user's spell order/enable settings and kicks
 // off the sequence; each entry then runs the full orb -> Invoke -> cast
 // pipeline via TickSequence/StartCombo.

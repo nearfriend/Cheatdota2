@@ -28,6 +28,9 @@ public:
 	// Spell table accessors for the menu's Invoker spell-order editor.
 	static int GetSpellCount();
 	static const char* GetSpellDisplayName( int index );
+	// Internal ability name (e.g. "invoker_tornado"), which is also the file
+	// name of the spell icon in Dota's spellicons directory.
+	static const char* GetSpellAbilityName( int index );
 
 	struct AbilityEntry
 	{

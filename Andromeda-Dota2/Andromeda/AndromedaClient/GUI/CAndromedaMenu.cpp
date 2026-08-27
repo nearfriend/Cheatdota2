@@ -19,6 +19,7 @@
 #include <array>
 #include <filesystem>
 #include <winreg.h>
+#include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -143,6 +144,13 @@ struct MeepoTextures
 	std::string heroPathUsed;
 	std::string spellPathsUsed[4];
 };
+
+// Spell icons keyed by internal ability name (e.g. "invoker_tornado"), loaded
+// on first use. A failed lookup is cached too, so a missing icon costs one
+// filesystem probe rather than one per frame; callers fall back to text.
+static std::unordered_map<std::string , GuiTexture> g_SpellIcons;
+
+static GuiTexture* GetSpellIcon( const std::string& abilityName );
 
 static MeepoTextures g_MeepoTextures{};
 static GuiTexture g_LogoTexture{};
@@ -313,6 +321,224 @@ static void TryLoadMeepoTextures()
 			DEV_LOG( "[heroes] spell icon %d loaded: %s\n" , i + 1 , g_MeepoTextures.spellPathsUsed[i].c_str() );
 		else
 			DEV_LOG( "[heroes] spell icon %d not found (checked %zu paths)\n" , i + 1 , spellPaths.size() );
+	}
+}
+
+static GuiTexture* GetSpellIcon( const std::string& abilityName )
+{
+	if ( abilityName.empty() )
+		return nullptr;
+
+	if ( const auto it = g_SpellIcons.find( abilityName ); it != g_SpellIcons.end() )
+		return it->second.srv ? &it->second : nullptr;
+
+	const std::wstring wideName = ansi_to_unicode( abilityName );
+	const std::wstring dllBase = ansi_to_unicode( GetDllDir() );
+	// "abilities" is where the shipped icon set actually lives; "Spells" only
+	// holds the handful of Meepo files the older UI used.
+	std::vector<std::wstring> paths =
+	{
+		dllBase + L"Assets\\Icons\\abilities\\" + wideName + L".png",
+		dllBase + L"Assets\\Icons\\Spells\\" + wideName + L".png",
+	};
+	for ( const auto& base : GetDotaBaseCandidates() )
+		paths.push_back( base + L"game\\dota\\panorama\\images\\spellicons\\" + wideName + L".png" );
+
+	GuiTexture texture{};
+	std::string usedPath;
+	const bool loaded = LoadTextureFromPaths( paths , texture , usedPath );
+	DEV_LOG( "[ui] spell icon '%s' %s\n" , abilityName.c_str() ,
+		loaded ? usedPath.c_str() : "not found" );
+
+	// Cached either way - an empty entry marks "already probed, unavailable".
+	auto& stored = g_SpellIcons[abilityName];
+	stored = texture;
+	return stored.srv ? &stored : nullptr;
+}
+
+struct SpellStripEntry
+{
+	std::string displayName;
+	std::string abilityName;
+	// Optional hotkey shown in the corner (Q/W/E/...). Empty for Invoker,
+	// whose spells are invoked rather than bound to a fixed slot key.
+	std::string keyLabel;
+};
+
+// Horizontal spell-order strip shared by every hero: icon tiles in cast order,
+// click to include/exclude, drag to reorder. `order` is a permutation of
+// 0..count-1 indexing into `entries`; both it and `enabled` are edited in place.
+static void DrawSpellOrderStrip( const char* dragType , int count , int* order , bool* enabled ,
+	const std::vector<SpellStripEntry>& entries )
+{
+	if ( count <= 0 || !order || !enabled || entries.empty() )
+		return;
+
+	constexpr float kIconSize = 46.f;
+	constexpr float kIconGap = 7.f;
+	constexpr float kIconRounding = 6.f;
+
+	ImGui::Spacing();
+	const ImVec2 stripOrigin = ImGui::GetCursorScreenPos();
+	const float stripWidth = ImGui::GetContentRegionAvail().x;
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+
+	// Recessed tray so the icon row reads as one control.
+	dl->AddRectFilled( ImVec2( stripOrigin.x - 6.f , stripOrigin.y - 5.f ) ,
+		ImVec2( stripOrigin.x + stripWidth , stripOrigin.y + kIconSize + 11.f ) ,
+		IM_COL32( 13 , 14 , 16 , 200 ) , 7.f );
+
+	// The reorder is applied after the loop - mutating the order mid-iteration
+	// would move tiles out from under the cursor.
+	int dragFrom = -1;
+	int dragTo = -1;
+
+	for ( int position = 0; position < count; ++position )
+	{
+		const int spell = order[position];
+		if ( spell < 0 || spell >= static_cast<int>( entries.size() ) )
+			continue;
+
+		const SpellStripEntry& entry = entries[spell];
+		const bool isEnabled = enabled[spell];
+		GuiTexture* icon = GetSpellIcon( entry.abilityName );
+
+		ImGui::PushID( position );
+		ImGui::BeginGroup();
+
+		// Hit-test first, then paint - keeps layout and hover state correct
+		// while still drawing a fully custom tile.
+		const ImVec2 p0 = ImGui::GetCursorScreenPos();
+		if ( ImGui::InvisibleButton( "##spellToggle" , ImVec2( kIconSize , kIconSize ) ) )
+			enabled[spell] = !isEnabled;
+		const bool hovered = ImGui::IsItemHovered();
+
+		// ImGui only promotes the press to a drag once the cursor passes its
+		// threshold, so a plain click still falls through to the toggle above.
+		bool isDragSource = false;
+		if ( ImGui::BeginDragDropSource( ImGuiDragDropFlags_SourceNoPreviewTooltip ) )
+		{
+			ImGui::SetDragDropPayload( dragType , &position , sizeof( int ) );
+			isDragSource = true;
+			ImGui::EndDragDropSource();
+		}
+
+		bool isDropTarget = false;
+		if ( ImGui::BeginDragDropTarget() )
+		{
+			if ( const ImGuiPayload* payload = ImGui::AcceptDragDropPayload( dragType ) )
+			{
+				dragFrom = *static_cast<const int*>( payload->Data );
+				dragTo = position;
+			}
+			else if ( ImGui::GetDragDropPayload() && ImGui::GetDragDropPayload()->IsDataType( dragType ) )
+			{
+				isDropTarget = true;
+			}
+			ImGui::EndDragDropTarget();
+		}
+
+		if ( hovered && !isDragSource && !ImGui::IsMouseDragging( ImGuiMouseButton_Left ) )
+		{
+			ImGui::SetTooltip( "%s\n%s\nDrag to reorder" , entry.displayName.c_str() ,
+				isEnabled ? "Click to exclude" : "Click to include" );
+		}
+
+		const ImVec2 p1( p0.x + kIconSize , p0.y + kIconSize );
+		dl->AddRectFilled( p0 , p1 , IM_COL32( 24 , 25 , 29 , 255 ) , kIconRounding );
+
+		if ( icon && icon->srv )
+		{
+			// Excluded spells stay visible but dimmed, so the whole kit is
+			// always in view and one click brings one back.
+			const ImU32 tint = isEnabled
+				? ( hovered ? IM_COL32( 255 , 255 , 255 , 255 ) : IM_COL32( 236 , 236 , 240 , 255 ) )
+				: IM_COL32( 255 , 255 , 255 , 60 );
+			dl->AddImageRounded( reinterpret_cast<ImTextureID>( icon->srv ) , p0 , p1 ,
+				ImVec2( 0 , 0 ) , ImVec2( 1 , 1 ) , tint , kIconRounding );
+		}
+		else
+		{
+			// No icon on disk - keep the tile usable with a label.
+			const char* label = !entry.keyLabel.empty() ? entry.keyLabel.c_str() : entry.displayName.c_str();
+			const size_t shown = ( std::min )( std::strlen( label ) , static_cast<size_t>( 7 ) );
+			dl->AddText( ImVec2( p0.x + 4.f , p0.y + kIconSize * 0.5f - 6.f ) ,
+				ImGui::GetColorU32( isEnabled ? ImGuiCol_Text : ImGuiCol_TextDisabled ) , label , label + shown );
+		}
+
+		if ( !isEnabled )
+			dl->AddRectFilled( p0 , p1 , IM_COL32( 8 , 9 , 11 , 130 ) , kIconRounding );
+
+		// The tile being dragged fades; the one under the cursor shows where
+		// it will land.
+		if ( isDragSource )
+			dl->AddRectFilled( p0 , p1 , IM_COL32( 8 , 9 , 11 , 150 ) , kIconRounding );
+
+		ImU32 borderColor = isEnabled ? ( hovered ? kAccentTextColor : kAccentColor ) : IM_COL32( 58 , 60 , 66 , 255 );
+		float borderWidth = isEnabled ? 2.f : 1.f;
+		if ( isDropTarget )
+		{
+			borderColor = IM_COL32( 255 , 214 , 102 , 255 );
+			borderWidth = 3.f;
+			dl->AddLine( ImVec2( p0.x - 3.f , p0.y ) , ImVec2( p0.x - 3.f , p1.y ) , IM_COL32( 255 , 214 , 102 , 255 ) , 3.f );
+		}
+		dl->AddRect( p0 , p1 , borderColor , kIconRounding , 0 , borderWidth );
+
+		// Cast-position badge, counting only spells actually queued.
+		if ( isEnabled )
+		{
+			int castStep = 1;
+			for ( int i = 0; i < position; ++i )
+			{
+				const int earlier = order[i];
+				if ( earlier >= 0 && earlier < static_cast<int>( entries.size() ) && enabled[earlier] )
+					++castStep;
+			}
+			char badge[8];
+			snprintf( badge , sizeof( badge ) , "%d" , castStep );
+			const ImVec2 badgeSize = ImGui::CalcTextSize( badge );
+			const ImVec2 b0( p0.x + 2.f , p0.y + 2.f );
+			const ImVec2 b1( b0.x + badgeSize.x + 8.f , b0.y + badgeSize.y + 2.f );
+			dl->AddRectFilled( b0 , b1 , kAccentColor , 3.f );
+			dl->AddText( ImVec2( b0.x + 4.f , b0.y + 1.f ) , IM_COL32( 255 , 255 , 255 , 255 ) , badge );
+		}
+
+		// Hotkey chip, for heroes whose spells sit on fixed slot keys.
+		if ( !entry.keyLabel.empty() )
+		{
+			const ImVec2 keySize = ImGui::CalcTextSize( entry.keyLabel.c_str() );
+			const ImVec2 k1( p1.x - 2.f , p1.y - 2.f );
+			const ImVec2 k0( k1.x - keySize.x - 7.f , k1.y - keySize.y - 1.f );
+			dl->AddRectFilled( k0 , k1 , IM_COL32( 10 , 11 , 13 , 220 ) , 3.f );
+			dl->AddText( ImVec2( k0.x + 3.5f , k0.y ) ,
+				isEnabled ? IM_COL32( 225 , 226 , 232 , 255 ) : IM_COL32( 130 , 132 , 138 , 255 ) ,
+				entry.keyLabel.c_str() );
+		}
+
+		ImGui::EndGroup();
+		ImGui::PopID();
+
+		if ( position < count - 1 )
+			ImGui::SameLine( 0.f , kIconGap );
+	}
+
+	// Lift the dragged spell out and re-insert it at the drop position,
+	// shifting everything between - a plain swap would scramble the rest of
+	// the order on a long drag.
+	if ( dragFrom >= 0 && dragTo >= 0 && dragFrom != dragTo && dragFrom < count && dragTo < count )
+	{
+		const int moved = order[dragFrom];
+		if ( dragFrom < dragTo )
+		{
+			for ( int i = dragFrom; i < dragTo; ++i )
+				order[i] = order[i + 1];
+		}
+		else
+		{
+			for ( int i = dragFrom; i > dragTo; --i )
+				order[i] = order[i - 1];
+		}
+		order[dragTo] = moved;
 	}
 }
 
@@ -1046,10 +1272,12 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			// The auto-combo card's content (toggles + keybind + cast-order list)
-			// exceeds the visible card, which scrolls internally.
 			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) );
-			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			// The auto-combo card holds more than fits (toggles, keybind, target
+			// and the spell strip), so it keeps its scrollbar and wheel support
+			// instead of clipping the overflow away.
+			const ImGuiWindowFlags settingsCardFlags = autoComboPage ? 0 : ImGuiWindowFlags_NoScrollbar;
+			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , settingsCardFlags );
 			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
@@ -1153,17 +1381,8 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 					}
 				}
 
-				ImGui::Text( "Target entindex" );
-				ImGui::SameLine();
-				static int targetInputAutoCombo = -1;
-				if ( targetInputAutoCombo < 0 )
-					targetInputAutoCombo = Settings::AutoCombo::TargetEntIndex;
-				ImGui::SetNextItemWidth( 120.f );
-				if ( ImGui::InputInt( "##autoCombo.target" , &targetInputAutoCombo ) )
-					Settings::AutoCombo::TargetEntIndex = targetInputAutoCombo;
-				ImGui::SameLine();
-				ImGui::TextDisabled( "-1 = auto-target nearest enemy hero" );
-
+				// No manual target field: TargetEntIndex stays at its default -1,
+				// which means "auto-target the nearest enemy hero".
 				const std::array<std::string , 6>* slotNames = nullptr;
 				if ( auto* pClient = GetAndromedaClient() )
 					slotNames = &pClient->GetAutoCombo().GetSlotNames();
@@ -1194,36 +1413,22 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 						}
 					}
 					ImGui::SameLine();
-					ImGui::TextDisabled( "top = cast first, uncheck = skip" );
+					ImGui::TextDisabled( "left = cast first, drag to reorder" );
 
-					for ( int position = 0; position < Settings::Heroes::Invoker::SpellCount; ++position )
+					std::vector<SpellStripEntry> invokerEntries;
+					invokerEntries.reserve( Settings::Heroes::Invoker::SpellCount );
+					for ( int i = 0; i < Settings::Heroes::Invoker::SpellCount; ++i )
 					{
-						const int spell = Settings::Heroes::Invoker::SpellOrder[position];
-						if ( spell < 0 || spell >= Settings::Heroes::Invoker::SpellCount )
-							continue;
-
-						ImGui::PushID( position );
-						ImGui::Checkbox( "##invokerSpellEnabled" , &Settings::Heroes::Invoker::SpellEnabled[spell] );
-						ImGui::SameLine();
-						ImGui::BeginDisabled( position == 0 );
-						if ( ImGui::ArrowButton( "##invokerSpellUp" , ImGuiDir_Up ) )
-							std::swap( Settings::Heroes::Invoker::SpellOrder[position] , Settings::Heroes::Invoker::SpellOrder[position - 1] );
-						ImGui::EndDisabled();
-						ImGui::SameLine();
-						ImGui::BeginDisabled( position == Settings::Heroes::Invoker::SpellCount - 1 );
-						if ( ImGui::ArrowButton( "##invokerSpellDown" , ImGuiDir_Down ) )
-							std::swap( Settings::Heroes::Invoker::SpellOrder[position] , Settings::Heroes::Invoker::SpellOrder[position + 1] );
-						ImGui::EndDisabled();
-						ImGui::SameLine();
-
-						const char* spellName = CInvokerController::GetSpellDisplayName( spell );
-						if ( !Settings::Heroes::Invoker::SpellEnabled[spell] )
-							ImGui::TextDisabled( "%d. %s (skipped)" , position + 1 , spellName );
-						else
-							ImGui::Text( "%d. %s" , position + 1 , spellName );
-						ImGui::PopID();
+						invokerEntries.push_back( { CInvokerController::GetSpellDisplayName( i ) ,
+							CInvokerController::GetSpellAbilityName( i ) , std::string() } );
 					}
-					ImGui::TextDisabled( "Cast via orb sequence + Invoke; spells retry while Invoke is on cooldown." );
+
+					DrawSpellOrderStrip( "INVOKER_SPELL_ORDER" , Settings::Heroes::Invoker::SpellCount ,
+						Settings::Heroes::Invoker::SpellOrder , Settings::Heroes::Invoker::SpellEnabled ,
+						invokerEntries );
+
+					ImGui::Spacing();
+					ImGui::TextDisabled( "Left to right = cast order. Click a spell to include or exclude it, drag to reorder." );
 				}
 				else
 				{
@@ -1238,39 +1443,29 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 						}
 					}
 					ImGui::SameLine();
-					ImGui::TextDisabled( "top = cast first, uncheck = skip that spell" );
+					ImGui::TextDisabled( "left = cast first, drag to reorder" );
 
 					static const char* kSlotKeys[Settings::AutoCombo::SpellSlotCount] = { "Q" , "W" , "E" , "D" , "F" , "R" };
 
-					for ( int position = 0; position < Settings::AutoCombo::SpellSlotCount; ++position )
+					// Icons come from the live ability names, so the strip shows
+					// whatever hero is actually being played.
+					std::vector<SpellStripEntry> slotEntries;
+					slotEntries.reserve( Settings::AutoCombo::SpellSlotCount );
+					for ( int slot = 0; slot < Settings::AutoCombo::SpellSlotCount; ++slot )
 					{
-						const int slot = Settings::AutoCombo::SpellOrder[position];
-						if ( slot < 0 || slot >= Settings::AutoCombo::SpellSlotCount )
-							continue;
-
-						ImGui::PushID( position );
-						ImGui::Checkbox( "##spellEnabled" , &Settings::AutoCombo::SpellEnabled[slot] );
-						ImGui::SameLine();
-						ImGui::BeginDisabled( position == 0 );
-						if ( ImGui::ArrowButton( "##spellUp" , ImGuiDir_Up ) )
-							std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position - 1] );
-						ImGui::EndDisabled();
-						ImGui::SameLine();
-						ImGui::BeginDisabled( position == Settings::AutoCombo::SpellSlotCount - 1 );
-						if ( ImGui::ArrowButton( "##spellDown" , ImGuiDir_Down ) )
-							std::swap( Settings::AutoCombo::SpellOrder[position] , Settings::AutoCombo::SpellOrder[position + 1] );
-						ImGui::EndDisabled();
-						ImGui::SameLine();
-
-						const char* liveName = slotNames && !( *slotNames )[slot].empty() ? ( *slotNames )[slot].c_str() : nullptr;
-						if ( !Settings::AutoCombo::SpellEnabled[slot] )
-							ImGui::TextDisabled( "%d. [%s] %s (skipped)" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
-						else
-							ImGui::Text( "%d. [%s] %s" , position + 1 , kSlotKeys[slot] , liveName ? liveName : "Spell" );
-						ImGui::PopID();
+						const std::string liveName = slotNames ? ( *slotNames )[slot] : std::string();
+						slotEntries.push_back( { liveName.empty() ? std::string( "Slot " ) + kSlotKeys[slot] : liveName ,
+							liveName , kSlotKeys[slot] } );
 					}
+
+					DrawSpellOrderStrip( "HERO_SPELL_ORDER" , Settings::AutoCombo::SpellSlotCount ,
+						Settings::AutoCombo::SpellOrder , Settings::AutoCombo::SpellEnabled , slotEntries );
+
+					ImGui::Spacing();
 					if ( !slotNames || ( *slotNames )[0].empty() )
-						ImGui::TextDisabled( "Spell names appear once you're in a match with your hero." );
+						ImGui::TextDisabled( "Spell icons appear once you're in a match with your hero." );
+					else
+						ImGui::TextDisabled( "Left to right = cast order. Click a spell to include or exclude it, drag to reorder." );
 				}
 
 				ImGui::EndDisabled();
@@ -1280,6 +1475,10 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 					const auto& autoCombo = pClient->GetAutoCombo();
 					ImGui::Text( "Status: %s", autoCombo.GetStatus().c_str() );
 				}
+
+				// Breathing room under the last row so the scrolled-to-bottom
+				// state doesn't sit flush against the card edge.
+				ImGui::Dummy( ImVec2( 0.f , 14.f ) );
 			}
 			else
 			{
