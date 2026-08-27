@@ -440,6 +440,42 @@ auto FeatureSupport::MoveCursorToClientPoint( HWND window , const ImVec2& screen
 	return MoveCursorToScreen( target.x , target.y );
 }
 
+auto FeatureSupport::ProjectWorldToClient( HWND window , const Vector3& worldPoint , bool groundTargeted , ImVec2& outScreen ) -> bool
+{
+	outScreen = ImVec2( 0.f , 0.f );
+
+	ImVec2 screen{};
+	bool projected = false;
+	if ( !groundTargeted )
+	{
+		Vector3 raised = worldPoint;
+		raised.m_z += 80.f;
+		projected = Math::WorldToScreen( raised , screen );
+	}
+	if ( !projected && !Math::WorldToScreen( worldPoint , screen ) )
+		return false;
+
+	RECT client{};
+	if ( !GetClientRect( window , &client ) || client.right <= 0 || client.bottom <= 0 )
+		return false;
+
+	outScreen = screen;
+
+	// MoveCursorToClientPoint CLAMPS an out-of-view point to the window edge,
+	// which is silently wrong for a click: a unit-target cast aimed at a hero
+	// the camera is not looking at ends up clicking the screen border, where
+	// there is no unit, and the cast never happens. Callers that are about to
+	// click need to know the point is genuinely visible first.
+	const float width = static_cast<float>( client.right );
+	const float height = static_cast<float>( client.bottom );
+	// The bottom band is Dota's HUD - a click there hits the shop/inventory
+	// panel rather than the world.
+	constexpr float kHudTopFraction = 0.80f;
+	constexpr float kEdgeMargin = 12.f;
+	return screen.x >= kEdgeMargin && screen.x <= width - kEdgeMargin &&
+		screen.y >= kEdgeMargin && screen.y <= height * kHudTopFraction;
+}
+
 auto FeatureSupport::AimCursorAtWorld( HWND window , const Vector3& worldPoint , bool groundTargeted ) -> bool
 {
 	ImVec2 screen{};

@@ -67,13 +67,27 @@ namespace
 	// on its own message loop, not synchronously with SendInput, so the cursor
 	// has to still be on the aim point when the game gets around to the key.
 	constexpr uint32_t kCastSettleMs = 40;
-	constexpr uint32_t kCastExpiryMs = 900;
+	constexpr uint32_t kCastExpiryMs = 1200;
 	// After a counter fires, hold off - otherwise the follow-up cooldown edge
 	// of the same spell (or the next spell of the same combo) burns every
 	// escape item we own on one initiation.
 	constexpr uint32_t kDodgeCooldownMs = 1500;
 	// One cast must not be reported twice by the two detectors above.
 	constexpr uint32_t kCastDedupeMs = 1000;
+	// How long after firing to re-read the item/ability and confirm it went on
+	// cooldown. Long enough for the server to acknowledge the order, short
+	// enough to still be the same fight.
+	constexpr uint32_t kVerifyDelayMs = 500;
+	// Gap between the ability/item key and the confirming click. Matches the
+	// 40ms CKillStealer settled on - long enough for Source 2 to be in
+	// targeting mode, short enough to stay inside the cast point we are racing.
+	constexpr uint32_t kClickDelayMs = 45;
+	// Extra time the cursor stays parked after the click before it is restored.
+	// Gap between the two presses of a self-cast double tap.
+	constexpr uint32_t kSelfTapDelayMs = 60;
+	// The cursor stays parked this long after the click. Restoring earlier can
+	// move it out from under a click the game has not consumed yet.
+	constexpr uint32_t kClickSettleMs = 180;
 	constexpr uint32_t kWatchExpiryMs = 15000;
 	constexpr uint32_t kThreatMarkerMs = 1400;
 	// Slack added to a spell's reach before it counts as "can hit me". Cast
@@ -233,6 +247,10 @@ namespace
 		NoTarget,
 		// Unit-target cast aimed at our own hero (or at the ally being saved).
 		UnitTarget,
+		// Point-target cast aimed at the ground under the unit being protected
+		// - Magnetic Field, Sleight of Fist, Tricks of the Trade. Same aim as
+		// UnitTarget but on the ground, not raised onto the model.
+		SelfGround,
 		// Point-target cast aimed directly away from the caster.
 		BlinkAway,
 	};
@@ -263,47 +281,103 @@ namespace
 		bool positional;
 	};
 
+	// Ordered so that a hero's OWN answer is preferred over spending an item:
+	// Phase Shift costs Puck nothing and is back in a few seconds, a Black
+	// King Bar is a 4000-gold charge that does not come back. Bands are:
+	//   1-9   free / low-cost hero abilities that negate or dodge outright
+	//   10-29 items that grant immunity, dispel, or break targeting
+	//   30-49 repositioning - hero dashes first, then blink items
+	//   50+   last resorts
+	// Ally-capable entries also work on ourselves, so they compete in both.
 	constexpr ResponseDef kResponses[] =
 	{
+		// --- Hero abilities: full negation, no cursor needed ---
+		{ "puck_phase_shift" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 1 , false , false , false , true , false , false },
+		{ "void_spirit_dissimilate" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 2 , false , false , false , true , false , true },
+		{ "dark_willow_shadow_realm" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 2 , false , false , false , true , false , true },
+		{ "antimage_counterspell" , ResponseKind::NoTarget , kMagical | kDisable , 3 , false , false , true , true , true , false },
+		{ "antimage_counterspell_ally" , ResponseKind::NoTarget , kMagical | kDisable , 3 , false , false , true , true , true , false },
+		{ "nyx_assassin_spiked_carapace" , ResponseKind::NoTarget , kMagical | kPhysical | kDisable , 4 , false , false , false , true , false , false },
+		{ "templar_assassin_refraction" , ResponseKind::NoTarget , kMagical | kPhysical | kPure , 4 , false , false , false , true , false , false },
+		{ "juggernaut_blade_fury" , ResponseKind::NoTarget , kMagical , 5 , false , false , true , true , false , false },
+		{ "life_stealer_rage" , ResponseKind::NoTarget , kMagical | kDisable , 5 , false , false , true , true , false , false },
+		{ "pangolier_gyroshell" , ResponseKind::NoTarget , kMagical | kDisable , 5 , false , false , true , true , false , false },
+		// Big-cooldown ultimates that undo the situation entirely.
+		{ "weaver_time_lapse" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 6 , false , false , false , true , false , false },
+		{ "phoenix_supernova" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 6 , false , false , false , true , false , false },
+		{ "naga_siren_song_of_the_siren" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 6 , false , false , false , true , false , false },
+		{ "slark_dark_pact" , ResponseKind::NoTarget , kDisable | kMagical , 7 , false , false , false , true , false , false },
+		// Invisibility and illusions break the caster's targeting, so they
+		// answer something still in flight but not one already resolving.
+		{ "naga_siren_mirror_image" , ResponseKind::NoTarget , kProjectile | kDisable , 7 , false , false , false , true , false , true },
+		{ "phantom_lancer_doppelwalk" , ResponseKind::NoTarget , kProjectile | kDisable , 7 , false , false , false , true , false , true },
+		{ "weaver_shukuchi" , ResponseKind::NoTarget , kProjectile | kPhysical , 8 , false , false , false , true , false , true },
+		{ "slark_shadow_dance" , ResponseKind::NoTarget , kProjectile | kPhysical , 8 , false , false , false , true , false , true },
+		{ "nyx_assassin_vendetta" , ResponseKind::NoTarget , kProjectile | kPhysical , 8 , false , false , false , true , false , true },
+		{ "clinkz_wind_walk" , ResponseKind::NoTarget , kProjectile | kPhysical , 8 , false , false , false , true , false , true },
+		{ "bounty_hunter_wind_walk" , ResponseKind::NoTarget , kProjectile | kPhysical , 8 , false , false , false , true , false , true },
+		{ "sandking_sand_storm" , ResponseKind::NoTarget , kProjectile | kPhysical , 8 , false , false , false , true , false , true },
+		{ "windrunner_windrun" , ResponseKind::NoTarget , kPhysical | kProjectile , 9 , false , false , false , true , false , false },
+		{ "phantom_assassin_blur" , ResponseKind::NoTarget , kPhysical | kProjectile , 9 , false , false , false , true , false , true },
+		{ "ursa_enrage" , ResponseKind::NoTarget , kPhysical | kMagical , 9 , false , false , false , true , false , false },
+		{ "omniknight_guardian_angel" , ResponseKind::NoTarget , kPhysical , 9 , false , false , false , true , false , false },
+		{ "muerta_pierce_the_veil" , ResponseKind::NoTarget , kPhysical , 9 , false , false , false , true , false , false },
+		{ "brewmaster_primal_split" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 9 , false , false , false , true , false , false },
+		// Point-target at our own feet: the hero is untargetable or shielded
+		// inside the area rather than moved out of it.
+		{ "ember_spirit_sleight_of_fist" , ResponseKind::SelfGround , kMagical | kPhysical | kPure | kDisable | kProjectile , 8 , false , false , false , true , false , false },
+		{ "riki_tricks_of_the_trade" , ResponseKind::SelfGround , kProjectile | kPhysical | kMagical , 8 , false , false , false , true , false , true },
+		{ "arc_warden_magnetic_field" , ResponseKind::SelfGround , kPhysical | kProjectile , 9 , true , false , false , true , false , false },
+		// --- Hero abilities cast on a threatened unit (self or ally) ---
+		{ "dazzle_shallow_grave" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 5 , true , false , false , true , false , false },
+		{ "oracle_false_promise" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 6 , true , false , false , true , false , false },
+		{ "omniknight_repel" , ResponseKind::UnitTarget , kMagical | kDisable , 6 , true , false , true , true , false , false },
+		{ "abaddon_aphotic_shield" , ResponseKind::UnitTarget , kMagical | kPhysical | kDisable , 7 , true , false , false , true , false , false },
+		{ "oracle_fates_edict" , ResponseKind::UnitTarget , kMagical , 7 , true , false , true , true , false , false },
+		{ "winter_wyvern_cold_embrace" , ResponseKind::UnitTarget , kPhysical , 8 , true , false , false , true , false , false },
+		{ "pugna_decrepify" , ResponseKind::UnitTarget , kPhysical , 8 , true , false , false , true , false , false },
+		// Banishing a unit removes it from the world outright - the strongest
+		// save either hero has, and both can target themselves with it.
+		{ "shadow_demon_disruption" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 9 , true , false , false , true , false , false },
+		{ "obsidian_destroyer_astral_imprisonment" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 9 , true , false , false , true , false , false },
+		// Removing the unit from where the spell is going, rather than shielding
+		// it: Nightmare parks it, Glimpse and Nether Swap physically move it.
+		{ "bane_nightmare" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 9 , true , false , false , true , false , false },
+		{ "legion_commander_press_the_attack" , ResponseKind::UnitTarget , kDisable | kMagical , 10 , true , false , false , true , false , false },
+		{ "disruptor_glimpse" , ResponseKind::UnitTarget , kProjectile | kDisable | kMagical | kPhysical , 10 , true , false , false , true , false , true },
+		{ "vengefulspirit_nether_swap" , ResponseKind::UnitTarget , kProjectile | kDisable , 10 , true , false , false , true , false , true },
+		{ "snapfire_firesnap_cookie" , ResponseKind::UnitTarget , kProjectile | kDisable , 11 , true , false , false , true , false , true },
+		{ "omniknight_purification" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure , 12 , true , false , false , true , false , false },
+		{ "treant_living_armor" , ResponseKind::UnitTarget , kPhysical | kProjectile , 13 , true , false , false , true , false , false },
+		{ "lich_frost_shield" , ResponseKind::UnitTarget , kPhysical , 14 , true , false , false , true , false , false },
+		// --- Items: immunity, dispel, broken targeting ---
 		{ "item_black_king_bar" , ResponseKind::NoTarget , kMagical | kDisable , 10 , false , false , true , false , false , false },
+		{ "item_lotus_orb" , ResponseKind::UnitTarget , kDisable | kMagical , 12 , true , false , false , false , true , false },
+		{ "item_manta" , ResponseKind::NoTarget , kProjectile | kDisable , 14 , false , false , false , false , false , true },
+		{ "item_ghost" , ResponseKind::NoTarget , kPhysical , 16 , false , false , false , false , false , false },
+		{ "item_glimmer_cape" , ResponseKind::UnitTarget , kProjectile | kMagical , 18 , true , false , false , false , false , true },
 		{ "item_cyclone" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 20 , true , false , false , false , false , false },
 		{ "item_wind_waker" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 21 , true , false , false , false , false , false },
-		{ "item_manta" , ResponseKind::NoTarget , kProjectile | kDisable , 30 , false , false , false , false , false , true },
+		// --- Repositioning: hero dashes first, they cost no gold ---
+		{ "morphling_waveform" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 30 , false , true , false , true , false , true },
+		{ "faceless_void_time_walk" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 31 , false , true , false , true , false , true },
+		{ "storm_spirit_ball_lightning" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 32 , false , true , false , true , false , true },
+		{ "antimage_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 33 , false , true , false , true , false , true },
+		{ "queenofpain_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 34 , false , true , false , true , false , true },
+		{ "earth_spirit_rolling_boulder" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 36 , false , true , false , true , false , true },
+		// Timber Chain pulls toward a tree rather than to the point aimed at,
+		// so it only escapes when the ground away from the caster has trees -
+		// hence sitting behind the dashes that always land.
+		{ "shredder_timber_chain" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 37 , false , true , false , true , false , true },
+		// Leap jumps wherever Mirana is facing rather than away from the
+		// caster, so it sits behind every aimed escape.
+		{ "mirana_leap" , ResponseKind::NoTarget , kProjectile | kDisable , 35 , false , true , false , true , false , true },
 		{ "item_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 40 , false , true , false , false , false , true },
 		{ "item_swift_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 41 , false , true , false , false , false , true },
 		{ "item_arcane_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 42 , false , true , false , false , false , true },
 		{ "item_overwhelming_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 43 , false , true , false , false , false , true },
-		{ "item_lotus_orb" , ResponseKind::UnitTarget , kDisable | kMagical , 50 , true , false , false , false , true , false },
-		{ "item_force_staff" , ResponseKind::UnitTarget , kProjectile | kDisable , 60 , true , false , false , false , false , true },
-		{ "item_hurricane_pike" , ResponseKind::UnitTarget , kProjectile | kDisable , 61 , true , false , false , false , false , true },
-		{ "item_glimmer_cape" , ResponseKind::UnitTarget , kProjectile | kMagical , 70 , true , false , false , false , false , true },
-		{ "item_ghost" , ResponseKind::NoTarget , kPhysical , 80 , false , false , false , false , false , false },
-		// Spell blocks and phase-outs: these beat even an instant targeted
-		// nuke, which is what makes Anti-Mage's Counterspell the right answer
-		// to a Finger of Death and nothing else in this list is.
-		{ "antimage_counterspell" , ResponseKind::NoTarget , kMagical | kDisable , 11 , false , false , true , true , true , false },
-		{ "antimage_counterspell_ally" , ResponseKind::NoTarget , kMagical | kDisable , 11 , false , false , true , true , true , false },
-		{ "nyx_assassin_spiked_carapace" , ResponseKind::NoTarget , kMagical | kPhysical | kDisable , 17 , false , false , false , true , false , false },
-		{ "templar_assassin_refraction" , ResponseKind::NoTarget , kMagical | kPhysical | kPure , 18 , false , false , false , true , false , false },
-		{ "void_spirit_dissimilate" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 19 , false , false , false , true , false , true },
-		{ "dark_willow_shadow_realm" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 22 , false , false , false , true , false , true },
-		// Self-preservation abilities that need no target and no aim.
-		{ "puck_phase_shift" , ResponseKind::NoTarget , kMagical | kPhysical | kPure | kDisable | kProjectile , 15 , false , false , false , true , false , false },
-		{ "juggernaut_blade_fury" , ResponseKind::NoTarget , kMagical , 16 , false , false , true , true , false , false },
-		{ "weaver_shukuchi" , ResponseKind::NoTarget , kProjectile | kPhysical , 25 , false , false , false , true , false , true },
-		{ "life_stealer_rage" , ResponseKind::NoTarget , kMagical | kDisable , 26 , false , false , true , true , false , false },
-		{ "phantom_lancer_doppelwalk" , ResponseKind::NoTarget , kProjectile | kDisable , 27 , false , false , false , true , false , true },
-		{ "slark_dark_pact" , ResponseKind::NoTarget , kDisable | kMagical , 28 , false , false , false , true , false , false },
-		{ "windrunner_windrun" , ResponseKind::NoTarget , kPhysical | kProjectile , 29 , false , false , false , true , false , false },
-		{ "omniknight_guardian_angel" , ResponseKind::NoTarget , kPhysical , 31 , false , false , false , true , false , false },
-		{ "antimage_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 44 , false , true , false , true , false , true },
-		{ "queenofpain_blink" , ResponseKind::BlinkAway , kProjectile | kDisable | kMagical | kPhysical | kPure , 45 , false , true , false , true , false , true },
-		// Ally saves (all also work on ourselves).
-		{ "dazzle_shallow_grave" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 12 , true , false , false , true , false , false },
-		{ "oracle_false_promise" , ResponseKind::UnitTarget , kMagical | kPhysical | kPure | kDisable , 13 , true , false , false , true , false , false },
-		{ "oracle_fates_edict" , ResponseKind::UnitTarget , kMagical , 13 , true , false , true , true , false , false },
-		{ "abaddon_aphotic_shield" , ResponseKind::UnitTarget , kMagical | kPhysical | kDisable , 14 , true , false , false , true , false , false },
-		{ "winter_wyvern_cold_embrace" , ResponseKind::UnitTarget , kPhysical , 14 , true , false , false , true , false , false },
+		{ "item_force_staff" , ResponseKind::UnitTarget , kProjectile | kDisable , 44 , true , false , false , false , false , true },
+		{ "item_hurricane_pike" , ResponseKind::UnitTarget , kProjectile | kDisable , 45 , true , false , false , false , false , true },
 	};
 
 	// Per-spell answers, best first, for the cases where the generic flag
@@ -383,7 +457,16 @@ namespace
 		const ResponseDef* def = nullptr;
 		WORD key = 0;
 		float castRange = 0.f;
+		// A long-cooldown ultimate (Time Lapse, Supernova, Song of the Siren).
+		// Worth using to survive a Chronosphere, not worth burning on a
+		// Lightning Bolt that was going to cost a fifth of our health.
+		bool expensive = false;
 	};
+
+	// Cooldown at which a hero ability counts as a once-a-fight commitment.
+	// Taken from the catalog rather than a hand-kept list, so a patch that
+	// changes a cooldown changes this with it.
+	constexpr float kExpensiveCooldownSeconds = 60.f;
 
 	auto FindDangerEntry( const std::string& loweredName ) -> const DangerEntry*
 	{
@@ -619,6 +702,9 @@ namespace
 					response.def = def;
 					response.key = kAbilityKeys[slot];
 					response.castRange = FS::ReadCastRange( ability , offsets , entry ? entry->castRange : 0.f );
+					// Items are bought to be used; only hero ultimates get the
+					// "is this worth it" gate.
+					response.expensive = entry && entry->CooldownForLevel( level ) >= kExpensiveCooldownSeconds;
 					ready.push_back( response );
 				}
 			}
@@ -630,7 +716,7 @@ namespace
 	// Checks everything that is true of a usable answer regardless of WHY it
 	// was picked (explicit preference or flag match): the user's switches, who
 	// it can be cast on, and whether moving the hero can help at all.
-	auto ResponseIsApplicable( const ReadyResponse& candidate , uint8_t threatFlags , bool againstAlly , float allyDistance ) -> bool
+	auto ResponseIsApplicable( const ReadyResponse& candidate , uint8_t threatFlags , bool againstAlly , float allyDistance , bool allowExpensive ) -> bool
 	{
 		const auto* def = candidate.def;
 		if ( def->isBlink && !Settings::Dodger::UseBlink )
@@ -641,6 +727,9 @@ namespace
 			return false;
 		// A spell block or a reflect needs a single-target cast to catch.
 		if ( def->needsSingleTarget && ( threatFlags & kSingleTarget ) == 0 )
+			return false;
+		// A once-a-fight ultimate is held back unless the situation earns it.
+		if ( candidate.expensive && !allowExpensive )
 			return false;
 		if ( againstAlly )
 		{
@@ -679,8 +768,74 @@ namespace
 		return false;
 	}
 
+	// Prints which item this feature believes is in which hotkey slot.
+	//
+	// Worth having because the slot->key mapping (Z X C V B N) has never
+	// actually been exercised: item lookups failed in every feature until the
+	// catalog prefix bug was fixed, so no item was ever cast by any of them.
+	// If the game shows a different item under a key than this line claims,
+	// the mapping - not the cast sequence - is the problem.
+	auto LogInventorySlots( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets , C_BaseEntity* localEntity ) -> void
+	{
+		static constexpr std::array<char , 6> kItemKeyChars = { 'Z' , 'X' , 'C' , 'V' , 'B' , 'N' };
+
+		std::vector<CHandle> handles;
+		if ( !FS::ReadInventoryHandles( localEntity , offsets , handles ) )
+		{
+			DEV_LOG( "[dodger] inventory: unreadable\n" );
+			return;
+		}
+
+		std::string line;
+		const int count = (std::min)( static_cast<int>( handles.size() ) , static_cast<int>( kItemKeyChars.size() ) );
+		for ( int slot = 0; slot < count; ++slot )
+		{
+			CEntityIdentity* identity = nullptr;
+			auto* item = FS::EntityFromHandle( entitySystem , handles[slot] , &identity );
+			const std::string name = item ? FS::ToLower( FS::EntityName( item , identity ) ) : std::string();
+			line += kItemKeyChars[slot];
+			line += '=';
+			line += name.empty() ? "empty" : name;
+			line += ' ';
+		}
+		DEV_LOG( "[dodger] inventory slots: %s\n" , line.c_str() );
+	}
+
+	// Finds one of the local hero's items or abilities by name and reads its
+	// cooldown. Used only to confirm a cast we just fired actually registered.
+	auto TryReadCastableCooldown( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets ,
+		C_BaseEntity* localEntity , const std::string& name , float& outCooldown ) -> bool
+	{
+		auto Search = [&]( const std::vector<CHandle>& handles , int limit ) -> bool
+		{
+			const int count = (std::min)( static_cast<int>( handles.size() ) , limit );
+			for ( int index = 0; index < count; ++index )
+			{
+				CEntityIdentity* identity = nullptr;
+				auto* castable = FS::EntityFromHandle( entitySystem , handles[index] , &identity );
+				if ( !castable )
+					continue;
+				if ( FS::ToLower( FS::EntityName( castable , identity ) ) != name )
+					continue;
+
+				outCooldown = FS::ReadField<float>( castable , offsets.abilityCooldown , 0.f );
+				if ( !std::isfinite( outCooldown ) )
+					outCooldown = 0.f;
+				return true;
+			}
+			return false;
+		};
+
+		std::vector<CHandle> handles;
+		if ( FS::ReadInventoryHandles( localEntity , offsets , handles ) && Search( handles , 6 ) )
+			return true;
+		if ( FS::ReadAbilityHandles( localEntity , offsets , handles ) && Search( handles , 48 ) )
+			return true;
+		return false;
+	}
+
 	auto SelectPreferredResponse( const std::vector<ReadyResponse>& ready , const std::string& threatName ,
-		uint8_t threatFlags , bool againstAlly , float allyDistance ) -> const ReadyResponse*
+		uint8_t threatFlags , bool againstAlly , float allyDistance , bool allowExpensive ) -> const ReadyResponse*
 	{
 		const CounterPreference* preference = nullptr;
 		for ( const auto& entry : kPreferredCounters )
@@ -702,7 +857,7 @@ namespace
 			{
 				if ( std::strcmp( candidate.def->name , wanted ) != 0 )
 					continue;
-				if ( !ResponseIsApplicable( candidate , threatFlags , againstAlly , allyDistance ) )
+				if ( !ResponseIsApplicable( candidate , threatFlags , againstAlly , allyDistance , allowExpensive ) )
 					continue;
 				return &candidate;
 			}
@@ -710,7 +865,7 @@ namespace
 		return nullptr;
 	}
 
-	auto SelectResponse( const std::vector<ReadyResponse>& ready , uint8_t threatFlags , bool againstAlly , float allyDistance ) -> const ReadyResponse*
+	auto SelectResponse( const std::vector<ReadyResponse>& ready , uint8_t threatFlags , bool againstAlly , float allyDistance , bool allowExpensive ) -> const ReadyResponse*
 	{
 		const ReadyResponse* best = nullptr;
 		for ( const auto& candidate : ready )
@@ -718,7 +873,7 @@ namespace
 			const auto* def = candidate.def;
 			if ( ( def->counters & threatFlags ) == 0 )
 				continue;
-			if ( !ResponseIsApplicable( candidate , threatFlags , againstAlly , allyDistance ) )
+			if ( !ResponseIsApplicable( candidate , threatFlags , againstAlly , allyDistance , allowExpensive ) )
 				continue;
 			// A BKB (or any magic-only answer) does nothing about pure/physical
 			// damage, and nothing at all about a disable that pierces spell
@@ -821,6 +976,7 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		const std::string name = m_Cast.name;
 		m_Cast = {};
 		m_NextDodgeTick = now + kDodgeCooldownMs;
+		m_Verify = { name , now + kVerifyDelayMs };
 		m_Status = "Used " + name;
 		DEV_LOG( "[dodger] fired no-target response %s\n" , name.c_str() );
 		return;
@@ -833,6 +989,35 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		// Re-select our own hero first: any earlier click may have left an
 		// enemy unit selected, and then every hotkey applies to nothing.
 		FS::SendKeyPress( VK_F1 );
+
+		// Is the aim point actually on screen? MoveCursorToClientPoint clamps
+		// an off-view point to the window edge, and a click on the edge is a
+		// valid patch of ground (so a blink still fires) but never a valid
+		// unit (so a self-cast Eul's silently does nothing). A live capture
+		// showed exactly that split: item_blink sometimes registered, while
+		// item_cyclone on self never did.
+		ImVec2 aimScreen{};
+		const bool clickable = FS::ProjectWorldToClient( window , m_Cast.aimPoint , m_Cast.groundAim , aimScreen );
+		DEV_LOG( "[dodger] aim %s: screen=(%.0f,%.0f) clickable=%d self=%d\n" ,
+			m_Cast.name.c_str() , aimScreen.x , aimScreen.y , clickable ? 1 : 0 , m_Cast.selfCast ? 1 : 0 );
+
+		// A self-cast does not need the cursor at all: double-tapping the key
+		// is Dota's own self-cast. Use it whenever the hero is not clickable
+		// (camera looking elsewhere), or always if the user prefers it.
+		if ( m_Cast.selfCast && ( !clickable || Settings::Dodger::PreferDoubleTapSelfCast ) )
+		{
+			m_Cast.doubleTap = true;
+			m_Cast.phase = CastPhase::Cast;
+			m_Cast.nextTick = now + kCastSettleMs;
+			break;
+		}
+		if ( !clickable )
+		{
+			// Firing blind would click the screen border - worse than not
+			// firing, because it spends the dodge window on nothing.
+			CancelCast( "Aim point off screen" );
+			break;
+		}
 
 		POINT previous{};
 		GetCursorPos( &previous );
@@ -850,16 +1035,67 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 	}
 	case CastPhase::Cast:
 	{
-		FS::AimCursorAtWorld( window , m_Cast.aimPoint , m_Cast.groundAim );
-		if ( !FS::SendKeyPress( m_Cast.key ) || ( m_Cast.needsClick && !FS::SendLeftClick() ) )
+		if ( !m_Cast.doubleTap )
+			FS::AimCursorAtWorld( window , m_Cast.aimPoint , m_Cast.groundAim );
+		if ( !FS::SendKeyPress( m_Cast.key ) )
 		{
 			CancelCast( "Cast failed" );
 			break;
 		}
+		if ( m_Cast.doubleTap )
+		{
+			DEV_LOG( "[dodger] fired self-cast response %s (key=%c, double tap)\n" ,
+				m_Cast.name.c_str() , static_cast<char>( m_Cast.key ) );
+			m_Status = "Used " + m_Cast.name;
+			m_Cast.phase = CastPhase::SelfTap;
+			m_Cast.nextTick = now + kSelfTapDelayMs;
+			break;
+		}
+		DEV_LOG( "[dodger] fired targeted response %s (key=%c)\n" ,
+			m_Cast.name.c_str() , static_cast<char>( m_Cast.key ) );
 		m_Status = "Used " + m_Cast.name;
-		DEV_LOG( "[dodger] fired targeted response %s\n" , m_Cast.name.c_str() );
+		// The click must NOT go out in the same input batch as the key.
+		// Source 2 has not entered targeting mode yet at that point, so the
+		// click is consumed as an ordinary move/select order and the cast
+		// never happens - a live capture caught exactly this: every no-target
+		// answer verified on cooldown while every targeted one came back
+		// "still ready". CKillStealer has always deferred its confirm-click by
+		// 40ms for this reason (see ArmClick/TickPendingClick there).
+		m_Cast.phase = m_Cast.needsClick ? CastPhase::Click : CastPhase::Restore;
+		m_Cast.nextTick = now + kClickDelayMs;
+		break;
+	}
+	case CastPhase::SelfTap:
+	{
+		// The second press. With Dota's "double tap ability to self cast"
+		// enabled - its default - this casts the item on our own hero with no
+		// cursor involved at all, which is the only way to self-cast when the
+		// camera is not looking at us.
+		if ( !FS::SendKeyPress( m_Cast.key ) )
+		{
+			CancelCast( "Cast failed" );
+			break;
+		}
 		m_Cast.phase = CastPhase::Restore;
 		m_Cast.nextTick = now + kCastSettleMs;
+		break;
+	}
+	case CastPhase::Click:
+	{
+		// Re-aim immediately before the click: the cursor must be on the aim
+		// point at the moment the game consumes the click, not merely at the
+		// moment we asked for it.
+		FS::AimCursorAtWorld( window , m_Cast.aimPoint , m_Cast.groundAim );
+		if ( !FS::SendLeftClick() )
+		{
+			CancelCast( "Cast failed" );
+			break;
+		}
+		m_Cast.phase = CastPhase::Restore;
+		// Leave the cursor parked a beat longer than the click itself needs.
+		// Restoring too early moves it out from under a click the game has not
+		// processed yet, which lands the cast at the old cursor position.
+		m_Cast.nextTick = now + kClickSettleMs;
 		break;
 	}
 	case CastPhase::Restore:
@@ -877,6 +1113,7 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		const std::string name = m_Cast.name;
 		m_Cast = {};
 		m_NextDodgeTick = now + kDodgeCooldownMs;
+		m_Verify = { name , now + kVerifyDelayMs };
 		m_Status = "Used " + name;
 		break;
 	}
@@ -971,23 +1208,19 @@ auto CDodger::OnRender() -> void
 			}
 		}
 
+		// cast-range=catalog is the EXPECTED state on this build, not a fault.
+		// Dumping every range-ish field on C_DOTABaseAbility returned exactly
+		// one match - m_bConsiderOvershootInGetCastRange, a bool - so the class
+		// simply does not replicate a cast range under any name. The reference
+		// catalog is the only source there is; its value is the maximum over
+		// all levels, so reach is slightly generous at low levels and the
+		// kThreatMargin below is what absorbs that. The lookup chain stays in
+		// case a future build starts replicating one.
 		DEV_LOG( "[dodger] detectors: cast-phase=%s cooldown-edge=yes facing-gate=%s cast-range=%s unit-state=%s\n" ,
 			offsets.hasAbilityInPhase ? "yes" : "NO (m_bInAbilityPhase unresolved)" ,
 			offsets.hasRotation ? "yes" : "no" ,
-			offsets.abilityCastRange ? "live" : "catalog-only" ,
+			offsets.abilityCastRange ? "live" : "catalog (not replicated on this build)" ,
 			offsets.hasUnitState ? "m_nUnitState64" : "NONE (state guards inert)" );
-
-		// A live capture logged cast-range=catalog-only, so neither
-		// m_nCastRange nor m_flCastRange is a replicated field on this build's
-		// ability class. The catalog fallback is correct but generous (it is
-		// the max over all levels), so dump whatever range-ish fields the
-		// class really has - one line, once, and the next log says which name
-		// to use.
-		if ( !offsets.abilityCastRange )
-		{
-			if ( auto* schema = GetSchemaOffset() )
-				schema->LogFieldsMatching( "C_DOTABaseAbility" , "range" );
-		}
 	}
 
 	C_BaseEntity* localEntity = nullptr;
@@ -1015,6 +1248,30 @@ auto CDodger::OnRender() -> void
 		// reads like a resolver failure.
 		m_Status = FS::ReadField<int>( localEntity , offsets.health , 0 ) <= 0 ? "Hero is dead" : "Local hero not in scan";
 		return;
+	}
+
+	// Did the last thing we fired actually happen? An item that is still ready
+	// half a second after we pressed its key was never cast, however cleanly
+	// the input went out.
+	if ( !m_Verify.name.empty() && now >= m_Verify.at )
+	{
+		const std::string name = m_Verify.name;
+		m_Verify = {};
+
+		float cooldown = 0.f;
+		if ( !TryReadCastableCooldown( entitySystem , offsets , local->entity , name , cooldown ) )
+		{
+			DEV_LOG( "[dodger] verify %s: no longer in inventory/ability list\n" , name.c_str() );
+		}
+		else if ( cooldown > 0.15f )
+		{
+			DEV_LOG( "[dodger] verify %s: OK - on cooldown (%.1fs), the cast registered\n" , name.c_str() , cooldown );
+		}
+		else
+		{
+			DEV_LOG( "[dodger] verify %s: FAILED - still ready %ums after firing, the game did not accept the cast\n" ,
+				name.c_str() , kVerifyDelayMs );
+		}
 	}
 
 	if ( now >= m_NextPruneTick )
@@ -1105,17 +1362,38 @@ auto CDodger::OnRender() -> void
 			return;
 
 		const auto ready = CollectResponses( entitySystem , offsets , *local , !muted , !silenced );
+
+		// A long-cooldown ultimate is worth spending on something that takes
+		// the hero out of the fight - a hard disable - or when the health left
+		// says this is the fight. A survivable nuke does not earn it.
+		const float victimHealthPercent = againstAlly
+			? ( ally->maxHealth > 0 ? 100.f * static_cast<float>( ally->health ) / static_cast<float>( ally->maxHealth ) : 100.f )
+			: ( local->maxHealth > 0 ? 100.f * static_cast<float>( local->health ) / static_cast<float>( local->maxHealth ) : 100.f );
+		const bool allowExpensive = ( flags & kDisable ) != 0 || victimHealthPercent <= 50.f;
+
 		// The explicit per-spell answer wins when we own it; the flag matcher
 		// is the fallback for everything not in that table.
-		const auto* chosen = SelectPreferredResponse( ready , threatName , flags , againstAlly , allyDistance );
+		const auto* chosen = SelectPreferredResponse( ready , threatName , flags , againstAlly , allyDistance , allowExpensive );
 		const bool fromPreference = chosen != nullptr;
 		if ( !chosen )
-			chosen = SelectResponse( ready , flags , againstAlly , allyDistance );
+			chosen = SelectResponse( ready , flags , againstAlly , allyDistance , allowExpensive );
 		if ( !chosen )
 		{
 			m_Status = "No counter for " + threatName;
-			DEV_LOG( "[dodger] %s: %s (flags=%u) - nothing available to answer it\n" ,
-				caster.name.c_str() , threatName.c_str() , static_cast<unsigned>( flags ) );
+			// Naming what WAS off cooldown separates "we own nothing for this"
+			// from "everything we own was on cooldown" from "the item is there
+			// but no rule matched it" - three very different problems that
+			// otherwise all print the same line.
+			std::string readyList;
+			for ( const auto& candidate : ready )
+			{
+				if ( !readyList.empty() )
+					readyList += ", ";
+				readyList += candidate.def->name;
+			}
+			DEV_LOG( "[dodger] %s: %s (flags=%u) - nothing available to answer it (ready: %s)\n" ,
+				caster.name.c_str() , threatName.c_str() , static_cast<unsigned>( flags ) ,
+				readyList.empty() ? "none" : readyList.c_str() );
 			return;
 		}
 
@@ -1138,6 +1416,14 @@ auto CDodger::OnRender() -> void
 			m_Cast.groundAim = false;
 			m_Cast.needsClick = !Settings::Dodger::QuickCast;
 			m_Cast.aimPoint = againstAlly ? ally->origin : local->origin;
+			// Only a cast on ourselves can use Dota's double-tap self-cast.
+			m_Cast.selfCast = !againstAlly;
+			break;
+		case ResponseKind::SelfGround:
+			m_Cast.needsAim = true;
+			m_Cast.groundAim = true;
+			m_Cast.needsClick = !Settings::Dodger::QuickCast;
+			m_Cast.aimPoint = againstAlly ? ally->origin : local->origin;
 			break;
 		case ResponseKind::BlinkAway:
 			m_Cast.needsAim = true;
@@ -1149,9 +1435,11 @@ auto CDodger::OnRender() -> void
 		}
 
 		m_Status = std::string( againstAlly ? "Saving ally from " : "Dodging " ) + threatName;
-		DEV_LOG( "[dodger] %s: %s (flags=%u) - answering with %s (%s)\n" ,
+		DEV_LOG( "[dodger] %s: %s (flags=%u) - answering with %s (%s, key=%c)\n" ,
 			caster.name.c_str() , threatName.c_str() , static_cast<unsigned>( flags ) , m_Cast.name.c_str() ,
-			fromPreference ? "known pair" : "flag match" );
+			fromPreference ? "known pair" : "flag match" , static_cast<char>( m_Cast.key ) );
+		if ( !chosen->def->isAbility )
+			LogInventorySlots( entitySystem , offsets , local->entity );
 	};
 
 	for ( const auto& enemy : heroes )

@@ -186,6 +186,11 @@ namespace FeatureSupport
 	// crosshair goes back with the Windows one.
 	auto MoveCursorToScreen( int screenX , int screenY ) -> bool;
 	auto MoveCursorToClientPoint( HWND window , const ImVec2& screen , POINT& previousOut ) -> bool;
+	// Projects a world point and reports whether it is genuinely visible and
+	// clickable - inside the client area and clear of the bottom HUD band -
+	// rather than clamped to an edge the way AimCursorAtWorld does. Check this
+	// before any cast that ends in a click on a unit.
+	auto ProjectWorldToClient( HWND window , const Vector3& worldPoint , bool groundTargeted , ImVec2& outScreen ) -> bool;
 	// groundTargeted=false raises the aim point onto the unit's model;
 	// ground-targeted casts must aim at the origin itself or they land behind
 	// the target.

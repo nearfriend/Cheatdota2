@@ -23,10 +23,15 @@ public:
 	auto GetStatus() const -> const std::string& { return m_Status; }
 
 private:
+	// Four separate ticks, because Dota consumes injected input asynchronously:
+	// aim, press, THEN click on a later frame (the game needs a beat to enter
+	// targeting mode first), then restore the cursor.
 	enum class CastPhase : uint8_t
 	{
 		Aim,
 		Cast,
+		SelfTap,
+		Click,
 		Restore
 	};
 
@@ -40,6 +45,10 @@ private:
 		// Ground-targeted (blink) casts must aim at the ground point itself;
 		// unit-targeted ones aim slightly above the model.
 		bool groundAim = false;
+		// Aimed at our own hero, so Dota's own self-cast (double-tapping the
+		// key) can replace the click entirely - no camera, no cursor.
+		bool selfCast = false;
+		bool doubleTap = false;
 		CastPhase phase = CastPhase::Aim;
 		WORD key = 0;
 		std::string name;
@@ -91,6 +100,17 @@ private:
 		uint32_t tick = 0;
 	};
 
+	// After firing, the log could only say the input was SENT. Re-reading the
+	// item/ability a moment later and checking it went on cooldown is the
+	// difference between "we pressed the key" and "the game accepted the cast"
+	// - the exact ambiguity that hid the SetCursorPos bug for a whole session.
+	struct PendingVerify
+	{
+		std::string name;
+		uint32_t at = 0;
+	};
+
+	PendingVerify m_Verify{};
 	std::unordered_map<uintptr_t , AbilityWatch> m_Watches{};
 	std::unordered_map<int , PositionSample> m_HeroPositions{};
 	ThreatInfo m_Threat{};

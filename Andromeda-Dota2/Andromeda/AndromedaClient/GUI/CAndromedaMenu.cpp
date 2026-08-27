@@ -1294,6 +1294,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			DrawSwitchRow( "Use Abilities" , "##dodgerAbilities" , Settings::Dodger::UseAbilities , ReferenceIcon::Sparkles );
 			DrawSwitchRow( "Escape With Blink" , "##dodgerBlink" , Settings::Dodger::UseBlink , ReferenceIcon::Speed );
 			DrawSwitchRow( "Quick Cast Mode" , "##dodgerQuickCast" , Settings::Dodger::QuickCast , ReferenceIcon::Speed );
+			DrawSwitchRow( "Self Cast By Double Tap" , "##dodgerDoubleTap" , Settings::Dodger::PreferDoubleTapSelfCast , ReferenceIcon::Mouse );
 			DrawSwitchRow( "Draw Threat Markers" , "##dodgerMarkers" , Settings::Dodger::DrawThreatMarkers , ReferenceIcon::Visible );
 			ImGui::EndDisabled();
 			ImGui::EndChild();
