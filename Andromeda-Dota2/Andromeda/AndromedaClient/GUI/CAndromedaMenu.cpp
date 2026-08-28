@@ -1317,6 +1317,8 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			ImGui::TextDisabled( "Known pairs go first: Counterspell blocks Finger, Manta answers Reverse Polarity," );
 			ImGui::TextDisabled( "Eul's rides out Thundergod's Wrath. Global ults ignore Trigger Range." );
 			ImGui::TextDisabled( "A BKB is never spent on pure/physical or immunity-piercing casts." );
+			ImGui::TextDisabled( "Self casts click your own hero, centring the camera on it first if needed." );
+			ImGui::TextDisabled( "Enable Self Cast By Double Tap only if Dota's own double-tap self-cast is on." );
 
 			if ( auto* pClient = GetAndromedaClient() )
 				ImGui::Text( "Status: %s" , pClient->GetDodger().GetStatus().c_str() );

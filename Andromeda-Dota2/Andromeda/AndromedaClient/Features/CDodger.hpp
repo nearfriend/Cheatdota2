@@ -29,6 +29,7 @@ private:
 	enum class CastPhase : uint8_t
 	{
 		Aim,
+		CenterCamera,
 		Cast,
 		SelfTap,
 		Click,
@@ -49,6 +50,9 @@ private:
 		// key) can replace the click entirely - no camera, no cursor.
 		bool selfCast = false;
 		bool doubleTap = false;
+		// Set once we have already tried centring the camera, so a hero that
+		// still will not project cannot loop.
+		bool cameraCentred = false;
 		CastPhase phase = CastPhase::Aim;
 		WORD key = 0;
 		std::string name;

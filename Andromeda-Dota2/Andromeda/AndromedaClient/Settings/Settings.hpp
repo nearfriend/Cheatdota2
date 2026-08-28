@@ -97,13 +97,17 @@ namespace Settings
 		// Quickcast is enabled for that item/ability. Off can never silently
 		// no-op a cast, so off is the default.
 		inline bool QuickCast = false;
-		// Self-casts (Eul's on yourself, Lotus, Glimmer) normally aim the
-		// cursor at your own hero and click it - which only works while the
-		// camera is actually looking at you. Dota's own self-cast, double
-		// tapping the key, needs no cursor at all. Off means "click when the
-		// hero is on screen, double tap when it is not"; on means always
-		// double tap, which is right if you have Dota's "double tap ability
-		// to self cast" enabled and want it independent of the camera.
+		// How a cast on OURSELVES is issued (Eul's, Lotus, Glimmer on self).
+		//
+		// Off (default): aim at our own hero and click it, centring the camera
+		// on the hero first when it is off screen so the click always has a
+		// model to land on. This depends on no Dota option.
+		//
+		// On: double tap the key, which is Dota's own self-cast. Cleaner when
+		// it works, but it needs Dota's "double tap ability to self cast"
+		// option enabled - a live capture with it disabled showed the two
+		// presses going out and the item never leaving cooldown-ready, so it
+		// cannot be the default.
 		inline bool PreferDoubleTapSelfCast = false;
 		// Casters farther than this are ignored even if the spell could
 		// technically reach - a global ult from across the map is not

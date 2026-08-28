@@ -84,6 +84,9 @@ namespace
 	constexpr uint32_t kClickDelayMs = 45;
 	// Extra time the cursor stays parked after the click before it is restored.
 	// Gap between the two presses of a self-cast double tap.
+	// Time for Dota's camera to finish snapping to the hero after a double
+	// press of Select Hero, before we re-project and aim at it.
+	constexpr uint32_t kCameraSettleMs = 130;
 	constexpr uint32_t kSelfTapDelayMs = 60;
 	// The cursor stays parked this long after the click. Restoring earlier can
 	// move it out from under a click the game has not consumed yet.
@@ -990,21 +993,44 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		// enemy unit selected, and then every hotkey applies to nothing.
 		FS::SendKeyPress( VK_F1 );
 
-		// Is the aim point actually on screen? MoveCursorToClientPoint clamps
-		// an off-view point to the window edge, and a click on the edge is a
-		// valid patch of ground (so a blink still fires) but never a valid
-		// unit (so a self-cast Eul's silently does nothing). A live capture
-		// showed exactly that split: item_blink sometimes registered, while
-		// item_cyclone on self never did.
+		// A cast on ourselves never touches the cursor: double-tapping the key
+		// IS Dota's self-cast, and it works no matter where the camera is
+		// looking. Clicking our own hero was the old path and it was simply
+		// the wrong mechanism - when the click missed the model the game threw
+		// a "No target" error and the item stayed unused.
+		if ( m_Cast.doubleTap )
+		{
+			m_Cast.phase = CastPhase::Cast;
+			m_Cast.nextTick = now + kCastSettleMs;
+			break;
+		}
+
+		// Everything still aimed - an ally save, or a blink to a point - has
+		// to be genuinely visible. MoveCursorToClientPoint clamps an off-view
+		// point to the window edge, and clicking the edge hits no unit at all.
 		ImVec2 aimScreen{};
 		const bool clickable = FS::ProjectWorldToClient( window , m_Cast.aimPoint , m_Cast.groundAim , aimScreen );
 		DEV_LOG( "[dodger] aim %s: screen=(%.0f,%.0f) clickable=%d self=%d\n" ,
 			m_Cast.name.c_str() , aimScreen.x , aimScreen.y , clickable ? 1 : 0 , m_Cast.selfCast ? 1 : 0 );
 
-		// A self-cast does not need the cursor at all: double-tapping the key
-		// is Dota's own self-cast. Use it whenever the hero is not clickable
-		// (camera looking elsewhere), or always if the user prefers it.
-		if ( m_Cast.selfCast && ( !clickable || Settings::Dodger::PreferDoubleTapSelfCast ) )
+		// A self-cast whose hero is off screen is not hopeless: double-tapping
+		// "Select Hero" centres the camera on it, after which the model is at
+		// screen centre and perfectly clickable. That is what a player does,
+		// and unlike the self-cast double tap it depends on no Dota option.
+		if ( !clickable && m_Cast.selfCast && !m_Cast.cameraCentred )
+		{
+			m_Cast.cameraCentred = true;
+			FS::SendKeyPress( VK_F1 );
+			FS::SendKeyPress( VK_F1 );
+			DEV_LOG( "[dodger] %s: hero off screen, centring camera before the cast\n" , m_Cast.name.c_str() );
+			m_Cast.phase = CastPhase::CenterCamera;
+			m_Cast.nextTick = now + kCameraSettleMs;
+			break;
+		}
+		// Last resort for a self-cast we still cannot click: try Dota's own
+		// double-tap self-cast. It only works when that option is enabled, so
+		// it is the fallback rather than the primary path.
+		if ( m_Cast.selfCast && !clickable )
 		{
 			m_Cast.doubleTap = true;
 			m_Cast.phase = CastPhase::Cast;
@@ -1031,6 +1057,14 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		m_Cast.hasPrevCursor = true;
 		m_Cast.phase = CastPhase::Cast;
 		m_Cast.nextTick = now + kCastSettleMs;
+		break;
+	}
+	case CastPhase::CenterCamera:
+	{
+		// The camera has had time to arrive - run the aim step again, which
+		// now projects the hero near screen centre. cameraCentred stops this
+		// from looping if it somehow still does not.
+		m_Cast.phase = CastPhase::Aim;
 		break;
 	}
 	case CastPhase::Cast:
@@ -1269,6 +1303,31 @@ auto CDodger::OnRender() -> void
 		}
 		else
 		{
+			// Which OTHER slot moved, if any, separates the two failure modes
+			// that otherwise look identical: a key that reached the game but
+			// hit the wrong slot (some other item is now on cooldown) versus a
+			// key that never registered at all (nothing moved).
+			LogInventorySlots( entitySystem , offsets , local->entity );
+			std::string busy;
+			std::vector<CHandle> handles;
+			if ( FS::ReadInventoryHandles( local->entity , offsets , handles ) )
+			{
+				const int count = (std::min)( static_cast<int>( handles.size() ) , 6 );
+				for ( int slot = 0; slot < count; ++slot )
+				{
+					CEntityIdentity* identity = nullptr;
+					auto* item = FS::EntityFromHandle( entitySystem , handles[slot] , &identity );
+					if ( !item )
+						continue;
+					const float itemCooldown = FS::ReadField<float>( item , offsets.abilityCooldown , 0.f );
+					if ( !std::isfinite( itemCooldown ) || itemCooldown <= 0.15f )
+						continue;
+					if ( !busy.empty() )
+						busy += ", ";
+					busy += FS::ToLower( FS::EntityName( item , identity ) );
+				}
+			}
+			DEV_LOG( "[dodger] verify: items currently on cooldown = %s\n" , busy.empty() ? "none" : busy.c_str() );
 			DEV_LOG( "[dodger] verify %s: FAILED - still ready %ums after firing, the game did not accept the cast\n" ,
 				name.c_str() , kVerifyDelayMs );
 		}
@@ -1416,8 +1475,12 @@ auto CDodger::OnRender() -> void
 			m_Cast.groundAim = false;
 			m_Cast.needsClick = !Settings::Dodger::QuickCast;
 			m_Cast.aimPoint = againstAlly ? ally->origin : local->origin;
-			// Only a cast on ourselves can use Dota's double-tap self-cast.
+			// Only a cast on ourselves can use Dota's double-tap self-cast -
+			// and for those it is the default, because clicking our own model
+			// is both camera-dependent and prone to "No target" errors when
+			// the click lands a few pixels off.
 			m_Cast.selfCast = !againstAlly;
+			m_Cast.doubleTap = m_Cast.selfCast && Settings::Dodger::PreferDoubleTapSelfCast;
 			break;
 		case ResponseKind::SelfGround:
 			m_Cast.needsAim = true;
