@@ -161,6 +161,12 @@ namespace FeatureSupport
 	auto EntityFromHandle( CGameEntitySystem* entitySystem , CHandle handle , CEntityIdentity** identityOut = nullptr ) -> C_BaseEntity*;
 
 	auto LooksLikeHeroEntity( C_BaseEntity* entity , const std::string& name ) -> bool;
+	// Lane creeps only - melee, ranged and siege - never jungle camps, Roshan,
+	// buildings, wards, couriers, summons or heroes. The needle lists are the
+	// ones CLastHitAssistant.cpp arrived at the hard way; see IsLaneCreep
+	// there for why identity has to come from the name on this build and why
+	// nothing may be admitted on its stats.
+	auto LooksLikeLaneCreep( C_BaseEntity* entity , const std::string& name , uint8_t team ) -> bool;
 	auto TryReadOrigin( C_BaseEntity* entity , const UnitOffsets& offsets , Vector3& out ) -> bool;
 	// Facing angle in degrees (scene node yaw), for direction-aware checks.
 	auto TryReadYaw( C_BaseEntity* entity , const UnitOffsets& offsets , float& out ) -> bool;
@@ -181,6 +187,10 @@ namespace FeatureSupport
 	// usable scan code and is ignored outright.
 	auto SendKeyPress( WORD key ) -> bool;
 	auto SendLeftClick() -> bool;
+	// A right click on empty ground is a move order, and on an enemy unit an
+	// attack order - the two things automation needs that a left click cannot
+	// express.
+	auto SendRightClick() -> bool;
 	// Absolute cursor move through SendInput, NOT SetCursorPos - the game only
 	// sees the former. Use this for restoring the cursor too, so the game's
 	// crosshair goes back with the Windows one.

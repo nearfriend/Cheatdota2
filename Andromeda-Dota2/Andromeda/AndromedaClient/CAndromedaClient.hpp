@@ -11,6 +11,7 @@
 #include <AndromedaClient/Features/CLastHitAssistant.hpp>
 #include <AndromedaClient/Features/CAutoCombo.hpp>
 #include <AndromedaClient/Features/CDodger.hpp>
+#include <AndromedaClient/Features/CCreepBlocker.hpp>
 
 #include <array>
 #include <atomic>
@@ -116,6 +117,7 @@ public:
 	CAutoCombo& GetAutoCombo() { return m_AutoCombo; }
 	CDodger& GetDodger() { return m_Dodger; }
 	const CDodger& GetDodger() const { return m_Dodger; }
+	const CCreepBlocker& GetCreepBlocker() const { return m_CreepBlocker; }
 
 	// Ability/item icon for the menu, backed by the same on-demand cache the
 	// overlays use: a local file when one exists, otherwise fetched from the
@@ -135,6 +137,7 @@ private:
 	CMeepoController m_MeepoController;
 	CAutoCombo m_AutoCombo;
 	CDodger m_Dodger;
+	CCreepBlocker m_CreepBlocker;
 };
 
 auto GetAndromedaClient() -> CAndromedaClient*;

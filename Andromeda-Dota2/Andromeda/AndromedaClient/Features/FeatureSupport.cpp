@@ -217,6 +217,48 @@ auto FeatureSupport::LooksLikeHeroEntity( C_BaseEntity* entity , const std::stri
 	return className && ( std::strstr( className , "DOTA_BaseNPC_Hero" ) || std::strstr( className , "DOTA_Unit_Hero" ) );
 }
 
+auto FeatureSupport::LooksLikeLaneCreep( C_BaseEntity* entity , const std::string& name , uint8_t team ) -> bool
+{
+	if ( !entity || !IsPlayableTeam( team ) )
+		return false;
+
+	const std::string lower = ToLower( name );
+	if ( lower.empty() )
+		return false;
+
+	auto Contains = [&lower]( const char* needle )
+	{
+		return lower.find( needle ) != std::string::npos;
+	};
+
+	// Jungle camps and Roshan are on the neutral team, so they never reach
+	// here; the rest of this list is what shares the two playing teams with a
+	// lane creep. Summons mostly carry the "npc_dota_unit_" prefix, but the
+	// ones that do not are named individually.
+	static constexpr const char* kDenyNeedles[] =
+	{
+		"neutral" , "roshan" , "ancient" ,
+		"tower" , "fort" , "barracks" , "rax" , "building" , "filler" ,
+		"healer" , "shrine" , "outpost" , "watch" , "effigy" ,
+		"ward" , "courier" , "hero" , "thinker" , "additive" , "player" ,
+		"npc_dota_unit_" , "bear" , "wolf" , "treant" , "spiderling" ,
+		"eidolon" , "familiar" , "zombie" , "golem" , "boar" , "hawk" ,
+		"necronomicon" , "illusion" , "clone" , "spirit"
+	};
+
+	for ( const char* needle : kDenyNeedles )
+	{
+		if ( Contains( needle ) )
+			return false;
+	}
+
+	return Contains( "npc_dota_creep" ) || Contains( "creep_lane" ) || Contains( "creep_siege" ) ||
+		Contains( "creep_melee" ) || Contains( "creep_ranged" ) || Contains( "basenpc_creep" ) ||
+		Contains( "flagbearer" ) || Contains( "siege" ) ||
+		Contains( "goodguys_melee" ) || Contains( "goodguys_ranged" ) ||
+		Contains( "badguys_melee" ) || Contains( "badguys_ranged" );
+}
+
 auto FeatureSupport::TryReadOrigin( C_BaseEntity* entity , const UnitOffsets& offsets , Vector3& out ) -> bool
 {
 	void* sceneNode = nullptr;
@@ -387,6 +429,18 @@ auto FeatureSupport::SendLeftClick() -> bool
 	inputs[0].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 	inputs[1].type = INPUT_MOUSE;
 	inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+	inputs[1].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
+	return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
+}
+
+auto FeatureSupport::SendRightClick() -> bool
+{
+	INPUT inputs[2]{};
+	inputs[0].type = INPUT_MOUSE;
+	inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+	inputs[0].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
+	inputs[1].type = INPUT_MOUSE;
+	inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
 	inputs[1].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 	return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
 }

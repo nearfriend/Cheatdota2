@@ -150,6 +150,9 @@
     <ClCompile Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.cpp">
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClCompile>
+    <ClCompile Include="Andromeda\AndromedaClient\Features\CCreepBlocker.cpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClCompile>
     <ClCompile Include="Andromeda\AndromedaClient\Features\CAutoCombo.cpp">
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClCompile>
@@ -546,6 +549,9 @@
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.hpp">
+      <Filter>Andromeda\AndromedaClient\Features</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\AndromedaClient\Features\CCreepBlocker.hpp">
       <Filter>Andromeda\AndromedaClient\Features</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\AndromedaClient\Features\CAutoCombo.hpp">

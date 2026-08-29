@@ -1533,6 +1533,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
 		const bool killStealerPage = selectedCategory == 0 && selectedItem == 8;
 		const bool lastHitPage = selectedCategory == 3 && selectedItem == 7;
+		const bool creepBlockerPage = selectedCategory == 3 && selectedItem == 3;
 		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
 		const bool infoOverlayPage = selectedCategory == 2 && selectedItem == 3;
 		const bool visibleByEnemyPage = selectedCategory == 2 && selectedItem == 8;
@@ -1638,7 +1639,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) );
+			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 300.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) ) );
 			// The auto-combo card holds more than fits (toggles, keybind, target
 			// and the spell strip), so it keeps its scrollbar and wheel support
 			// instead of clipping the overflow away.
@@ -1673,6 +1674,50 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				ImGui::TextDisabled( "Only lane creeps are marked - never jungle camps, buildings, wards or summons." );
 				ImGui::TextDisabled( "Gold stars mark one-attack enemy last hits, and red stars mark one-attack allied denies." );
 				ImGui::TextDisabled( "Auto attack only fires at starred creeps already inside your attack range." );
+			}
+			else if ( creepBlockerPage )
+			{
+				DrawSwitchRow( "Enable" , "##creepBlockerEnable" , Settings::CreepBlocker::Enable , ReferenceIcon::Heroes );
+				ImGui::BeginDisabled( !Settings::CreepBlocker::Enable );
+				DrawSliderRow( "Block Distance" , "##creepBlockerAhead" , Settings::CreepBlocker::BlockAhead , 40.f , 250.f , "%.0f" , ReferenceIcon::Distance );
+				DrawSliderRow( "Side Step" , "##creepBlockerSideStep" , Settings::CreepBlocker::SideStep , 0.f , 120.f , "%.0f" , ReferenceIcon::Mouse );
+
+				ImGui::Spacing();
+				ImGui::Text( "Block key" );
+				ImGui::SameLine();
+				static bool capturingBlockKey = false;
+				if ( ImGui::Button( capturingBlockKey ? "Press key...##creepBlock" : "Bind key##creepBlock" ) )
+					capturingBlockKey = true;
+
+				ImGui::SameLine();
+				if ( ImGui::Button( "Clear##creepBlockKey" ) )
+				{
+					Settings::CreepBlocker::Key = 0;
+					capturingBlockKey = false;
+				}
+
+				ImGui::SameLine();
+				ImGui::Text( "Current: %s" , VkToName( Settings::CreepBlocker::Key ).c_str() );
+
+				if ( capturingBlockKey )
+				{
+					for ( int vk = 1; vk <= 255; ++vk )
+					{
+						if ( GetAsyncKeyState( vk ) & 0x8000 )
+						{
+							Settings::CreepBlocker::Key = vk;
+							capturingBlockKey = false;
+							break;
+						}
+					}
+				}
+				ImGui::EndDisabled();
+
+				ImGui::Spacing();
+				if ( auto* pClient = GetAndromedaClient() )
+					ImGui::TextDisabled( "Status: %s" , pClient->GetCreepBlocker().GetStatus().c_str() );
+				ImGui::TextDisabled( "Hold the key on the way to lane - your hero steps in front of the wave." );
+				ImGui::TextDisabled( "Release it to hand control straight back; nothing happens while it is up." );
 			}
 			else if ( cameraPage )
 			{

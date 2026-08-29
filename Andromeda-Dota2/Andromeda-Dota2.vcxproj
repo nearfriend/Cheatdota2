@@ -163,6 +163,7 @@
     <ClCompile Include="Andromeda\AndromedaClient\CAndromedaGUI.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Data\AbilityDamageData.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Features\CKillStealer.cpp" />
+    <ClCompile Include="Andromeda\AndromedaClient\Features\CCreepBlocker.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Features\CAutoCombo.cpp" />
     <ClCompile Include="Andromeda\AndromedaClient\Features\CDodger.cpp" />
@@ -291,6 +292,7 @@
     <ClInclude Include="Andromeda\AndromedaClient\CAndromedaGUI.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Data\AbilityDamageData.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Features\CKillStealer.hpp" />
+    <ClInclude Include="Andromeda\AndromedaClient\Features\CCreepBlocker.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Features\CLastHitAssistant.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Features\CAutoCombo.hpp" />
     <ClInclude Include="Andromeda\AndromedaClient\Features\CDodger.hpp" />

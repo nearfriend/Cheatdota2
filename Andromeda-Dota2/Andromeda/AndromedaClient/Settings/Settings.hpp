@@ -170,6 +170,23 @@ namespace Settings
 		inline bool Enable = false;
 		inline bool EnableAutoAttack = true;
 	}
+	namespace CreepBlocker
+	{
+		inline bool Enable = false;
+		// Held, not toggled: blocking is something you do for the ten seconds
+		// of the walk to lane, and a hold reads the same as doing it by hand.
+		inline int Key = 0;
+		// How far in front of the leading creep the hero is sent. Too short
+		// and the order resolves behind the creep so it walks past; too long
+		// and the hero runs ahead of the wave instead of standing in it.
+		inline float BlockAhead = 110.f;
+		// How far sideways a single order may pull the hero while it tracks the
+		// leading creep's line. Blocking means standing in the creep's path and
+		// following it across when it tries to walk around; this caps how much
+		// of that correction happens per order, so a creep wide of the hero
+		// does not send it sprinting across the lane in one go.
+		inline float SideStep = 45.f;
+	}
 	namespace AutoCombo
 	{
 		// Generic, hero-agnostic burst combo (see CAutoCombo.cpp): fires every

@@ -4061,6 +4061,7 @@ auto CAndromedaClient::OnRender() -> void
 	m_LastHitAssistant.OnRender();
 	m_AutoCombo.OnRender();
 	m_Dodger.OnRender();
+	m_CreepBlocker.OnRender();
 
 	DrawHeroVitalsOverlay();
 	DrawHeroSidePanels();
