@@ -3,6 +3,9 @@
 #include <Common/Common.hpp>
 #include <AndromedaClient/Settings/Heroes/Invoker.hpp>
 
+#include <string>
+#include <vector>
+
 namespace Settings
 {
 	namespace Camera
@@ -78,6 +81,46 @@ namespace Settings
 	}
 	namespace Dodger
 	{
+		// User-authored "this enemy spell, that answer of mine" pairings, built
+		// in the menu's combination editor from the spells the enemy heroes
+		// actually have and the counters our hero actually owns.
+		//
+		// These outrank CDodger's built-in pair table, which in turn outranks
+		// flag matching - so the editor is an override, not a replacement: a
+		// spell with no rule still gets answered automatically.
+		struct SpellRule
+		{
+			// Ability/item entity name of the ENEMY spell, e.g. lion_impale.
+			std::string spell;
+			// Ability/item entity name of OUR answer. Empty = decide
+			// automatically, only the ignore flag matters.
+			std::string counter;
+			// Never dodge this spell at all.
+			bool ignore = false;
+		};
+
+		inline std::vector<SpellRule> Rules;
+
+		// Returns the rule for a spell, or nullptr when the user has not
+		// expressed an opinion about it.
+		inline auto FindRule( const std::string& spell ) -> SpellRule*
+		{
+			for ( auto& rule : Rules )
+			{
+				if ( rule.spell == spell )
+					return &rule;
+			}
+			return nullptr;
+		}
+
+		inline auto RuleFor( const std::string& spell ) -> SpellRule&
+		{
+			if ( auto* existing = FindRule( spell ) )
+				return *existing;
+			Rules.push_back( SpellRule{ spell , {} , false } );
+			return Rules.back();
+		}
+
 		// Reactive defense (see CDodger.cpp): answers an enemy cast that can
 		// reach us - or a low ally - with the best counter we own.
 		inline bool Enable = false;
@@ -113,25 +156,14 @@ namespace Settings
 		// technically reach - a global ult from across the map is not
 		// something an item reaction is going to help with.
 		inline float TriggerRange = 1500.f;
-		// Only save an ally already below this much of their max health.
-		inline float AllySaveHealthPercent = 40.f;
 		// Health-driven rescue for the cases no cast detection can catch: the
 		// burst already landed, or the fight is simply lost. Fires for us and
 		// (when Save Allies is on) for a nearby ally, but only with an enemy
 		// hero close by - dying to a tower is not an item's problem.
 		inline bool PanicSaveEnable = true;
-		inline float PanicHealthPercent = 18.f;
 		// Deliberate pause between spotting the cast and answering it. 0 is
 		// the fastest and least human-looking.
 		inline float ReactionDelayMs = 60.f;
-		// Damage bar an ability not in CDodger's curated danger table has to
-		// clear before it is worth an item.
-		inline float MinDangerDamage = 150.f;
-		// A damage-only spell (no stun/hex/root) is answered only when its
-		// catalog damage is at least this share of the health we have left -
-		// otherwise a Zeus ult at full health would cost a Eul's every time.
-		// Disables ignore this and are always answered.
-		inline float MinThreatHealthPercent = 35.f;
 	}
 	namespace LastHitAssistant
 	{

@@ -334,15 +334,28 @@ static GuiTexture* GetSpellIcon( const std::string& abilityName )
 
 	const std::wstring wideName = ansi_to_unicode( abilityName );
 	const std::wstring dllBase = ansi_to_unicode( GetDllDir() );
-	// "abilities" is where the shipped icon set actually lives; "Spells" only
-	// holds the handful of Meepo files the older UI used.
-	std::vector<std::wstring> paths =
+
+	std::vector<std::wstring> paths;
+	// Items are filed WITHOUT the "item_" prefix the game's entity names
+	// carry - cyclone.png, not item_cyclone.png - the same mismatch that once
+	// broke item lookups in the ability catalog.
+	if ( abilityName.rfind( "item_" , 0 ) == 0 )
 	{
-		dllBase + L"Assets\\Icons\\abilities\\" + wideName + L".png",
-		dllBase + L"Assets\\Icons\\Spells\\" + wideName + L".png",
-	};
-	for ( const auto& base : GetDotaBaseCandidates() )
-		paths.push_back( base + L"game\\dota\\panorama\\images\\spellicons\\" + wideName + L".png" );
+		const std::wstring bareName = wideName.substr( 5 );
+		paths.push_back( dllBase + L"Assets\\Icons\\items\\" + bareName + L".png" );
+		paths.push_back( dllBase + L"Assets\\Icons\\items\\" + wideName + L".png" );
+		for ( const auto& base : GetDotaBaseCandidates() )
+			paths.push_back( base + L"game\\dota\\panorama\\images\\items\\" + bareName + L".png" );
+	}
+	else
+	{
+		// "abilities" is where the shipped icon set actually lives; "Spells"
+		// only holds the handful of Meepo files the older UI used.
+		paths.push_back( dllBase + L"Assets\\Icons\\abilities\\" + wideName + L".png" );
+		paths.push_back( dllBase + L"Assets\\Icons\\Spells\\" + wideName + L".png" );
+		for ( const auto& base : GetDotaBaseCandidates() )
+			paths.push_back( base + L"game\\dota\\panorama\\images\\spellicons\\" + wideName + L".png" );
+	}
 
 	GuiTexture texture{};
 	std::string usedPath;
@@ -950,6 +963,304 @@ static const ReferenceNavigationItem g_CloudNavigation[] =
 	{ "Configs", ReferenceIcon::Save, nullptr },
 };
 
+// "lion_finger_of_death" reads as "Finger Of Death" once the hero prefix is
+// gone; "item_black_king_bar" as "Black King Bar". The catalog stores display
+// names but our parser does not keep them, and this is enough to pick a spell
+// out of a list.
+static std::string PrettyCastableName( const std::string& raw , const std::string& heroName = {} )
+{
+	std::string name = raw;
+	if ( name.rfind( "item_" , 0 ) == 0 )
+	{
+		name.erase( 0 , 5 );
+	}
+	else if ( !heroName.empty() )
+	{
+		// Hero entity names look like npc_dota_hero_lion, and their abilities
+		// are prefixed with the same short name.
+		const size_t lastUnderscore = heroName.rfind( '_' );
+		const std::string shortName = lastUnderscore == std::string::npos
+			? heroName : heroName.substr( lastUnderscore + 1 );
+		if ( !shortName.empty() && name.rfind( shortName + "_" , 0 ) == 0 )
+			name.erase( 0 , shortName.size() + 1 );
+	}
+
+	bool startOfWord = true;
+	for ( auto& character : name )
+	{
+		if ( character == '_' )
+		{
+			character = ' ';
+			startOfWord = true;
+			continue;
+		}
+		if ( startOfWord )
+			character = static_cast<char>( std::toupper( static_cast<unsigned char>( character ) ) );
+		startOfWord = false;
+	}
+	return name;
+}
+
+// One clickable spell/item tile. Falls back to a lettered plate when the icon
+// set does not ship that name - the shipped sets cover roughly 180 abilities
+// and items each, not all of Dota - so a missing PNG degrades to something
+// readable instead of a hole in the grid.
+static bool DrawCastableTile( const std::string& name , float size , bool selected , bool dimmed ,
+	const char* badge , const std::string& tooltip )
+{
+	ImGui::PushID( name.c_str() );
+
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton( "##tile" , ImVec2( size , size ) );
+	const bool clicked = ImGui::IsItemClicked();
+	const bool hovered = ImGui::IsItemHovered();
+
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	const ImVec2 pMax( pos.x + size , pos.y + size );
+	const float rounding = 5.f;
+	const int alpha = dimmed ? 130 : 255;
+
+	// The client's cache first: it downloads whatever is missing from the Dota
+	// CDN, so it covers every ability and item rather than only the ones that
+	// happen to ship as local PNGs. The local loader stays as the fallback for
+	// the frames before a download lands, and for offline use.
+	ID3D11ShaderResourceView* srv = nullptr;
+	if ( auto* pClient = GetAndromedaClient() )
+		srv = pClient->GetCastableIconSrv( name , name.rfind( "item_" , 0 ) == 0 );
+	if ( !srv )
+	{
+		if ( GuiTexture* icon = GetSpellIcon( name ); icon )
+			srv = icon->srv;
+	}
+
+	if ( srv )
+	{
+		dl->AddImageRounded( reinterpret_cast<ImTextureID>( srv ) , pos , pMax ,
+			ImVec2( 0.f , 0.f ) , ImVec2( 1.f , 1.f ) , IM_COL32( 255 , 255 , 255 , alpha ) , rounding );
+	}
+	else
+	{
+		dl->AddRectFilled( pos , pMax , IM_COL32( 30 , 32 , 37 , alpha ) , rounding );
+		char initials[4] = {};
+		snprintf( initials , sizeof( initials ) , "%.2s" , tooltip.c_str() );
+		const ImVec2 textSize = ImGui::CalcTextSize( initials );
+		dl->AddText( ImVec2( pos.x + ( size - textSize.x ) * 0.5f , pos.y + ( size - textSize.y ) * 0.5f ) ,
+			IM_COL32( 190 , 192 , 198 , alpha ) , initials );
+	}
+
+	if ( selected )
+		dl->AddRect( pos , pMax , kAccentColor , rounding , 0 , 2.f );
+	else if ( hovered )
+		dl->AddRect( pos , pMax , IM_COL32( 150 , 152 , 160 , 220 ) , rounding , 0 , 1.5f );
+	else
+		dl->AddRect( pos , pMax , IM_COL32( 44 , 46 , 52 , 255 ) , rounding , 0 , 1.f );
+
+	if ( badge && badge[0] )
+	{
+		const ImVec2 badgeSize = ImGui::CalcTextSize( badge );
+		const ImVec2 badgeMin( pMax.x - badgeSize.x - 5.f , pMax.y - badgeSize.y - 2.f );
+		dl->AddRectFilled( ImVec2( badgeMin.x - 2.f , badgeMin.y - 1.f ) , ImVec2( pMax.x - 1.f , pMax.y - 1.f ) ,
+			IM_COL32( 10 , 11 , 13 , 205 ) , 3.f );
+		dl->AddText( badgeMin , IM_COL32( 226 , 227 , 232 , 255 ) , badge );
+	}
+
+	if ( hovered && !tooltip.empty() )
+		ImGui::SetTooltip( "%s" , tooltip.c_str() );
+
+	ImGui::PopID();
+	return clicked;
+}
+
+// The "this enemy spell -> that answer of mine" editor. Left column is every
+// spell the enemy heroes in THIS match actually have; right column is what our
+// hero owns that the dodger knows how to cast. Picking a pair writes a rule
+// that outranks the built-in pairings.
+static void DrawDodgerCombinations( float margin , float width , float topOffset , float gap )
+{
+	auto* pClient = GetAndromedaClient();
+	if ( !pClient )
+		return;
+
+	const auto& dodger = pClient->GetDodger();
+	const auto& spells = dodger.GetEnemySpells();
+	const auto& counters = dodger.GetOwnCounters();
+
+	static std::string s_SelectedSpell;
+
+	constexpr float kTile = 34.f;
+	constexpr float kTileGap = 5.f;
+
+	// Lays tiles out left to right, wrapping on the child's width: keep the
+	// tile on this row with SameLine while it fits, otherwise let ImGui's
+	// normal line break carry it to the next row and restart the measurement.
+	auto PlaceTile = [&]( float& cursorX , float availableWidth )
+	{
+		if ( cursorX > 0.f && cursorX + kTile <= availableWidth )
+			ImGui::SameLine( 0.f , kTileGap );
+		else if ( cursorX > 0.f )
+			cursorX = 0.f;
+		cursorX += kTile + kTileGap;
+	};
+
+	ImGui::SetCursorPos( ImVec2( margin , topOffset ) );
+	ImGui::BeginChild( "##dodgerCombosCard" , ImVec2( width , 226.f ) , true , ImGuiWindowFlags_NoScrollbar );
+	ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Spell Dodge Combinations" );
+	ImGui::SameLine();
+	if ( s_SelectedSpell.empty() )
+	{
+		ImGui::TextDisabled( "- click an enemy spell, then click your answer" );
+	}
+	else
+	{
+		const auto* rule = Settings::Dodger::FindRule( s_SelectedSpell );
+		const std::string answer = ( rule && rule->ignore ) ? "never dodged"
+			: ( rule && !rule->counter.empty() ) ? PrettyCastableName( rule->counter )
+			: "automatic";
+		ImGui::TextDisabled( "- %s -> %s" , PrettyCastableName( s_SelectedSpell ).c_str() , answer.c_str() );
+	}
+	ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
+
+	// The enemy side gets the larger share: it has to fit a whole hero's kit on
+	// one line, and a hero with a shard or an innate carries more than the
+	// usual four. Our own side only ever holds six items plus a handful of
+	// abilities, and those are free to wrap.
+	const float totalWidth = ImGui::GetContentRegionAvail().x - gap;
+	const float enemyWidth = totalWidth * 0.63f;
+	const float counterWidth = totalWidth - enemyWidth;
+	const float innerHeight = 168.f;
+
+	// Widest kit in the match decides the tile size, so every hero's spells
+	// stay on their own single row instead of wrapping into the row below and
+	// making it unclear whose spell is whose.
+	constexpr float kHeroLabelWidth = 74.f;
+	float enemyTile = kTile;
+	{
+		size_t widestKit = 0;
+		for ( const auto& spell : spells )
+		{
+			const size_t count = static_cast<size_t>( std::count_if( spells.begin() , spells.end() ,
+				[&]( const CDodger::EnemySpell& other ) { return other.hero == spell.hero; } ) );
+			widestKit = ( std::max )( widestKit , count );
+		}
+		if ( widestKit > 0 )
+		{
+			// -20 for the child's padding and a possible scrollbar.
+			const float roomForTiles = enemyWidth - kHeroLabelWidth - 20.f;
+			const float perTile = roomForTiles / static_cast<float>( widestKit ) - kTileGap;
+			enemyTile = std::clamp( perTile , 20.f , kTile );
+		}
+	}
+
+	// --- enemy spells -------------------------------------------------------
+	ImGui::BeginChild( "##dodgerEnemySpells" , ImVec2( enemyWidth , innerHeight ) , true , 0 );
+	if ( spells.empty() )
+	{
+		ImGui::TextDisabled( "Enemy spells appear" );
+		ImGui::TextDisabled( "once you are in a match." );
+	}
+	else
+	{
+		// One row per enemy hero rather than one long wrapped grid: the row a
+		// spell sits in is what tells you whose spell it is, and a hero's kit
+		// stays together instead of splitting across a wrap.
+		std::vector<std::string> heroOrder;
+		for ( const auto& spell : spells )
+		{
+			if ( std::find( heroOrder.begin() , heroOrder.end() , spell.hero ) == heroOrder.end() )
+				heroOrder.push_back( spell.hero );
+		}
+
+		for ( const auto& hero : heroOrder )
+		{
+			std::string heroLabel = hero;
+			constexpr const char* kHeroPrefix = "npc_dota_hero_";
+			if ( heroLabel.rfind( kHeroPrefix , 0 ) == 0 )
+				heroLabel.erase( 0 , std::strlen( kHeroPrefix ) );
+			heroLabel = PrettyCastableName( heroLabel );
+			if ( heroLabel.size() > 11 )
+				heroLabel.resize( 11 );
+
+			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + ( enemyTile - ImGui::GetTextLineHeight() ) * 0.5f );
+			ImGui::TextColored( ImVec4( 0.62f , 0.63f , 0.67f , 1.f ) , "%s" , heroLabel.c_str() );
+			ImGui::SameLine( kHeroLabelWidth );
+
+			bool firstTile = true;
+			for ( const auto& spell : spells )
+			{
+				if ( spell.hero != hero )
+					continue;
+				if ( !firstTile )
+					ImGui::SameLine( 0.f , kTileGap );
+				firstTile = false;
+
+				const auto* rule = Settings::Dodger::FindRule( spell.spell );
+				std::string tooltip = PrettyCastableName( spell.spell , spell.hero );
+				if ( rule && rule->ignore )
+					tooltip += "\nNever dodged";
+				else if ( rule && !rule->counter.empty() )
+					tooltip += "\nAnswered with " + PrettyCastableName( rule->counter );
+				else if ( spell.dangerous )
+					tooltip += "\nAnswered automatically";
+				else
+					tooltip += "\nNot treated as a threat";
+
+				// A paired spell gets a marker so the grid shows at a glance
+				// what has been decided and what is still on autopilot.
+				const char* badge = ( rule && rule->ignore ) ? "x" : ( rule && !rule->counter.empty() ? "*" : nullptr );
+				if ( DrawCastableTile( spell.spell , enemyTile , s_SelectedSpell == spell.spell , !spell.dangerous , badge , tooltip ) )
+					s_SelectedSpell = spell.spell;
+			}
+		}
+	}
+	ImGui::EndChild();
+
+	// --- our answers --------------------------------------------------------
+	ImGui::SameLine( 0.f , gap );
+	ImGui::BeginChild( "##dodgerMyCounters" , ImVec2( counterWidth , innerHeight ) , true , 0 );
+	if ( s_SelectedSpell.empty() )
+	{
+		ImGui::TextDisabled( "Dimmed spells are not treated" );
+		ImGui::TextDisabled( "as threats yet - pairing one" );
+		ImGui::TextDisabled( "makes it one." );
+	}
+	else
+	{
+		auto& rule = Settings::Dodger::RuleFor( s_SelectedSpell );
+
+		if ( ImGui::SmallButton( rule.ignore ? "Dodging: off" : "Dodging: on" ) )
+			rule.ignore = !rule.ignore;
+		ImGui::SameLine();
+		if ( ImGui::SmallButton( "Automatic" ) )
+			rule.counter.clear();
+		ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 3.f );
+
+		ImGui::BeginDisabled( rule.ignore );
+		if ( counters.empty() )
+		{
+			ImGui::TextDisabled( "No usable counters on" );
+			ImGui::TextDisabled( "this hero yet." );
+		}
+		else
+		{
+			const float available = ImGui::GetContentRegionAvail().x;
+			float cursorX = 0.f;
+			for ( const auto& counter : counters )
+			{
+				PlaceTile( cursorX , available );
+
+				const char keyLabel[2] = { counter.key , '\0' };
+				const std::string tooltip = PrettyCastableName( counter.name ) +
+					( counter.isItem ? "\nItem" : "\nAbility" );
+				if ( DrawCastableTile( counter.name , kTile , rule.counter == counter.name , false , keyLabel , tooltip ) )
+					rule.counter = counter.name;
+			}
+		}
+		ImGui::EndDisabled();
+	}
+	ImGui::EndChild();
+	ImGui::EndChild();
+}
+
 static const ReferenceNavigationCategory g_NavigationCategories[] =
 {
 	{ "General", ReferenceIcon::Globe, g_GeneralNavigation, IM_ARRAYSIZE( g_GeneralNavigation ) },
@@ -1279,9 +1590,12 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			// below the fold.
 			const float cardGap = 12.f;
 			const float columnWidth = ( settingsCardWidth - cardGap ) * 0.5f;
-			const float cardHeight = 430.f;
+			// Shorter than a single-purpose page would need, because the
+			// combination editor below is the part people actually come here
+			// to use. Both cards scroll.
+			const float cardHeight = 208.f;
 
-			ImGui::BeginChild( "##dodgerReactionCard" , ImVec2( columnWidth , cardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::BeginChild( "##dodgerReactionCard" , ImVec2( columnWidth , cardHeight ) , true , 0 );
 			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Reaction Settings" );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 			DrawSwitchRow( "Enable" , "##dodgerEnable" , Settings::Dodger::Enable , ReferenceIcon::Hidden );
@@ -1300,21 +1614,17 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			ImGui::EndChild();
 
 			ImGui::SameLine( 0.f , cardGap );
-			ImGui::BeginChild( "##dodgerTuningCard" , ImVec2( columnWidth , cardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
+			ImGui::BeginChild( "##dodgerTuningCard" , ImVec2( columnWidth , cardHeight ) , true , 0 );
 			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Threat Tuning" );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 			ImGui::BeginDisabled( !Settings::Dodger::Enable );
 			DrawSliderRow( "Trigger Range" , "##dodgerTriggerRange" , Settings::Dodger::TriggerRange , 600.f , 3000.f , "%.0f" , ReferenceIcon::Radius );
 			DrawSliderRow( "Reaction Delay" , "##dodgerReaction" , Settings::Dodger::ReactionDelayMs , 0.f , 400.f , "%.0f ms" , ReferenceIcon::Duration );
-			DrawSliderRow( "Min Danger Damage" , "##dodgerMinDamage" , Settings::Dodger::MinDangerDamage , 0.f , 600.f , "%.0f" , ReferenceIcon::Warning );
-			DrawSliderRow( "Nuke vs My Health" , "##dodgerThreatHealth" , Settings::Dodger::MinThreatHealthPercent , 0.f , 100.f , "%.0f%%" , ReferenceIcon::Warning );
-			DrawSliderRow( "Ally Save Health" , "##dodgerAllyHealth" , Settings::Dodger::AllySaveHealthPercent , 5.f , 90.f , "%.0f%%" , ReferenceIcon::Allies );
-			DrawSliderRow( "Panic Health" , "##dodgerPanicHealth" , Settings::Dodger::PanicHealthPercent , 5.f , 50.f , "%.0f%%" , ReferenceIcon::Warning );
 			ImGui::EndDisabled();
 
 			ImGui::Spacing();
-			ImGui::TextDisabled( "Hard disables trigger even at zero damage; other spells need Min Danger Damage." );
-			ImGui::TextDisabled( "Known pairs go first: Counterspell blocks Finger, Manta answers Reverse Polarity," );
+			ImGui::TextDisabled( "Your pairings below win, then known pairs, then an automatic choice." );
+			ImGui::TextDisabled( "Known pairs: Counterspell blocks Finger, Manta answers Reverse Polarity," );
 			ImGui::TextDisabled( "Eul's rides out Thundergod's Wrath. Global ults ignore Trigger Range." );
 			ImGui::TextDisabled( "A BKB is never spent on pure/physical or immunity-piercing casts." );
 			ImGui::TextDisabled( "Self casts click your own hero, centring the camera on it first if needed." );
@@ -1323,6 +1633,8 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			if ( auto* pClient = GetAndromedaClient() )
 				ImGui::Text( "Status: %s" , pClient->GetDodger().GetStatus().c_str() );
 			ImGui::EndChild();
+
+			DrawDodgerCombinations( mainContentMargin , settingsCardWidth , 67.f + cardHeight + cardGap , cardGap );
 		}
 		else
 		{

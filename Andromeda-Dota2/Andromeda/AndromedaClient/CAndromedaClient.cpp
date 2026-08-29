@@ -4000,6 +4000,29 @@ auto CAndromedaClient::SetCameraDistance( float Distance ) -> void
 	}
 }
 
+auto CAndromedaClient::GetCastableIconSrv( const std::string& name , bool isItem ) -> ID3D11ShaderResourceView*
+{
+	if ( name.empty() )
+		return nullptr;
+
+	// Items are filed on the CDN without the "item_" prefix the entity names
+	// carry, exactly as TrackedIconAssetName does for the overlays.
+	std::string assetName = name;
+	if ( isItem && assetName.rfind( "item_" , 0 ) == 0 )
+		assetName.erase( 0 , 5 );
+	assetName.erase( std::remove_if( assetName.begin() , assetName.end() , []( const unsigned char value )
+	{
+		return !std::isalnum( value ) && value != '_';
+	} ) , assetName.end() );
+
+	auto* icon = GetAssetIcon( isItem ? "items" : "abilities" , assetName );
+	// The overlays normally drive the download queue, but they return early
+	// when their own settings are off - so pump it here too, or a menu-only
+	// user would wait forever for an icon that never downloads.
+	UpdateTrackedIconDownloads();
+	return icon ? icon->srv : nullptr;
+}
+
 auto CAndromedaClient::OnRender() -> void
 {
 	// Apply independently of the camera option so fog cannot return during interpolation.

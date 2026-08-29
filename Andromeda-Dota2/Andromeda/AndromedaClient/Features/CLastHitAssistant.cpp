@@ -57,6 +57,7 @@ namespace
 		uint32_t damageMax = 0;
 		uint32_t damageBonus = 0;
 		uint32_t attackRange = 0;
+		uint32_t armor = 0;
 		uint32_t playerOwnerId = 0;
 		uint32_t heroPlayerId = 0;
 		uint32_t assignedHero = 0;
@@ -68,6 +69,7 @@ namespace
 		bool usable = false;
 		bool combatUsable = false;
 		bool hasDamageMax = false;
+		bool hasArmor = false;
 		bool hasPlayerOwnerId = false;
 		bool hasHeroPlayerId = false;
 		bool hasAssignedHero = false;
@@ -82,7 +84,11 @@ namespace
 		C_BaseEntity *entity = nullptr;
 		Vector3 origin{};
 		uint8_t team = 0;
-		int attackDamage = 0;
+		// An attack rolls somewhere in [min, max] + bonus. Only the min roll
+		// is guaranteed, so that is what decides whether a creep is starred;
+		// the max is kept for the log.
+		int attackDamageMin = 0;
+		int attackDamageMax = 0;
 		float attackRange = 0.f;
 		float detectRange = 0.f;
 		bool screenCenterFallback = false;
@@ -173,6 +179,7 @@ namespace
 		offsets.hasDamageMax = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageMax", offsets.damageMax);
 		const bool hasDamageBonus = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iDamageBonus", offsets.damageBonus);
 		const bool hasAttackRange = schema->TryGetOffset("C_DOTA_BaseNPC", "m_iAttackRange", offsets.attackRange);
+		offsets.hasArmor = schema->TryGetOffset("C_DOTA_BaseNPC", "m_flPhysicalArmorValue", offsets.armor);
 		offsets.hasHeroPlayerId = schema->TryGetOffset("C_DOTA_BaseNPC_Hero", "m_iPlayerID", offsets.heroPlayerId) ||
 								  schema->TryGetOffset("C_DOTA_BaseNPC", "m_iPlayerID", offsets.heroPlayerId);
 		offsets.hasPlayerOwnerId = schema->TryGetOffset("C_DOTA_BaseNPC", "m_nPlayerOwnerID", offsets.playerOwnerId);
@@ -409,6 +416,25 @@ namespace
 			   EntityNameContains(entity, "badguys_ranged");
 	}
 
+	// Same formula CKillStealer.cpp uses for its own physical-damage estimate.
+	// A melee lane creep carries 2 armor and a ranged one 0, so an attack that
+	// "should" kill a creep at exactly its raw damage lands ~10% short on half
+	// the wave - the creep survives on a sliver and the last hit is gone.
+	auto PhysicalDamageAfterArmor(float damage, float armor) -> float
+	{
+		const float reduction = 0.052f * armor / (0.9f + 0.048f * std::abs(armor));
+		return damage * (1.f - std::clamp(reduction, -0.95f, 0.95f));
+	}
+
+	// What one attack is guaranteed to take off this particular creep: the
+	// hero's minimum roll, reduced by that creep's own armor. Armor is read
+	// per creep rather than assumed, so an aura (Vladmir's, Assault Cuirass,
+	// a Solar Crest) moves the threshold with it.
+	auto GuaranteedDamageAgainst(const LocalHeroInfo &hero, float armor) -> float
+	{
+		return PhysicalDamageAfterArmor(static_cast<float>(hero.attackDamageMin), armor);
+	}
+
 	auto DetectRangeForHero(float) -> float
 	{
 		return 1200.f;
@@ -452,14 +478,16 @@ namespace
 		const int rawDamageMin = offsets.combatUsable ? ReadField<int>(hero, offsets.damageMin) : 0;
 		const int rawDamageMax = offsets.hasDamageMax ? ReadField<int>(hero, offsets.damageMax, rawDamageMin) : rawDamageMin;
 		const int rawDamageBonus = ReadField<int>(hero, offsets.damageBonus);
-		const int attackDamage = (std::max)(1, (std::max)(rawDamageMin, rawDamageMax) + rawDamageBonus);
-		if (attackDamage < 1 || attackDamage > 1000)
+		const int attackDamageMin = (std::max)(1, rawDamageMin + rawDamageBonus);
+		const int attackDamageMax = (std::max)(attackDamageMin, (std::max)(rawDamageMin, rawDamageMax) + rawDamageBonus);
+		if (attackDamageMin < 1 || attackDamageMax > 1000)
 			return false;
 
 		out.entity = hero;
 		out.origin = origin;
 		out.team = team;
-		out.attackDamage = attackDamage;
+		out.attackDamageMin = attackDamageMin;
+		out.attackDamageMax = attackDamageMax;
 		out.attackRange = static_cast<float>(rawAttackRange);
 		out.detectRange = DetectRangeForHero(out.attackRange);
 		return true;
@@ -648,7 +676,7 @@ namespace
 					allocatedChunks, heroLikeCount, builtHeroCount, projectedHeroCount,
 					bestIndex, bestDistanceSq, bestHero.entity ? 1 : 0,
 					static_cast<unsigned int>(preferredTeam),
-					static_cast<unsigned int>(bestHero.team), bestHero.attackDamage,
+					static_cast<unsigned int>(bestHero.team), bestHero.attackDamageMin,
 					bestHero.origin.m_x, bestHero.origin.m_y, bestHero.origin.m_z);
 			lastLogTick = now;
 		}
@@ -915,10 +943,15 @@ namespace
 			return;
 		lastLogTick = now;
 
-		const float starThreshold = hero.entity ? static_cast<float>(hero.attackDamage) : 0.f;
-		DEV_LOG("[last-hit] %s local=%d fallback=%d team=%u damage=%d threshold=%.0f attack=%.0f detect=%.0f origin=(%.0f,%.0f,%.0f) scanned=%d lane=%d allied=%d enemy=%d enemy_origin=%d enemy_in_range=%d enemy_killable=%d in_range=%d lethal=%d candidates=%d nearest=%.0f hp=%d/%d team=%u\n",
+		// Both thresholds are printed because they bracket what the feature
+		// promises: a creep at or under the 2-armor number dies to any roll,
+		// one between the two only dies to a lucky roll or to no armor at all.
+		const float armouredThreshold = hero.entity ? GuaranteedDamageAgainst(hero, 2.f) : 0.f;
+		const float bareThreshold = hero.entity ? GuaranteedDamageAgainst(hero, 0.f) : 0.f;
+		DEV_LOG("[last-hit] %s local=%d fallback=%d team=%u damage=%d-%d threshold=%.0f/%.0f attack=%.0f detect=%.0f origin=(%.0f,%.0f,%.0f) scanned=%d lane=%d allied=%d enemy=%d enemy_origin=%d enemy_in_range=%d enemy_killable=%d in_range=%d lethal=%d candidates=%d nearest=%.0f hp=%d/%d team=%u\n",
 				reason ? reason : "debug", hero.entity ? 1 : 0, hero.screenCenterFallback ? 1 : 0,
-				static_cast<unsigned int>(hero.team), hero.attackDamage, starThreshold, hero.attackRange, hero.detectRange,
+				static_cast<unsigned int>(hero.team), hero.attackDamageMin, hero.attackDamageMax,
+				armouredThreshold, bareThreshold, hero.attackRange, hero.detectRange,
 				hero.origin.m_x, hero.origin.m_y, hero.origin.m_z, stats.scanned, stats.laneLike,
 				stats.alliedLane, stats.enemyLane, stats.enemyWithOrigin, stats.enemyInRange, stats.enemyKillable,
 				stats.inRange, stats.lethal, stats.candidates, stats.nearestDistance,
@@ -971,7 +1004,6 @@ namespace
 		const float scanRangeSq = scanRange * scanRange;
 		const float attackReach = hero.attackRange + kAttackReachLeeway;
 		const float attackReachSq = attackReach * attackReach;
-		const float lethalHealth = static_cast<float>(hero.attackDamage);
 
 		// One pass produces the whole feature: the stars that get drawn and
 		// the orders that get issued. It used to be two - a chunk walk here
@@ -1042,6 +1074,13 @@ namespace
 					stats.nearestMaxHealth = maxHealth;
 					stats.nearestTeam = team;
 				}
+
+				// Per creep, not once per hero: half a lane wave carries 2
+				// armor and the other half none, so a single hero-wide
+				// threshold starred the melee creeps roughly 10% too early
+				// and the attack left them alive.
+				const float armor = offsets.hasArmor ? ReadField<float>(entity, offsets.armor, 0.f) : 0.f;
+				const float lethalHealth = GuaranteedDamageAgainst(hero, armor);
 
 				const bool inScanRange = distanceSq <= scanRangeSq;
 				const bool killable = static_cast<float>(health) <= lethalHealth;

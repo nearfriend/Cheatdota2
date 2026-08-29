@@ -8,6 +8,18 @@
 #define CHEAT_NAME					"Andromeda [Dota2 Plus + Camera Distance Changer]"
 #define CHEAT_VERSION				"1.0.1"
 
+// Stamped into dwExtraInfo on every SendInput event the features generate, so
+// GUI_WndProc can tell our own synthetic input apart from the player's.
+//
+// Why it exists: the window-procedure hook drops any MOUSE message ImGui
+// consumed while io.WantCaptureMouse is set - and that is set whenever the
+// cursor sits over ANY overlay window, including the small hero-tracker
+// windows that float over heroes in the world. Keyboard messages are only
+// dropped while the menu is actually open. That asymmetry meant every
+// keypress-only cast worked while every cast that needed a confirming click
+// was silently eaten by our own overlay before Dota ever saw it.
+#define ANDROMEDA_INJECTED_INPUT_TAG	( (ULONG_PTR)0xA11D0D6E )
+
 // Project Buid Config:
 
 #ifdef RELEASE_BUILD

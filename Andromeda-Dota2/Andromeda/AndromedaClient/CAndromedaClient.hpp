@@ -116,6 +116,16 @@ public:
 	CAutoCombo& GetAutoCombo() { return m_AutoCombo; }
 	CDodger& GetDodger() { return m_Dodger; }
 	const CDodger& GetDodger() const { return m_Dodger; }
+
+	// Ability/item icon for the menu, backed by the same on-demand cache the
+	// overlays use: a local file when one exists, otherwise fetched from the
+	// Dota CDN and cached to Assets\icons. Returns null until the download
+	// finishes, so callers need a fallback for the first frames.
+	//
+	// The menu had its own loader that only ever looked at local files, which
+	// is why only the ~180 shipped PNGs had icons and everything else fell
+	// back to a lettered plate.
+	auto GetCastableIconSrv( const std::string& name , bool isItem ) -> struct ID3D11ShaderResourceView*;
 	const CAutoCombo& GetAutoCombo() const { return m_AutoCombo; }
 
 private:

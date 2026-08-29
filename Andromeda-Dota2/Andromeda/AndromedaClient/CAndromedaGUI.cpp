@@ -287,6 +287,15 @@ LRESULT WINAPI CAndromedaGUI::GUI_WndProc( HWND hwnd , UINT uMsg , WPARAM wParam
 	if ( uMsg == WM_MOUSEWHEEL )
 		GetAndromedaGUI()->AddMouseWheelDelta( static_cast<short>( GET_WHEEL_DELTA_WPARAM( wParam ) ) );
 
+	// Input WE injected goes straight to the game, never through ImGui's
+	// capture test. Without this the overlay eats our own confirming clicks:
+	// any ImGui window under the cursor sets io.WantCaptureMouse, and the
+	// filter below then drops the message - so a targeted cast pressed its
+	// hotkey, entered targeting mode, and never received the click that
+	// completes it. See ANDROMEDA_INJECTED_INPUT_TAG in Config.hpp.
+	if ( GetMessageExtraInfo() == ANDROMEDA_INJECTED_INPUT_TAG )
+		return CallWindowProcA( GetAndromedaGUI()->m_WndProc_o , hwnd , uMsg , wParam , lParam );
+
 	if ( GetAndromedaGUI()->m_bInit )
 	{
 		// ImGui returns non-zero when it consumed the message — don't forward those to the game.

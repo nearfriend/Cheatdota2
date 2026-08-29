@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // Reactive defense: watches every enemy hero's abilities and items for the
 // moment a cast starts, decides whether that cast can reach us (or a low ally),
@@ -21,6 +22,27 @@ public:
 	auto OnRender() -> void;
 
 	auto GetStatus() const -> const std::string& { return m_Status; }
+
+	// Live match data for the menu's combination editor. Both are refreshed
+	// only while the menu is open (casting is blocked then anyway) on the same
+	// render thread the menu draws on, so no locking is involved.
+	struct EnemySpell
+	{
+		std::string hero;
+		std::string spell;
+		// True when the dodger would treat this cast as a threat today.
+		bool dangerous = false;
+	};
+
+	struct OwnCounter
+	{
+		std::string name;
+		bool isItem = false;
+		char key = 0;
+	};
+
+	auto GetEnemySpells() const -> const std::vector<EnemySpell>& { return m_EnemySpells; }
+	auto GetOwnCounters() const -> const std::vector<OwnCounter>& { return m_OwnCounters; }
 
 private:
 	// Four separate ticks, because Dota consumes injected input asynchronously:
@@ -57,6 +79,9 @@ private:
 		WORD key = 0;
 		std::string name;
 		Vector3 aimPoint{};
+		// Where a ground-targeted escape starts from, so the point can be
+		// pulled in toward the hero when the full-length one is off screen.
+		Vector3 aimOrigin{};
 		uint32_t startTick = 0;
 		uint32_t nextTick = 0;
 		uint32_t expiresAt = 0;
@@ -123,4 +148,7 @@ private:
 	uint32_t m_NextPruneTick = 0;
 	uint32_t m_NextDodgeTick = 0;
 	uint32_t m_NextPanicTick = 0;
+	uint32_t m_NextMenuRefreshTick = 0;
+	std::vector<EnemySpell> m_EnemySpells{};
+	std::vector<OwnCounter> m_OwnCounters{};
 };

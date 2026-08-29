@@ -372,6 +372,7 @@ auto FeatureSupport::SendKeyPress( WORD key ) -> bool
 		input.ki.wVk = 0;
 		input.ki.wScan = static_cast<WORD>( MapVirtualKeyW( vk , MAPVK_VK_TO_VSC ) );
 		input.ki.dwFlags = KEYEVENTF_SCANCODE | ( keyUp ? KEYEVENTF_KEYUP : 0 );
+		input.ki.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 		return input;
 	};
 	INPUT inputs[2] = { MakeKeyInput( key , false ) , MakeKeyInput( key , true ) };
@@ -383,8 +384,10 @@ auto FeatureSupport::SendLeftClick() -> bool
 	INPUT inputs[2]{};
 	inputs[0].type = INPUT_MOUSE;
 	inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+	inputs[0].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 	inputs[1].type = INPUT_MOUSE;
 	inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+	inputs[1].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 	return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
 }
 
@@ -413,6 +416,7 @@ auto FeatureSupport::MoveCursorToScreen( int screenX , int screenY ) -> bool
 		INPUT input{};
 		input.type = INPUT_MOUSE;
 		input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+		input.mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 		input.mi.dx = static_cast<LONG>( ( static_cast<long long>( screenX - virtualX ) * 65535LL ) / ( virtualW - 1 ) );
 		input.mi.dy = static_cast<LONG>( ( static_cast<long long>( screenY - virtualY ) * 65535LL ) / ( virtualH - 1 ) );
 		if ( SendInput( 1 , &input , sizeof( INPUT ) ) == 1 )

@@ -2,6 +2,7 @@
 
 #include "FeatureSupport.hpp"
 
+#include <AndromedaClient/CAndromedaGUI.hpp>
 #include <AndromedaClient/Data/AbilityDamageData.hpp>
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <Common/DevLog.hpp>
@@ -101,6 +102,19 @@ namespace
 	// know (Ravage-likes are in the table below with a real radius).
 	constexpr float kDefaultNoTargetReach = 600.f;
 	constexpr float kAllySaveRange = 900.f;
+	// These four were menu sliders. They are fixed now because they are
+	// judgement calls, not preferences - the values below are the ones the
+	// sliders shipped with, so behaviour is unchanged, there is just nothing
+	// left to mis-set.
+	//
+	// Damage an ability NOT in the curated danger table has to do before it
+	// counts as a threat at all. Without a bar here every chip-damage spell in
+	// the game would arm a dodge.
+	constexpr float kUnlistedThreatDamage = 150.f;
+	// An ally is worth spending a save on below this much of their health.
+	constexpr float kAllySaveHealthPercent = 40.f;
+	// Health at which the panic save fires for us or a nearby ally.
+	constexpr float kPanicHealthPercent = 18.f;
 	// A panic save that fires again a second later just feeds the next item
 	// into the same losing fight, so it holds much longer than a spell dodge.
 	constexpr uint32_t kPanicHoldMs = 6000;
@@ -481,16 +495,6 @@ namespace
 		return nullptr;
 	}
 
-	auto HasPreferredCounter( const std::string& threatName ) -> bool
-	{
-		for ( const auto& entry : kPreferredCounters )
-		{
-			if ( threatName == entry.threat )
-				return true;
-		}
-		return false;
-	}
-
 	auto FindResponseDef( const std::string& loweredName ) -> const ResponseDef*
 	{
 		for ( const auto& entry : kResponses )
@@ -531,7 +535,7 @@ namespace
 
 		if ( !entry || !entry->targetEnemy || !entry->IsUsableDamage() )
 			return 0;
-		if ( entry->DamageForLevel( level ) < Settings::Dodger::MinDangerDamage )
+		if ( entry->DamageForLevel( level ) < kUnlistedThreatDamage )
 			return 0;
 
 		uint8_t flags = DamageTypeFlag( entry->damageType );
@@ -769,6 +773,96 @@ namespace
 			return !std::isfinite( cooldown ) || cooldown <= 0.15f;
 		}
 		return false;
+	}
+
+	// Everything our hero owns that this feature knows how to cast, whether or
+	// not it is usable this instant. The menu needs the full list - a counter
+	// on cooldown is still a valid thing to pair a spell with - so this
+	// deliberately skips the cooldown/mana checks CollectResponses applies.
+	auto CollectOwnCounters( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets ,
+		C_BaseEntity* localEntity , std::vector<CDodger::OwnCounter>& out ) -> void
+	{
+		out.clear();
+		static constexpr std::array<char , 6> kItemKeyChars = { 'Z' , 'X' , 'C' , 'V' , 'B' , 'N' };
+		static constexpr std::array<char , 6> kAbilityKeyChars = { 'Q' , 'W' , 'E' , 'D' , 'F' , 'R' };
+
+		std::vector<CHandle> handles;
+		if ( FS::ReadInventoryHandles( localEntity , offsets , handles ) )
+		{
+			const int count = (std::min)( static_cast<int>( handles.size() ) , static_cast<int>( kItemKeyChars.size() ) );
+			for ( int slot = 0; slot < count; ++slot )
+			{
+				CEntityIdentity* identity = nullptr;
+				auto* item = FS::EntityFromHandle( entitySystem , handles[slot] , &identity );
+				if ( !item )
+					continue;
+				const std::string name = FS::ToLower( FS::EntityName( item , identity ) );
+				if ( !FindResponseDef( name ) )
+					continue;
+				out.push_back( CDodger::OwnCounter{ name , true , kItemKeyChars[slot] } );
+			}
+		}
+
+		if ( FS::ReadAbilityHandles( localEntity , offsets , handles ) )
+		{
+			int fallbackSlot = 0;
+			for ( const auto& handle : handles )
+			{
+				CEntityIdentity* identity = nullptr;
+				auto* ability = FS::EntityFromHandle( entitySystem , handle , &identity );
+				if ( !ability )
+					continue;
+				const std::string name = FS::ToLower( FS::EntityName( ability , identity ) );
+				if ( name.empty() || name.rfind( "special_bonus_" , 0 ) == 0 )
+					continue;
+
+				int slot = FS::PreferredSlotForAbility( name );
+				if ( slot < 0 || slot >= static_cast<int>( kAbilityKeyChars.size() ) )
+					slot = fallbackSlot;
+				++fallbackSlot;
+				if ( !FindResponseDef( name ) || slot < 0 || slot >= static_cast<int>( kAbilityKeyChars.size() ) )
+					continue;
+				out.push_back( CDodger::OwnCounter{ name , false , kAbilityKeyChars[slot] } );
+			}
+		}
+	}
+
+	// Every spell the enemy heroes actually have, for the menu to pair against.
+	auto CollectEnemySpells( CGameEntitySystem* entitySystem , const FS::UnitOffsets& offsets ,
+		const std::vector<HeroSnapshot>& heroes , uint8_t localTeam , std::vector<CDodger::EnemySpell>& out ) -> void
+	{
+		out.clear();
+		for ( const auto& hero : heroes )
+		{
+			if ( hero.team == localTeam )
+				continue;
+
+			std::vector<CHandle> handles;
+			if ( !FS::ReadAbilityHandles( hero.entity , offsets , handles ) )
+				continue;
+
+			for ( const auto& handle : handles )
+			{
+				CEntityIdentity* identity = nullptr;
+				auto* ability = FS::EntityFromHandle( entitySystem , handle , &identity );
+				if ( !ability )
+					continue;
+
+				const std::string name = FS::ToLower( FS::EntityName( ability , identity ) );
+				if ( name.empty() || name.rfind( "special_bonus_" , 0 ) == 0 || name.rfind( "generic_" , 0 ) == 0 )
+					continue;
+				if ( std::any_of( out.begin() , out.end() ,
+					[&]( const CDodger::EnemySpell& existing ) { return existing.spell == name; } ) )
+					continue;
+
+				const int level = (std::max)( 1 , FS::ReadField<int>( ability , offsets.abilityLevel , 1 ) );
+				float reach = 0.f;
+				const auto* entry = FS::FindAbilityEntry( name );
+				const bool dangerous = ClassifyThreat( name , entry , level , reach ) != 0;
+
+				out.push_back( CDodger::EnemySpell{ hero.name , name , dangerous } );
+			}
+		}
 	}
 
 	// Prints which item this feature believes is in which hotkey slot.
@@ -1009,24 +1103,49 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		// to be genuinely visible. MoveCursorToClientPoint clamps an off-view
 		// point to the window edge, and clicking the edge hits no unit at all.
 		ImVec2 aimScreen{};
-		const bool clickable = FS::ProjectWorldToClient( window , m_Cast.aimPoint , m_Cast.groundAim , aimScreen );
+		bool clickable = FS::ProjectWorldToClient( window , m_Cast.aimPoint , m_Cast.groundAim , aimScreen );
+
+		// A full-length blink lands ~1150 units away, which routinely projects
+		// past a screen edge or into the bottom HUD band even with the camera
+		// on the hero - and refusing to fire there would make blink escapes
+		// mostly useless. Pull the point in toward the hero until it is
+		// somewhere we can actually click: a shorter blink still breaks the
+		// spell, and it is what a player does when the screen runs out.
+		if ( !clickable && m_Cast.groundAim )
+		{
+			for ( const float scale : { 0.75f , 0.55f , 0.40f , 0.28f } )
+			{
+				Vector3 shortened = m_Cast.aimOrigin;
+				shortened.m_x += ( m_Cast.aimPoint.m_x - m_Cast.aimOrigin.m_x ) * scale;
+				shortened.m_y += ( m_Cast.aimPoint.m_y - m_Cast.aimOrigin.m_y ) * scale;
+				shortened.m_z = m_Cast.aimPoint.m_z;
+				if ( !FS::ProjectWorldToClient( window , shortened , true , aimScreen ) )
+					continue;
+				m_Cast.aimPoint = shortened;
+				clickable = true;
+				DEV_LOG( "[dodger] %s: full-length escape off screen, shortened to %.0f%%\n" ,
+					m_Cast.name.c_str() , scale * 100.f );
+				break;
+			}
+		}
+
 		DEV_LOG( "[dodger] aim %s: screen=(%.0f,%.0f) clickable=%d self=%d\n" ,
 			m_Cast.name.c_str() , aimScreen.x , aimScreen.y , clickable ? 1 : 0 , m_Cast.selfCast ? 1 : 0 );
 
-		// A self-cast whose hero is off screen is not hopeless: double-tapping
-		// "Select Hero" centres the camera on it, after which the model is at
-		// screen centre and perfectly clickable. That is what a player does,
-		// and unlike the self-cast double tap it depends on no Dota option.
-		if ( !clickable && m_Cast.selfCast && !m_Cast.cameraCentred )
+		// Centring the camera on our hero brings the ground around it into
+		// view too, so it rescues an off-screen blink point as well as an
+		// off-screen self-cast.
+		if ( !clickable && !m_Cast.cameraCentred )
 		{
 			m_Cast.cameraCentred = true;
 			FS::SendKeyPress( VK_F1 );
 			FS::SendKeyPress( VK_F1 );
-			DEV_LOG( "[dodger] %s: hero off screen, centring camera before the cast\n" , m_Cast.name.c_str() );
+			DEV_LOG( "[dodger] %s: aim off screen, centring camera before the cast\n" , m_Cast.name.c_str() );
 			m_Cast.phase = CastPhase::CenterCamera;
 			m_Cast.nextTick = now + kCameraSettleMs;
 			break;
 		}
+
 		// Last resort for a self-cast we still cannot click: try Dota's own
 		// double-tap self-cast. It only works when that option is enabled, so
 		// it is the fallback rather than the primary path.
@@ -1120,6 +1239,12 @@ auto CDodger::AdvanceCast( uint32_t now ) -> void
 		// point at the moment the game consumes the click, not merely at the
 		// moment we asked for it.
 		FS::AimCursorAtWorld( window , m_Cast.aimPoint , m_Cast.groundAim );
+		// want-capture tells us whether our own overlay was claiming the mouse
+		// at the moment the click went out. Injected input now carries a tag
+		// that bypasses that filter, so this should read 0 - a 1 here would
+		// mean the bypass is not working.
+		DEV_LOG( "[dodger] click %s: want-capture=%d\n" ,
+			m_Cast.name.c_str() , ImGui::GetIO().WantCaptureMouse ? 1 : 0 );
 		if ( !FS::SendLeftClick() )
 		{
 			CancelCast( "Cast failed" );
@@ -1333,6 +1458,16 @@ auto CDodger::OnRender() -> void
 		}
 	}
 
+	// Keep the menu's combination editor stocked with the spells this match
+	// actually contains. Only while it is open, and slowly - it re-walks every
+	// enemy's ability list.
+	if ( GetAndromedaGUI()->IsVisible() && now >= m_NextMenuRefreshTick )
+	{
+		m_NextMenuRefreshTick = now + 500;
+		CollectEnemySpells( entitySystem , offsets , heroes , local->team , m_EnemySpells );
+		CollectOwnCounters( entitySystem , offsets , local->entity , m_OwnCounters );
+	}
+
 	if ( now >= m_NextPruneTick )
 	{
 		m_NextPruneTick = now + 5000;
@@ -1430,10 +1565,49 @@ auto CDodger::OnRender() -> void
 			: ( local->maxHealth > 0 ? 100.f * static_cast<float>( local->health ) / static_cast<float>( local->maxHealth ) : 100.f );
 		const bool allowExpensive = ( flags & kDisable ) != 0 || victimHealthPercent <= 50.f;
 
-		// The explicit per-spell answer wins when we own it; the flag matcher
-		// is the fallback for everything not in that table.
-		const auto* chosen = SelectPreferredResponse( ready , threatName , flags , againstAlly , allyDistance , allowExpensive );
-		const bool fromPreference = chosen != nullptr;
+		// Three layers, most specific first: what the user paired in the menu,
+		// then the built-in pair table, then flag matching. A user pairing is
+		// still subject to the item being off cooldown and castable - if it is
+		// not, we fall through rather than doing nothing.
+		const ReadyResponse* chosen = nullptr;
+		const char* source = "flag match";
+
+		if ( const auto* rule = Settings::Dodger::FindRule( threatName ); rule && !rule->counter.empty() )
+		{
+			for ( const auto& candidate : ready )
+			{
+				if ( std::strcmp( candidate.def->name , rule->counter.c_str() ) != 0 )
+					continue;
+				// A pairing the user made by hand only has to be castable.
+				// The judgement calls the automatic path applies - "a blink
+				// cannot dodge an instant spell", "a spell block needs a
+				// single target", "that ultimate is too expensive for this" -
+				// are exactly what the user is overriding by naming the pair,
+				// so they do not get a vote here. Range and the blink switch
+				// still do, because those decide whether the cast can happen
+				// at all.
+				if ( candidate.def->isBlink && !Settings::Dodger::UseBlink )
+					continue;
+				if ( againstAlly )
+				{
+					if ( !candidate.def->allyCapable )
+						continue;
+					const float range = candidate.castRange > 0.f ? candidate.castRange : kAllySaveRange;
+					if ( allyDistance > range + 50.f )
+						continue;
+				}
+				chosen = &candidate;
+				source = "user pair";
+				break;
+			}
+		}
+
+		if ( !chosen )
+		{
+			chosen = SelectPreferredResponse( ready , threatName , flags , againstAlly , allyDistance , allowExpensive );
+			if ( chosen )
+				source = "known pair";
+		}
 		if ( !chosen )
 			chosen = SelectResponse( ready , flags , againstAlly , allyDistance , allowExpensive );
 		if ( !chosen )
@@ -1492,6 +1666,7 @@ auto CDodger::OnRender() -> void
 			m_Cast.needsAim = true;
 			m_Cast.groundAim = true;
 			m_Cast.needsClick = !Settings::Dodger::QuickCast;
+			m_Cast.aimOrigin = local->origin;
 			m_Cast.aimPoint = BlinkEscapePoint( local->origin , caster.origin ,
 				chosen->castRange > 0.f ? chosen->castRange : 1200.f );
 			break;
@@ -1500,7 +1675,7 @@ auto CDodger::OnRender() -> void
 		m_Status = std::string( againstAlly ? "Saving ally from " : "Dodging " ) + threatName;
 		DEV_LOG( "[dodger] %s: %s (flags=%u) - answering with %s (%s, key=%c)\n" ,
 			caster.name.c_str() , threatName.c_str() , static_cast<unsigned>( flags ) , m_Cast.name.c_str() ,
-			fromPreference ? "known pair" : "flag match" , static_cast<char>( m_Cast.key ) );
+			source , static_cast<char>( m_Cast.key ) );
 		if ( !chosen->def->isAbility )
 			LogInventorySlots( entitySystem , offsets , local->entity );
 	};
@@ -1624,6 +1799,14 @@ auto CDodger::OnRender() -> void
 		{
 			float tableReach = 0.f;
 			const auto* entry = FS::FindAbilityEntry( cast.name );
+			// The user's own opinion about this spell wins over everything.
+			if ( const auto* rule = Settings::Dodger::FindRule( cast.name ); rule && rule->ignore )
+			{
+				DEV_LOG( "[dodger] %s cast %s - ignored by user rule\n" ,
+					enemy.name.c_str() , cast.name.c_str() );
+				continue;
+			}
+
 			const uint8_t flags = ClassifyThreat( cast.name , entry , cast.level , tableReach );
 			if ( flags == 0 )
 			{
@@ -1668,30 +1851,14 @@ auto CDodger::OnRender() -> void
 			// this: being stunned at full health is the thing to avoid. The
 			// damage here is the catalog's pre-mitigation number, so this is a
 			// proportion check, not a lethality calculation.
-			// A spell with an explicit counter in kPreferredCounters is exempt:
-			// naming the pair IS the decision that this spell gets answered.
-			// Thundergod's Wrath is the case that made this necessary - ~440
-			// magic damage is under a third of a healthy hero's pool, so the
-			// proportion check quietly held the Eul's back on exactly the
-			// spell the pair table says to use it for.
-			const bool knownPair = HasPreferredCounter( cast.name );
-
-			bool worthAnItem = true;
-			if ( !knownPair && ( flags & kDisable ) == 0 && entry && entry->IsUsableDamage() && local->health > 0 )
-			{
-				const float damage = entry->DamageForLevel( cast.level );
-				const float percentOfHealth = 100.f * damage / static_cast<float>( local->health );
-				worthAnItem = percentOfHealth >= Settings::Dodger::MinThreatHealthPercent;
-				if ( !worthAnItem )
-				{
-					DEV_LOG( "[dodger] %s cast %s - ignored: %.0f damage is %.0f%% of my %d hp, under Nuke vs My Health (%.0f%%)\n" ,
-						enemy.name.c_str() , cast.name.c_str() , damage , percentOfHealth , local->health ,
-						Settings::Dodger::MinThreatHealthPercent );
-				}
-			}
-
+			// No proportion-of-health check: anything that classifies as a
+			// threat gets answered, however small the hit would have been.
+			// Deciding a spell is not worth dodging is now a per-spell call
+			// the user makes in the combination editor ("Never dodge this"),
+			// which is both explicit and visible - unlike a global heuristic
+			// that silently held fire and read as the feature being broken.
 			const float distanceToLocal = FS::Distance2D( enemy.origin , local->origin );
-			const bool reachesLocal = Settings::Dodger::DodgeSelf && worthAnItem &&
+			const bool reachesLocal = Settings::Dodger::DodgeSelf &&
 				distanceToLocal <= reach && ( isGlobal || distanceToLocal <= triggerRange ) &&
 				( !hasFacing || CasterFacesVictim( enemy.origin , casterYaw , local->origin ) );
 
@@ -1720,7 +1887,7 @@ auto CDodger::OnRender() -> void
 					if ( candidate.team != local->team || candidate.entity == local->entity || candidate.maxHealth <= 0 )
 						continue;
 					const float healthPercent = 100.f * static_cast<float>( candidate.health ) / static_cast<float>( candidate.maxHealth );
-					if ( healthPercent > Settings::Dodger::AllySaveHealthPercent )
+					if ( healthPercent > kAllySaveHealthPercent )
 						continue;
 					if ( FS::Distance2D( enemy.origin , candidate.origin ) > reach )
 						continue;
@@ -1743,11 +1910,10 @@ auto CDodger::OnRender() -> void
 				// decided not to be OUR problem. Print the numbers that made
 				// that call so a wrong reach or a wrong facing read is visible
 				// instead of looking like a missed detection.
-				DEV_LOG( "[dodger] %s cast %s (flags=%u) - not aimed at us: distance=%.0f reach=%.0f%s%s\n" ,
+				DEV_LOG( "[dodger] %s cast %s (flags=%u) - not aimed at us: distance=%.0f reach=%.0f%s\n" ,
 					enemy.name.c_str() , cast.name.c_str() , static_cast<unsigned>( flags ) ,
 					distanceToLocal , reach ,
-					hasFacing ? " facing-gated" : "" ,
-					worthAnItem ? "" : " below-health-threshold" );
+					hasFacing ? " facing-gated" : "" );
 				continue;
 			}
 
@@ -1797,7 +1963,7 @@ auto CDodger::OnRender() -> void
 			return best;
 		};
 
-		if ( Settings::Dodger::DodgeSelf && HealthPercent( *local ) <= Settings::Dodger::PanicHealthPercent )
+		if ( Settings::Dodger::DodgeSelf && HealthPercent( *local ) <= kPanicHealthPercent )
 		{
 			if ( const auto* source = NearestEnemyTo( local->origin ) )
 			{
@@ -1816,7 +1982,7 @@ auto CDodger::OnRender() -> void
 			{
 				if ( candidate.team != local->team || candidate.entity == local->entity )
 					continue;
-				if ( HealthPercent( candidate ) > Settings::Dodger::PanicHealthPercent )
+				if ( HealthPercent( candidate ) > kPanicHealthPercent )
 					continue;
 				const float distance = FS::Distance2D( local->origin , candidate.origin );
 				if ( distance > kAllySaveRange )
