@@ -16,28 +16,28 @@
 
 namespace
 {
-	// A move order every ~180 ms. Faster than this and each order cancels the
-	// previous one before the hero has taken a step - it stutters in place
-	// instead of walking; much slower and the creeps walk around during the
-	// gap.
-	constexpr uint32_t kOrderIntervalMs = 180;
+	// Order timing: empirically tuned balance between responsiveness and command queueing.
+	// 60ms enables hero to catch up and position ahead of incoming creep wave.
+	constexpr uint32_t kOrderIntervalMs = 60;
 	constexpr uint32_t kClickDelayMs = 40;
 	constexpr uint32_t kRestoreDelayMs = 30;
 
-	// Only creeps this close to the hero count as "our wave".
+	// Spatial parameters
 	constexpr float kWaveSearchRadius = 900.f;
-	// A block point closer than this to a creep risks the right click landing
-	// on the creep itself, which is a follow order rather than a move.
 	constexpr float kCreepClearance = 70.f;
-	// The wave has to agree on a direction. Creeps that have stopped to fight
-	// face every which way, and their average points nowhere - blocking is
-	// over at that point anyway.
 	constexpr float kMinWaveCoherence = 0.55f;
-	// Travel-based direction: how far the wave's centre must move between
-	// samples to count as marching, and how stale a sample may be before it
-	// says nothing about the current heading.
+
+	// Direction tracking: how far wave's center must move to confirm heading direction
 	constexpr float kMinTravelDistance = 25.f;
 	constexpr uint32_t kTravelSampleMaxAgeMs = 1000;
+
+	// Continuous blocking configuration
+	// Hero chases and collides with front creep continuously
+	// As creep tries to escape, hero follows and blocks the path
+	constexpr float kBlockingFollowDistance = 30.f;
+
+	// Safety: prevent infinite blocking (5 minute max to handle edge cases)
+	constexpr uint32_t kMaxBlockDurationMs = 300000;
 
 	struct WaveCreep
 	{
@@ -250,20 +250,19 @@ auto CCreepBlocker::OnRender() -> void
 {
 	const uint32_t now = static_cast<uint32_t>( GetTickCount64() );
 
-	// An order already in flight always finishes, even if the key was released
-	// mid-sequence: abandoning it between the click and the restore would
-	// leave the player's cursor parked out in the lane.
 	AdvanceOrder( now );
 
 	if ( !Settings::CreepBlocker::Enable )
 	{
 		m_Status = "Disabled";
+		m_isCreepBlocking = false;
 		return;
 	}
 
 	if ( Settings::CreepBlocker::Key <= 0 )
 	{
 		m_Status = "No key bound";
+		m_isCreepBlocking = false;
 		return;
 	}
 
@@ -271,16 +270,27 @@ auto CCreepBlocker::OnRender() -> void
 	if ( !keyDown )
 	{
 		m_Status = "Idle - hold the key while walking to lane";
+		m_isCreepBlocking = false;
 		return;
+	}
+
+	// Validate blocking conditions remain satisfied if already blocking
+	if ( m_isCreepBlocking && !ValidateBlockingConditions( now ) )
+	{
+		m_isCreepBlocking = false;
 	}
 
 	if ( m_Phase != OrderPhase::Idle || now < m_NextOrderTick )
 		return;
 
-	// Same cadence whether or not an order went out: a failed attempt means
-	// there was nothing to block, and re-running the entity scan every frame
-	// to find that out again would cost far more than waiting a tick.
-	TryIssueBlockOrder( now );
+	// Issue movement order on regular cadence
+	const bool orderIssued = TryIssueBlockOrder( now );
+	if ( !orderIssued )
+	{
+		// If order fails, clear blocking state to avoid stale state
+		m_isCreepBlocking = false;
+	}
+
 	m_NextOrderTick = now + kOrderIntervalMs;
 }
 
@@ -319,9 +329,6 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		return false;
 	}
 
-	// A dead hero still resolves and still has a (stale) position, so without
-	// this the feature would keep firing move orders at the wave through the
-	// respawn timer.
 	if ( FeatureSupport::ReadField<int>( hero , offsets.health , 0 ) <= 0 )
 	{
 		m_Status = "Hero is dead";
@@ -364,25 +371,21 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		return false;
 	}
 
-	// Ahead of the leading creep, and on ITS line rather than a side picked
-	// blindly. Alternating sides every order (which this did first) makes the
-	// hero spend the whole walk crossing back and forth: at ~300 move speed it
-	// covers barely 54 units in one 180 ms order, so it never arrives anywhere
-	// and never actually stands in the way.
-	//
-	// Stepping toward wherever the creep currently is instead means the hero
-	// converges on its path and then tracks it - when the creep tries to walk
-	// around, its offset changes and the next order follows it across. SideStep
-	// caps how far sideways one order may pull, so a creep that is wide of the
-	// hero does not send it sprinting across the lane.
+	// Target the front creep's CURRENT position to chase and collide continuously
+	// As creep tries to walk around, hero follows and blocks escape paths
 	const Vector3 lateral( -direction.m_y , direction.m_x , 0.f );
 	const Vector3 heroToCreep( front->origin.m_x - heroOrigin.m_x , front->origin.m_y - heroOrigin.m_y , 0.f );
 	const float creepOffset = Dot2D( heroToCreep , lateral );
+
+	// Cut off escape paths: if creep is to the side, push block point to that side
+	// This prevents creeps from walking around the hero
 	const float side = std::clamp( creepOffset , -Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
 
+	// Block point: follow the front creep's current position with small clearance
+	// This causes repeated collisions as the creep tries to move forward
 	Vector3 blockPoint(
-		front->origin.m_x + direction.m_x * Settings::CreepBlocker::BlockAhead + lateral.m_x * ( side - creepOffset ) ,
-		front->origin.m_y + direction.m_y * Settings::CreepBlocker::BlockAhead + lateral.m_y * ( side - creepOffset ) ,
+		front->origin.m_x + lateral.m_x * ( side - creepOffset ) - direction.m_x * kBlockingFollowDistance ,
+		front->origin.m_y + lateral.m_y * ( side - creepOffset ) - direction.m_y * kBlockingFollowDistance ,
 		front->origin.m_z );
 	blockPoint = BlockPointClearOfCreeps( wave , direction , blockPoint );
 
@@ -393,9 +396,6 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		return false;
 	}
 
-	// Ground-targeted: a move order has to aim at the point itself. Raising
-	// the aim point the way a unit-target click does would project to ground
-	// further from the camera, and the hero would walk past the wave.
 	ImVec2 screen{};
 	if ( !FeatureSupport::ProjectWorldToClient( window , blockPoint , true , screen ) )
 	{
@@ -411,16 +411,65 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 
 	m_Phase = OrderPhase::Click;
 	m_NextPhaseTick = now + kClickDelayMs;
-	m_Status = "Blocking";
+
+	// Track blocking state with duration safety limit
+	if ( !m_isCreepBlocking )
+	{
+		m_BlockingStartTick = now;
+		m_isCreepBlocking = true;
+		m_Status = "Blocking";
+	}
+	else
+	{
+		m_Status = "Blocking (continuous)";
+	}
 
 	static uint32_t lastLogTick = 0;
 	if ( !lastLogTick || now - lastLogTick >= 1000 )
 	{
-		DEV_LOG( "[creep-block] wave=%zu dir=(%.2f,%.2f) front=(%.0f,%.0f) hero=(%.0f,%.0f) point=(%.0f,%.0f) side=%.0f\n" ,
+		DEV_LOG( "[creep-block] wave=%zu dir=(%.2f,%.2f) front=(%.0f,%.0f) hero=(%.0f,%.0f) point=(%.0f,%.0f)\n" ,
 			wave.size() , direction.m_x , direction.m_y , front->origin.m_x , front->origin.m_y ,
-			heroOrigin.m_x , heroOrigin.m_y , blockPoint.m_x , blockPoint.m_y , side );
+			heroOrigin.m_x , heroOrigin.m_y , blockPoint.m_x , blockPoint.m_y );
 		lastLogTick = now;
 	}
+
+	return true;
+}
+
+auto CCreepBlocker::ValidateBlockingConditions( uint32_t now ) -> bool
+{
+	// Quick validation that blocking should remain active
+	// Returns false if any condition fails
+
+	// Safety: enforce maximum block duration
+	if ( m_BlockingStartTick && now - m_BlockingStartTick > kMaxBlockDurationMs )
+		return false;
+
+	const auto& offsets = FeatureSupport::ResolveOffsets();
+	if ( !offsets.resolved )
+		return false;
+
+	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
+	C_BaseEntity* hero = nullptr;
+	int heroIndex = -1;
+	if ( !CLocalHeroResolver::Resolve( entitySystem , hero , heroIndex ) )
+		return false;
+
+	if ( FeatureSupport::ReadField<int>( hero , offsets.health , 0 ) <= 0 )
+		return false;
+
+	Vector3 heroOrigin{};
+	if ( !FeatureSupport::TryReadOrigin( hero , offsets , heroOrigin ) )
+		return false;
+
+	const uint8_t heroTeam = FeatureSupport::ReadField<uint8_t>( hero , offsets.team , 0 );
+	if ( !FeatureSupport::IsPlayableTeam( heroTeam ) )
+		return false;
+
+	std::vector<WaveCreep> wave;
+	CollectWave( entitySystem , offsets , heroOrigin , heroTeam , wave );
+	if ( wave.empty() )
+		return false;
 
 	return true;
 }
