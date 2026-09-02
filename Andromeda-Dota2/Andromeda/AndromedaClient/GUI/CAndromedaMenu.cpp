@@ -12,6 +12,7 @@
 #include <Dota2/Hook/Hook_GetProtoCDOTAGameAccountPlus.hpp>
 #include <DllLauncher.hpp>
 #include <Common/Helpers/StringHelper.hpp>
+#include <Common/Helpers/ComHelper.hpp>
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -47,6 +48,8 @@ static bool LoadTextureFromFile( const std::wstring& filePath , GuiTexture& outT
 
 	if ( !pDevice || !pContext )
 		return false;
+
+	EnsureComInitializedOnThisThread();
 
 	static Microsoft::WRL::ComPtr<IWICImagingFactory> g_WICFactory;
 

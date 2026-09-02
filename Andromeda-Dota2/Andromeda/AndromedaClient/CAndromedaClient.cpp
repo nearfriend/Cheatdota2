@@ -18,6 +18,7 @@
 #include <AndromedaClient/Scripting/LuaManager.hpp>
 #include <DllLauncher.hpp>
 #include <Common/Helpers/StringHelper.hpp>
+#include <Common/Helpers/ComHelper.hpp>
 #include <Common/MemoryEngine.hpp>
 #include <filesystem>
 #include <cstring>
@@ -1692,6 +1693,8 @@ namespace
 		auto* device = GetAndromedaGUI()->GetDevice();
 		if ( !device )
 			return false;
+
+		EnsureComInitializedOnThisThread();
 
 		static Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
 		if ( !factory && FAILED( CoCreateInstance( CLSID_WICImagingFactory , nullptr , CLSCTX_INPROC_SERVER ,

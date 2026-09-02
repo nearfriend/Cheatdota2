@@ -36,6 +36,11 @@ namespace
 	// As creep tries to escape, hero follows and blocks the path
 	constexpr float kBlockingFollowDistance = 30.f;
 
+	// A creep this far ahead of the hero along the wave's heading has
+	// outrun the hero's blocking position; chasing it from behind can't
+	// close the gap, so it's dropped in favor of a creep still in reach.
+	constexpr float kMaxCatchUpDistance = 250.f;
+
 	// Safety: prevent infinite blocking (5 minute max to handle edge cases)
 	constexpr uint32_t kMaxBlockDurationMs = 300000;
 
@@ -202,20 +207,45 @@ namespace
 		return fromTravel;
 	}
 
-	auto FrontCreep( const std::vector<WaveCreep>& wave , const Vector3& direction ) -> const WaveCreep*
+	// Prefers the most-advanced creep the hero can still get ahead of - one
+	// that hasn't outrun the hero's own position along the wave's heading by
+	// more than kMaxCatchUpDistance. That way, once the creep being blocked
+	// slips past, the next order retargets whichever creep hasn't escaped.
+	//
+	// Falls back to the single most-advanced creep in the wave when none are
+	// in reach - covers both "the whole wave got past" and the hero simply
+	// not having caught up to any of it yet (e.g. the initial approach) -
+	// so there is always a direction to chase instead of giving up.
+	auto FrontCreep( const std::vector<WaveCreep>& wave , const Vector3& direction , const Vector3& heroOrigin ) -> const WaveCreep*
 	{
-		const WaveCreep* front = nullptr;
+		const float heroProjection = Dot2D( heroOrigin , direction );
+
+		const WaveCreep* reachableFront = nullptr;
+		float bestReachableProjection = 0.f;
+		const WaveCreep* overallFront = nullptr;
 		float bestProjection = 0.f;
+
 		for ( const auto& creep : wave )
 		{
 			const float projection = Dot2D( creep.origin , direction );
-			if ( !front || projection > bestProjection )
+
+			if ( !overallFront || projection > bestProjection )
 			{
-				front = &creep;
+				overallFront = &creep;
 				bestProjection = projection;
 			}
+
+			if ( projection - heroProjection > kMaxCatchUpDistance )
+				continue;
+
+			if ( !reachableFront || projection > bestReachableProjection )
+			{
+				reachableFront = &creep;
+				bestReachableProjection = projection;
+			}
 		}
-		return front;
+
+		return reachableFront ? reachableFront : overallFront;
 	}
 
 	// Pushed further ahead until it is clear of every creep model, so the
@@ -364,7 +394,7 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		return false;
 	}
 
-	const WaveCreep* front = FrontCreep( wave , direction );
+	const WaveCreep* front = FrontCreep( wave , direction , heroOrigin );
 	if ( !front )
 	{
 		m_Status = "No leading creep";
