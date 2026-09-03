@@ -186,6 +186,8 @@ namespace Settings
 		// of that correction happens per order, so a creep wide of the hero
 		// does not send it sprinting across the lane in one go.
 		inline float SideStep = 45.f;
+		// Circle-and-line marker on the point the hero is being sent to.
+		inline bool DrawBlockMarker = true;
 	}
 	namespace AutoCombo
 	{

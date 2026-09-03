@@ -1642,7 +1642,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 300.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) ) );
+			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 338.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) ) );
 			// The auto-combo card holds more than fits (toggles, keybind, target
 			// and the spell strip), so it keeps its scrollbar and wheel support
 			// instead of clipping the overflow away.
@@ -1684,6 +1684,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				ImGui::BeginDisabled( !Settings::CreepBlocker::Enable );
 				DrawSliderRow( "Block Distance" , "##creepBlockerAhead" , Settings::CreepBlocker::BlockAhead , 40.f , 250.f , "%.0f" , ReferenceIcon::Distance );
 				DrawSliderRow( "Side Step" , "##creepBlockerSideStep" , Settings::CreepBlocker::SideStep , 0.f , 120.f , "%.0f" , ReferenceIcon::Mouse );
+				DrawSwitchRow( "Draw Block Marker" , "##creepBlockerMarker" , Settings::CreepBlocker::DrawBlockMarker , ReferenceIcon::Visible );
 
 				ImGui::Spacing();
 				ImGui::Text( "Block key" );

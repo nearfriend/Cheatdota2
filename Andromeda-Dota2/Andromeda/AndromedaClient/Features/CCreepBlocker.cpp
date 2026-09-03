@@ -36,10 +36,24 @@ namespace
 	// As creep tries to escape, hero follows and blocks the path
 	constexpr float kBlockingFollowDistance = 30.f;
 
-	// A creep this far ahead of the hero along the wave's heading has
-	// outrun the hero's blocking position; chasing it from behind can't
-	// close the gap, so it's dropped in favor of a creep still in reach.
-	constexpr float kMaxCatchUpDistance = 250.f;
+	// A creep this far ahead of the hero along the wave's heading counts as
+	// already past and unblockable - chasing it from behind can't close the
+	// gap, so it's dropped in favor of a creep still in reach. Kept tight,
+	// just over the ~30 unit design offset that kBlockingFollowDistance
+	// already puts between hero and creep during healthy blocking plus one
+	// order's worth of creep travel (a creep covers roughly 20-45 units per
+	// ~70-130ms order cycle), so a creep that's genuinely gotten away is
+	// dropped almost as soon as it happens rather than after a long chase.
+	constexpr float kMaxCatchUpDistance = 90.f;
+
+	// Once an order has already been issued, a single order may only move
+	// the block point this far from the last one. The raw target can jump a
+	// long way between orders - the front creep can swap, and the wave
+	// direction estimate is itself noisy - and clicking straight to a
+	// distant new point can overshoot past the creep and drop contact.
+	// Stepping toward it in small increments instead keeps the hero pressed
+	// against the creep on every order.
+	constexpr float kMaxBlockPointStepPerOrder = 50.f;
 
 	// Safety: prevent infinite blocking (5 minute max to handle edge cases)
 	constexpr uint32_t kMaxBlockDurationMs = 300000;
@@ -49,6 +63,11 @@ namespace
 		Vector3 origin{};
 		float yaw = 0.f;
 		bool hasYaw = false;
+		// Identity of the underlying entity, so the caller can tell whether
+		// the front creep picked this order is the same one as last order or
+		// a genuine retarget - a position-distance heuristic can't tell that
+		// apart reliably, an entity pointer can.
+		C_BaseEntity* entity = nullptr;
 	};
 
 	auto ForwardFromYaw( float yawDegrees ) -> Vector3
@@ -119,6 +138,7 @@ namespace
 					continue;
 
 				creep.hasYaw = FeatureSupport::TryReadYaw( entity , offsets , creep.yaw );
+				creep.entity = entity;
 				out.push_back( creep );
 			}
 		}
@@ -286,6 +306,7 @@ auto CCreepBlocker::OnRender() -> void
 	{
 		m_Status = "Disabled";
 		m_isCreepBlocking = false;
+		m_Marker.valid = false;
 		return;
 	}
 
@@ -293,6 +314,7 @@ auto CCreepBlocker::OnRender() -> void
 	{
 		m_Status = "No key bound";
 		m_isCreepBlocking = false;
+		m_Marker.valid = false;
 		return;
 	}
 
@@ -301,6 +323,7 @@ auto CCreepBlocker::OnRender() -> void
 	{
 		m_Status = "Idle - hold the key while walking to lane";
 		m_isCreepBlocking = false;
+		m_Marker.valid = false;
 		return;
 	}
 
@@ -309,6 +332,10 @@ auto CCreepBlocker::OnRender() -> void
 	{
 		m_isCreepBlocking = false;
 	}
+
+	// Drawn every frame, not just on the order cadence, so the marker
+	// doesn't visibly stutter at 60ms steps.
+	DrawBlockMarker();
 
 	if ( m_Phase != OrderPhase::Idle || now < m_NextOrderTick )
 		return;
@@ -321,7 +348,19 @@ auto CCreepBlocker::OnRender() -> void
 		m_isCreepBlocking = false;
 	}
 
-	m_NextOrderTick = now + kOrderIntervalMs;
+	// Use shorter interval (30ms) when in contact, normal interval (60ms) otherwise
+	uint32_t nextInterval = kOrderIntervalMs;
+	if ( m_Marker.valid && orderIssued )
+	{
+		const Vector3 heroToBlock( m_Marker.blockPoint.m_x - m_Marker.heroOrigin.m_x ,
+			m_Marker.blockPoint.m_y - m_Marker.heroOrigin.m_y , 0.f );
+		const float distToBlock = Length2D( heroToBlock );
+		if ( distToBlock < 100.f )
+		{
+			nextInterval = 30;
+		}
+	}
+	m_NextOrderTick = now + nextInterval;
 }
 
 auto CCreepBlocker::AdvanceOrder( uint32_t now ) -> void
@@ -343,10 +382,17 @@ auto CCreepBlocker::AdvanceOrder( uint32_t now ) -> void
 
 auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 {
+	static uint32_t lastLogTick = 0;
+	const bool shouldLog = !lastLogTick || now - lastLogTick >= 500;
+	if ( shouldLog )
+		lastLogTick = now;
+
 	const auto& offsets = FeatureSupport::ResolveOffsets();
 	if ( !offsets.resolved )
 	{
 		m_Status = "Waiting for schema";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: schema not resolved\n" );
 		return false;
 	}
 
@@ -356,12 +402,16 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	if ( !CLocalHeroResolver::Resolve( entitySystem , hero , heroIndex ) )
 	{
 		m_Status = "Local hero not resolved";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: local hero not resolved\n" );
 		return false;
 	}
 
 	if ( FeatureSupport::ReadField<int>( hero , offsets.health , 0 ) <= 0 )
 	{
 		m_Status = "Hero is dead";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: hero is dead\n" );
 		return false;
 	}
 
@@ -369,6 +419,8 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	if ( !FeatureSupport::TryReadOrigin( hero , offsets , heroOrigin ) )
 	{
 		m_Status = "Hero position unavailable";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: hero position unavailable\n" );
 		return false;
 	}
 
@@ -376,6 +428,8 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	if ( !FeatureSupport::IsPlayableTeam( heroTeam ) )
 	{
 		m_Status = "Hero team unavailable";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: hero team unavailable (team=%d)\n" , (int)heroTeam );
 		return false;
 	}
 
@@ -384,6 +438,8 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	if ( wave.empty() )
 	{
 		m_Status = "No allied wave nearby";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: no allied wave nearby (search_radius=%.0f)\n" , kWaveSearchRadius );
 		return false;
 	}
 
@@ -391,13 +447,44 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	if ( !TryWaveDirection( wave , now , direction ) )
 	{
 		m_Status = "Wave is not marching - nothing to block";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: wave not marching (wave_size=%zu)\n" , wave.size() );
 		return false;
 	}
 
-	const WaveCreep* front = FrontCreep( wave , direction , heroOrigin );
+	// Creep stickiness: if already blocking a creep and haven't reached the
+	// minimum order count, stay with the current one even if another creep
+	// is slightly more advanced. This prevents flipping between creeps.
+	const WaveCreep* front = nullptr;
+	if ( m_isCreepBlocking && m_BlockingOrderCount < kMinOrdersPerTarget && m_Marker.valid && m_Marker.entity )
+	{
+		// Try to find the current target in the wave
+		for ( const auto& creep : wave )
+		{
+			if ( creep.entity == m_Marker.entity )
+			{
+				front = &creep;
+				break;
+			}
+		}
+	}
+
+	// If no sticky target or not found, select the normal front creep
 	if ( !front )
 	{
+		front = FrontCreep( wave , direction , heroOrigin );
+		m_BlockingOrderCount = 0;
+	}
+	else
+	{
+		m_BlockingOrderCount++;
+	}
+
+	if ( !front || !front->entity )
+	{
 		m_Status = "No leading creep";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: no leading creep found (wave_size=%zu)\n" , wave.size() );
 		return false;
 	}
 
@@ -405,24 +492,93 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	// As creep tries to walk around, hero follows and blocks escape paths
 	const Vector3 lateral( -direction.m_y , direction.m_x , 0.f );
 	const Vector3 heroToCreep( front->origin.m_x - heroOrigin.m_x , front->origin.m_y - heroOrigin.m_y , 0.f );
+	const float heroToCreepDist = Length2D( heroToCreep );
 	const float creepOffset = Dot2D( heroToCreep , lateral );
+	const float creepAlongDir = Dot2D( heroToCreep , direction );
 
 	// Cut off escape paths: if creep is to the side, push block point to that side
 	// This prevents creeps from walking around the hero
 	const float side = std::clamp( creepOffset , -Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
 
-	// Block point: follow the front creep's current position with small clearance
-	// This causes repeated collisions as the creep tries to move forward
-	Vector3 blockPoint(
-		front->origin.m_x + lateral.m_x * ( side - creepOffset ) - direction.m_x * kBlockingFollowDistance ,
-		front->origin.m_y + lateral.m_y * ( side - creepOffset ) - direction.m_y * kBlockingFollowDistance ,
-		front->origin.m_z );
+	// Block point: position hero to intercept the creep.
+	// Strategy depends on creep position relative to hero:
+	// - If creep is ahead: position hero behind/under it (normal blocking)
+	// - If creep is behind: move hero directly to the creep (catch-up mode)
+	// The wave will push the creep forward; we position to meet it.
+	Vector3 blockPoint;
+	if ( creepAlongDir >= -20.f )
+	{
+		// Creep is ahead or roughly at same position: use normal blocking formula
+		blockPoint = Vector3(
+			front->origin.m_x + lateral.m_x * ( side - creepOffset ) - direction.m_x * kBlockingFollowDistance ,
+			front->origin.m_y + lateral.m_y * ( side - creepOffset ) - direction.m_y * kBlockingFollowDistance ,
+			front->origin.m_z );
+	}
+	else
+	{
+		// Creep is behind: move hero directly to the creep so we're in position when it comes forward
+		// Add a small forward bias along the wave direction to be ready
+		blockPoint = Vector3(
+			front->origin.m_x + direction.m_x * 50.f ,
+			front->origin.m_y + direction.m_y * 50.f ,
+			front->origin.m_z );
+	}
 	blockPoint = BlockPointClearOfCreeps( wave , direction , blockPoint );
+
+	// Step toward the raw target in small increments rather than snapping to
+	// it, but ONLY if we're still targeting the same creep from the last order.
+	// If we've retargeted to a new creep (because the old one got away), snap
+	// to the new target instead - otherwise we'd creep toward it for many orders
+	// before getting close enough to maintain blocking contact.
+	const bool sameCreep = m_Marker.valid && m_Marker.entity == front->entity;
+	if ( m_Marker.valid && sameCreep )
+	{
+		const Vector3 step( blockPoint.m_x - m_Marker.blockPoint.m_x , blockPoint.m_y - m_Marker.blockPoint.m_y , 0.f );
+		const float stepLength = Length2D( step );
+		if ( stepLength > kMaxBlockPointStepPerOrder )
+		{
+			const float scale = kMaxBlockPointStepPerOrder / stepLength;
+			blockPoint = Vector3( m_Marker.blockPoint.m_x + step.m_x * scale ,
+				m_Marker.blockPoint.m_y + step.m_y * scale , blockPoint.m_z );
+		}
+	}
+
+	// Validation: check if block point is actually forward of hero along the expected direction
+	const Vector3 heroToBlock( blockPoint.m_x - heroOrigin.m_x , blockPoint.m_y - heroOrigin.m_y , 0.f );
+	const float heroToBlockDist = Length2D( heroToBlock );
+	const float blockPointAlongDir = Dot2D( heroToBlock , direction );
+
+	if ( shouldLog )
+	{
+		DEV_LOG( "  VALIDATION: heroToBlock_dist=%.0f, projection_along_dir=%.0f (should be positive)\n" ,
+			heroToBlockDist , blockPointAlongDir );
+		if ( blockPointAlongDir < 0 )
+		{
+			DEV_LOG( "  WARNING: block point is BEHIND hero (not ahead along wave direction)!\n" );
+		}
+		if ( heroToBlockDist < 30.f )
+		{
+			DEV_LOG( "  WARNING: hero already very close to block point (%.0f units), might not move!\n" , heroToBlockDist );
+		}
+	}
+
+	// Track if we're switching to a new creep
+	if ( !m_Marker.valid || m_Marker.entity != front->entity )
+	{
+		m_BlockingOrderCount = 0;
+	}
+
+	m_Marker.heroOrigin = heroOrigin;
+	m_Marker.blockPoint = blockPoint;
+	m_Marker.entity = front->entity;
+	m_Marker.valid = true;
 
 	const HWND window = FeatureSupport::WindowReadyForInput();
 	if ( !window )
 	{
 		m_Status = "Game window not focused";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: game window not focused\n" );
 		return false;
 	}
 
@@ -430,12 +586,17 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	if ( !FeatureSupport::ProjectWorldToClient( window , blockPoint , true , screen ) )
 	{
 		m_Status = "Block point is off screen";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: block point off screen point(%.0f,%.0f,%.0f)\n" ,
+				blockPoint.m_x , blockPoint.m_y , blockPoint.m_z );
 		return false;
 	}
 
 	if ( !FeatureSupport::MoveCursorToClientPoint( window , screen , m_PreviousCursor ) )
 	{
 		m_Status = "Could not aim at the block point";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: could not move cursor to screen(%.0f,%.0f)\n" , screen.x , screen.y );
 		return false;
 	}
 
@@ -454,16 +615,37 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		m_Status = "Blocking (continuous)";
 	}
 
-	static uint32_t lastLogTick = 0;
-	if ( !lastLogTick || now - lastLogTick >= 1000 )
+	if ( shouldLog )
 	{
-		DEV_LOG( "[creep-block] wave=%zu dir=(%.2f,%.2f) front=(%.0f,%.0f) hero=(%.0f,%.0f) point=(%.0f,%.0f)\n" ,
-			wave.size() , direction.m_x , direction.m_y , front->origin.m_x , front->origin.m_y ,
-			heroOrigin.m_x , heroOrigin.m_y , blockPoint.m_x , blockPoint.m_y );
-		lastLogTick = now;
+		const bool targetChanged = !m_Marker.valid || m_Marker.entity != front->entity;
+		const Vector3 heroToBlock( blockPoint.m_x - heroOrigin.m_x , blockPoint.m_y - heroOrigin.m_y , 0.f );
+		const float heroToBlockDist = Length2D( heroToBlock );
+		DEV_LOG( "[creep-block] SUCCESS wave=%zu dir=(%.2f,%.2f) target=%p\n" , wave.size() , direction.m_x , direction.m_y , front->entity );
+		DEV_LOG( "  creep@(%.0f,%.0f) hero@(%.0f,%.0f) heroToCreep_dist=%.0f along_dir=%.0f offset_side=%.0f\n" ,
+			front->origin.m_x , front->origin.m_y , heroOrigin.m_x , heroOrigin.m_y , heroToCreepDist , creepAlongDir , creepOffset );
+		DEV_LOG( "  side_clamped=%.0f block_point@(%.0f,%.0f) heroToBlock_dist=%.0f step=%s clamped=%s\n" ,
+			side , blockPoint.m_x , blockPoint.m_y , heroToBlockDist , targetChanged ? "RETARGET" : "same", sameCreep && m_Marker.valid ? "YES" : "no" );
 	}
 
 	return true;
+}
+
+auto CCreepBlocker::DrawBlockMarker() const -> void
+{
+	if ( !Settings::CreepBlocker::DrawBlockMarker || !m_Marker.valid )
+		return;
+
+	ImVec2 blockScreen{};
+	if ( !Math::WorldToScreen( m_Marker.blockPoint , blockScreen ) )
+		return;
+
+	auto* drawList = ImGui::GetForegroundDrawList();
+	const ImU32 color = m_isCreepBlocking ? IM_COL32( 90 , 220 , 130 , 235 ) : IM_COL32( 235 , 190 , 60 , 235 );
+	drawList->AddCircle( blockScreen , 16.f , color , 24 , 2.f );
+
+	ImVec2 heroScreen{};
+	if ( Math::WorldToScreen( m_Marker.heroOrigin , heroScreen ) )
+		drawList->AddLine( heroScreen , blockScreen , color , 1.5f );
 }
 
 auto CCreepBlocker::ValidateBlockingConditions( uint32_t now ) -> bool
