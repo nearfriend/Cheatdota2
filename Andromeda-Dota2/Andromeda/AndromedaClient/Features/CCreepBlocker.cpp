@@ -16,6 +16,19 @@
 
 namespace
 {
+	// Team constants: Radiant=2, Dire=3 in Dota 2
+	constexpr uint8_t kRadiantTeam = 2;
+	constexpr uint8_t kDireTeam = 3;
+
+	auto GetTeamName( uint8_t team ) -> const char*
+	{
+		if ( team == kRadiantTeam )
+			return "Radiant";
+		if ( team == kDireTeam )
+			return "Dire";
+		return "Unknown";
+	}
+
 	// Order timing: minimize delay after crash to move immediately.
 	// Very tight timing for smooth, responsive blocking.
 	constexpr uint32_t kOrderIntervalMs = 15;
@@ -287,11 +300,10 @@ namespace
 		if ( aheadReachable )
 			return aheadReachable;
 
-		// DO NOT target behind-creeps - they've already passed and can't be blocked
-		// Skip reachableFront if it's behind hero
-
-		// Priority 3: Only target distant creep if not too far
-		if ( overallFront && bestProjection - heroProjection <= kMaxCatchUpDistance * 2 )
+		// Priority 3: Target the overall most-advanced creep regardless of distance
+		// This ensures blocking starts immediately, even if creeps spawn far away
+		// The block point calculation will handle positioning correctly (ahead vs behind)
+		if ( overallFront )
 			return overallFront;
 
 		// No blockable target
@@ -476,7 +488,7 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	{
 		m_Status = "Hero team unavailable";
 		if ( shouldLog )
-			DEV_LOG( "[creep-block] FAIL: hero team unavailable (team=%d)\n" , (int)heroTeam );
+			DEV_LOG( "[creep-block] FAIL: hero team unavailable (team=%d, %s)\n" , (int)heroTeam , GetTeamName( heroTeam ) );
 		return false;
 	}
 
@@ -566,11 +578,11 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	const float creepOffset2D = Dot2D( heroToCreep , creepLateral );
 	const float creepSide = std::clamp( creepOffset2D , -Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
 
+	// For behind-creeps, simply go to creep's location; for ahead-creeps, position hero ahead
 	Vector3 blockPoint;
-	if ( creepAlongDir >= -20.f )
+	if ( creepAlongDir >= 0.f )
 	{
-		// Creep is ahead: position hero AHEAD of creep along its ACTUAL direction
-		// This way creep walks into hero as it moves forward
+		// Creep is ahead or at hero: position ahead of creep so it walks into hero
 		blockPoint = Vector3(
 			front->origin.m_x + creepDirection.m_x * kLeadDistance + creepLateral.m_x * ( creepSide - creepOffset2D ) ,
 			front->origin.m_y + creepDirection.m_y * kLeadDistance + creepLateral.m_y * ( creepSide - creepOffset2D ) ,
@@ -578,12 +590,9 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	}
 	else
 	{
-		// Creep is behind: position hero along creep's actual direction
-		// So when creep comes forward, it immediately hits hero
-		blockPoint = Vector3(
-			front->origin.m_x + creepDirection.m_x * kLeadDistance + creepLateral.m_x * ( creepSide - creepOffset2D ) ,
-			front->origin.m_y + creepDirection.m_y * kLeadDistance + creepLateral.m_y * ( creepSide - creepOffset2D ) ,
-			front->origin.m_z );
+		// Creep is behind: go directly to creep location to intercept it
+		// No lead distance needed - we just want to reach the creep position
+		blockPoint = front->origin;
 	}
 	blockPoint = BlockPointClearOfCreeps( wave , direction , blockPoint );
 
@@ -670,11 +679,11 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	{
 		m_BlockingStartTick = now;
 		m_isCreepBlocking = true;
-		m_Status = "Blocking";
+		m_Status = std::string( "Blocking [" ) + GetTeamName( heroTeam ) + "]";
 	}
 	else
 	{
-		m_Status = "Blocking (continuous)";
+		m_Status = std::string( "Blocking [" ) + GetTeamName( heroTeam ) + "] (continuous)";
 	}
 
 	if ( shouldLog )
@@ -682,7 +691,7 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		const bool targetChanged = !m_Marker.valid || m_Marker.entity != front->entity;
 		const Vector3 heroToBlock( blockPoint.m_x - heroOrigin.m_x , blockPoint.m_y - heroOrigin.m_y , 0.f );
 		const float heroToBlockDist = Length2D( heroToBlock );
-		DEV_LOG( "[creep-block] SUCCESS wave=%zu dir=(%.2f,%.2f) target=%p\n" , wave.size() , direction.m_x , direction.m_y , front->entity );
+		DEV_LOG( "[creep-block] SUCCESS team=%s wave=%zu dir=(%.2f,%.2f) target=%p\n" , GetTeamName( heroTeam ) , wave.size() , direction.m_x , direction.m_y , front->entity );
 		DEV_LOG( "  creep@(%.0f,%.0f) hero@(%.0f,%.0f) heroToCreep_dist=%.0f along_dir=%.0f offset_side=%.0f\n" ,
 			front->origin.m_x , front->origin.m_y , heroOrigin.m_x , heroOrigin.m_y , heroToCreepDist , creepAlongDir , creepOffset );
 		DEV_LOG( "  side_clamped=%.0f block_point@(%.0f,%.0f) heroToBlock_dist=%.0f step=%s clamped=%s\n" ,
