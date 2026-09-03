@@ -16,11 +16,11 @@
 
 namespace
 {
-	// Order timing: empirically tuned balance between responsiveness and command queueing.
-	// 60ms enables hero to catch up and position ahead of incoming creep wave.
-	constexpr uint32_t kOrderIntervalMs = 60;
-	constexpr uint32_t kClickDelayMs = 40;
-	constexpr uint32_t kRestoreDelayMs = 30;
+	// Order timing: minimize delay after crash to move immediately.
+	// Very tight timing for smooth, responsive blocking.
+	constexpr uint32_t kOrderIntervalMs = 15;
+	constexpr uint32_t kClickDelayMs = 2;
+	constexpr uint32_t kRestoreDelayMs = 2;
 
 	// Spatial parameters
 	constexpr float kWaveSearchRadius = 900.f;
@@ -34,26 +34,23 @@ namespace
 	// Continuous blocking configuration
 	// Hero chases and collides with front creep continuously
 	// As creep tries to escape, hero follows and blocks the path
-	constexpr float kBlockingFollowDistance = 30.f;
+	// Small distance = aggressive crashing into creeps
+	constexpr float kBlockingFollowDistance = 5.f;
 
-	// A creep this far ahead of the hero along the wave's heading counts as
-	// already past and unblockable - chasing it from behind can't close the
-	// gap, so it's dropped in favor of a creep still in reach. Kept tight,
-	// just over the ~30 unit design offset that kBlockingFollowDistance
-	// already puts between hero and creep during healthy blocking plus one
-	// order's worth of creep travel (a creep covers roughly 20-45 units per
-	// ~70-130ms order cycle), so a creep that's genuinely gotten away is
-	// dropped almost as soon as it happens rather than after a long chase.
-	constexpr float kMaxCatchUpDistance = 90.f;
+	// A creep this far ahead of the hero along the wave's heading is already
+	// escaped and can't be caught. Don't waste orders chasing it. Instead,
+	// focus on blocking creeps still in reach by positioning ahead of them.
+	// Strategy: position in the creep's PATH, not behind it trying to catch up.
+	constexpr float kMaxCatchUpDistance = 100.f;
 
 	// Once an order has already been issued, a single order may only move
 	// the block point this far from the last one. The raw target can jump a
 	// long way between orders - the front creep can swap, and the wave
 	// direction estimate is itself noisy - and clicking straight to a
 	// distant new point can overshoot past the creep and drop contact.
-	// Stepping toward it in small increments instead keeps the hero pressed
-	// against the creep on every order.
-	constexpr float kMaxBlockPointStepPerOrder = 50.f;
+	// Smaller increments = smoother following, less overshooting.
+	// With faster intervals (15ms), smaller steps feel responsive.
+	constexpr float kMaxBlockPointStepPerOrder = 90.f;
 
 	// Safety: prevent infinite blocking (5 minute max to handle edge cases)
 	constexpr uint32_t kMaxBlockDurationMs = 300000;
@@ -240,8 +237,15 @@ namespace
 	{
 		const float heroProjection = Dot2D( heroOrigin , direction );
 
+		// Priority 1: Creeps still ahead and reachable (haven't passed hero yet)
+		const WaveCreep* aheadReachable = nullptr;
+		float bestAheadReachableProjection = heroProjection;
+
+		// Priority 2: Any reachable creep (may be behind but still catchable)
 		const WaveCreep* reachableFront = nullptr;
 		float bestReachableProjection = 0.f;
+
+		// Fallback: Most advanced creep (if nothing reachable)
 		const WaveCreep* overallFront = nullptr;
 		float bestProjection = 0.f;
 
@@ -249,23 +253,49 @@ namespace
 		{
 			const float projection = Dot2D( creep.origin , direction );
 
+			// Track most advanced creep overall
 			if ( !overallFront || projection > bestProjection )
 			{
 				overallFront = &creep;
 				bestProjection = projection;
 			}
 
+			// Skip creeps too far ahead to catch
 			if ( projection - heroProjection > kMaxCatchUpDistance )
 				continue;
 
+			// Track best reachable creep
 			if ( !reachableFront || projection > bestReachableProjection )
 			{
 				reachableFront = &creep;
 				bestReachableProjection = projection;
 			}
+
+			// ONLY consider creeps still AHEAD of hero (haven't passed yet)
+			// Ignore creeps that are behind - they've already escaped
+			if ( projection > heroProjection )
+			{
+				if ( !aheadReachable || projection > bestAheadReachableProjection )
+				{
+					aheadReachable = &creep;
+					bestAheadReachableProjection = projection;
+				}
+			}
 		}
 
-		return reachableFront ? reachableFront : overallFront;
+		// Priority 1: Target creeps still AHEAD and reachable (ONLY valid option)
+		if ( aheadReachable )
+			return aheadReachable;
+
+		// DO NOT target behind-creeps - they've already passed and can't be blocked
+		// Skip reachableFront if it's behind hero
+
+		// Priority 3: Only target distant creep if not too far
+		if ( overallFront && bestProjection - heroProjection <= kMaxCatchUpDistance * 2 )
+			return overallFront;
+
+		// No blockable target
+		return nullptr;
 	}
 
 	// Pushed further ahead until it is clear of every creep model, so the
@@ -348,16 +378,33 @@ auto CCreepBlocker::OnRender() -> void
 		m_isCreepBlocking = false;
 	}
 
-	// Use shorter interval (30ms) when in contact, normal interval (60ms) otherwise
+	// Adaptive intervals: very tight when close for smooth collision, looser when far
 	uint32_t nextInterval = kOrderIntervalMs;
 	if ( m_Marker.valid && orderIssued )
 	{
 		const Vector3 heroToBlock( m_Marker.blockPoint.m_x - m_Marker.heroOrigin.m_x ,
 			m_Marker.blockPoint.m_y - m_Marker.heroOrigin.m_y , 0.f );
 		const float distToBlock = Length2D( heroToBlock );
-		if ( distToBlock < 100.f )
+		if ( distToBlock < 20.f )
 		{
-			nextInterval = 30;
+			// Hero very close: immediate reposition for next creep
+			nextInterval = 0;
+		}
+		else if ( distToBlock < 40.f )
+		{
+			nextInterval = 5;  // Ultra-tight: maximum smoothness
+		}
+		else if ( distToBlock < 100.f )
+		{
+			nextInterval = 8;  // Very close: smooth aggressive pursuit
+		}
+		else if ( distToBlock < 200.f )
+		{
+			nextInterval = 12;  // Medium: smooth approach
+		}
+		else if ( distToBlock < 350.f )
+		{
+			nextInterval = 15;  // Far: normal pursuit
 		}
 	}
 	m_NextOrderTick = now + nextInterval;
@@ -500,27 +547,42 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	// This prevents creeps from walking around the hero
 	const float side = std::clamp( creepOffset , -Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
 
-	// Block point: position hero to intercept the creep.
-	// Strategy depends on creep position relative to hero:
-	// - If creep is ahead: position hero behind/under it (normal blocking)
-	// - If creep is behind: move hero directly to the creep (catch-up mode)
-	// The wave will push the creep forward; we position to meet it.
+	// Block point: position hero where the creep WILL BE, not where it is now.
+	// Use the creep's individual direction (from its facing) if available.
+	// Otherwise fall back to the wave direction.
+	// This gives more accurate prediction of where the creep is actually going.
+	constexpr float kLeadDistance = 40.f;
+
+	// Get the creep's movement direction: prefer its facing direction if available
+	Vector3 creepDirection = direction;  // Default to wave direction
+	if ( front->hasYaw )
+	{
+		// Use the creep's own facing direction for more accurate block point
+		creepDirection = ForwardFromYaw( front->yaw );
+	}
+
+	// Perpendicular to creep's actual movement direction
+	const Vector3 creepLateral( -creepDirection.m_y , creepDirection.m_x , 0.f );
+	const float creepOffset2D = Dot2D( heroToCreep , creepLateral );
+	const float creepSide = std::clamp( creepOffset2D , -Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
+
 	Vector3 blockPoint;
 	if ( creepAlongDir >= -20.f )
 	{
-		// Creep is ahead or roughly at same position: use normal blocking formula
+		// Creep is ahead: position hero AHEAD of creep along its ACTUAL direction
+		// This way creep walks into hero as it moves forward
 		blockPoint = Vector3(
-			front->origin.m_x + lateral.m_x * ( side - creepOffset ) - direction.m_x * kBlockingFollowDistance ,
-			front->origin.m_y + lateral.m_y * ( side - creepOffset ) - direction.m_y * kBlockingFollowDistance ,
+			front->origin.m_x + creepDirection.m_x * kLeadDistance + creepLateral.m_x * ( creepSide - creepOffset2D ) ,
+			front->origin.m_y + creepDirection.m_y * kLeadDistance + creepLateral.m_y * ( creepSide - creepOffset2D ) ,
 			front->origin.m_z );
 	}
 	else
 	{
-		// Creep is behind: move hero directly to the creep so we're in position when it comes forward
-		// Add a small forward bias along the wave direction to be ready
+		// Creep is behind: position hero along creep's actual direction
+		// So when creep comes forward, it immediately hits hero
 		blockPoint = Vector3(
-			front->origin.m_x + direction.m_x * 50.f ,
-			front->origin.m_y + direction.m_y * 50.f ,
+			front->origin.m_x + creepDirection.m_x * kLeadDistance + creepLateral.m_x * ( creepSide - creepOffset2D ) ,
+			front->origin.m_y + creepDirection.m_y * kLeadDistance + creepLateral.m_y * ( creepSide - creepOffset2D ) ,
 			front->origin.m_z );
 	}
 	blockPoint = BlockPointClearOfCreeps( wave , direction , blockPoint );
@@ -556,9 +618,9 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		{
 			DEV_LOG( "  WARNING: block point is BEHIND hero (not ahead along wave direction)!\n" );
 		}
-		if ( heroToBlockDist < 30.f )
+		if ( heroToBlockDist < 5.f )
 		{
-			DEV_LOG( "  WARNING: hero already very close to block point (%.0f units), might not move!\n" , heroToBlockDist );
+			DEV_LOG( "  WARNING: hero ON block point (%.0f units), recalculating\n" , heroToBlockDist );
 		}
 	}
 
@@ -640,8 +702,35 @@ auto CCreepBlocker::DrawBlockMarker() const -> void
 		return;
 
 	auto* drawList = ImGui::GetForegroundDrawList();
-	const ImU32 color = m_isCreepBlocking ? IM_COL32( 90 , 220 , 130 , 235 ) : IM_COL32( 235 , 190 , 60 , 235 );
-	drawList->AddCircle( blockScreen , 16.f , color , 24 , 2.f );
+
+	// Distance from hero to block point
+	const Vector3 heroToBlock( m_Marker.blockPoint.m_x - m_Marker.heroOrigin.m_x ,
+		m_Marker.blockPoint.m_y - m_Marker.heroOrigin.m_y , 0.f );
+	const float distToBlock = Length2D( heroToBlock );
+
+	// RED circle when hero is at block point (ready for next creep)
+	// GREEN circle when blocking is active
+	// YELLOW circle when idle
+	ImU32 color;
+	float circleSize = 16.f;
+	if ( distToBlock < 50.f && m_isCreepBlocking )
+	{
+		// Hero at block point: RED - ready to receive next creep
+		color = IM_COL32( 255 , 50 , 50 , 255 );
+		circleSize = 20.f;  // Larger to indicate active blocking position
+	}
+	else if ( m_isCreepBlocking )
+	{
+		// Actively blocking: GREEN
+		color = IM_COL32( 90 , 220 , 130 , 235 );
+	}
+	else
+	{
+		// Idle: YELLOW
+		color = IM_COL32( 235 , 190 , 60 , 235 );
+	}
+
+	drawList->AddCircle( blockScreen , circleSize , color , 24 , 2.f );
 
 	ImVec2 heroScreen{};
 	if ( Math::WorldToScreen( m_Marker.heroOrigin , heroScreen ) )
