@@ -863,20 +863,13 @@ struct ReferenceNavigationCategory
 
 static const ReferenceNavigationItem g_GeneralNavigation[] =
 {
-	{ "Auto Control Renewal", ReferenceIcon::Sparkles, nullptr },
-	{ "Auto Disabler", ReferenceIcon::Bell, nullptr },
-	{ "Builds Helper", ReferenceIcon::Info, nullptr },
 	{ "Dodger", ReferenceIcon::Hidden, nullptr },
-	{ "FailSwitch", ReferenceIcon::Offscreen, nullptr },
-	{ "Heal and Restore", ReferenceIcon::Info, nullptr },
-	{ "Illusion Shuffle", ReferenceIcon::Smooth, nullptr },
-	{ "Items Manager", ReferenceIcon::Tools, nullptr },
 	{ "Kill Stealer", ReferenceIcon::Aggro, nullptr },
-	{ "Overwolf", ReferenceIcon::Visible, nullptr },
-	{ "Procast Damage", ReferenceIcon::Sparkles, nullptr },
-	{ "Shop Manager", ReferenceIcon::Overlay, nullptr },
-	{ "Snatcher", ReferenceIcon::Mouse, nullptr },
 	{ "Auto Combo", ReferenceIcon::Aggro, nullptr },
+	{ "Camera", ReferenceIcon::Camera, nullptr },
+	{ "Visible Settings", ReferenceIcon::Visible, nullptr },
+	{ "Creep Blocker", ReferenceIcon::Heroes, nullptr },
+	{ "Last Hit Helper", ReferenceIcon::Info, nullptr },
 };
 
 static const ReferenceNavigationItem g_HeroesNavigation[] =
@@ -896,31 +889,6 @@ static const ReferenceNavigationItem g_HeroesNavigation[] =
 	{ "Brewmaster", ReferenceIcon::Heroes, nullptr },
 };
 
-static const ReferenceNavigationItem g_InfoNavigation[] =
-{
-	{ "Aggro Drawer", ReferenceIcon::Aggro, nullptr },
-	{ "Camera", ReferenceIcon::Camera, nullptr },
-	{ "Heroes Overlay", ReferenceIcon::Heroes, nullptr },
-	{ "Info Overlay", ReferenceIcon::Overlay, nullptr },
-	{ "Notifications", ReferenceIcon::Bell, nullptr },
-	{ "Offscreen", ReferenceIcon::Offscreen, nullptr },
-	{ "Radius", ReferenceIcon::Radius, nullptr },
-	{ "Show Me More", ReferenceIcon::Hidden, nullptr },
-	{ "Visible Settings", ReferenceIcon::Visible, nullptr },
-	{ "Ward Helper", ReferenceIcon::Ward, nullptr },
-};
-
-static const ReferenceNavigationItem g_CreepsNavigation[] =
-{
-	{ "Aggro Deaggro", ReferenceIcon::Aggro, nullptr },
-	{ "Auto Stack", ReferenceIcon::Overlay, nullptr },
-	{ "Camps Bounty", ReferenceIcon::Info, nullptr },
-	{ "Creep Blocker", ReferenceIcon::Heroes, nullptr },
-	{ "Creep Waves", ReferenceIcon::Smooth, nullptr },
-	{ "Illusion Control", ReferenceIcon::Heroes, nullptr },
-	{ "Jungle Bot", ReferenceIcon::Sparkles, nullptr },
-	{ "[v2] Last Hit Helper", ReferenceIcon::Info, nullptr },
-};
 
 static const ReferenceNavigationItem g_ChangerNavigation[] =
 {
@@ -1267,13 +1235,6 @@ static void DrawDodgerCombinations( float margin , float width , float topOffset
 static const ReferenceNavigationCategory g_NavigationCategories[] =
 {
 	{ "General", ReferenceIcon::Globe, g_GeneralNavigation, IM_ARRAYSIZE( g_GeneralNavigation ) },
-	{ "Heroes", ReferenceIcon::Heroes, g_HeroesNavigation, IM_ARRAYSIZE( g_HeroesNavigation ) },
-	{ "Info Screen", ReferenceIcon::Overlay, g_InfoNavigation, IM_ARRAYSIZE( g_InfoNavigation ) },
-	{ "Creeps", ReferenceIcon::Aggro, g_CreepsNavigation, IM_ARRAYSIZE( g_CreepsNavigation ) },
-	{ "Changer", ReferenceIcon::Sparkles, g_ChangerNavigation, IM_ARRAYSIZE( g_ChangerNavigation ) },
-	{ "Miscellaneous", ReferenceIcon::Tools, g_MiscNavigation, IM_ARRAYSIZE( g_MiscNavigation ) },
-	{ "Scripts", ReferenceIcon::Code, g_ScriptsNavigation, IM_ARRAYSIZE( g_ScriptsNavigation ) },
-	{ "Cloud", ReferenceIcon::Cloud, g_CloudNavigation, IM_ARRAYSIZE( g_CloudNavigation ) },
 };
 
 static bool DrawSwitchRow( const char* label , const char* id , bool& value , ReferenceIcon icon )
@@ -1454,8 +1415,8 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 
 	if ( ImGui::Begin( "##AndromedaReferenceMenu" , nullptr , flags ) )
 	{
-		static int selectedCategory = 2;
-		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = { 0, 0, 3 };
+		static int selectedCategory = 0;
+		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = { 0 };
 
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
 		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
@@ -1534,59 +1495,16 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
 		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
-		const bool killStealerPage = selectedCategory == 0 && selectedItem == 8;
-		const bool lastHitPage = selectedCategory == 3 && selectedItem == 7;
-		const bool creepBlockerPage = selectedCategory == 3 && selectedItem == 3;
-		const bool cameraPage = selectedCategory == 2 && selectedItem == 1;
-		const bool infoOverlayPage = selectedCategory == 2 && selectedItem == 3;
-		const bool visibleByEnemyPage = selectedCategory == 2 && selectedItem == 8;
-		const bool autoComboPage = selectedCategory == 0 && selectedItem == IM_ARRAYSIZE( g_GeneralNavigation ) - 1;
-		const bool dodgerPage = selectedCategory == 0 && selectedItem == 3;
+		const bool dodgerPage = selectedCategory == 0 && selectedItem == 0;
+		const bool killStealerPage = selectedCategory == 0 && selectedItem == 1;
+		const bool autoComboPage = selectedCategory == 0 && selectedItem == 2;
+		const bool cameraPage = selectedCategory == 0 && selectedItem == 3;
+		const bool visibleByEnemyPage = selectedCategory == 0 && selectedItem == 4;
+		const bool creepBlockerPage = selectedCategory == 0 && selectedItem == 5;
+		const bool lastHitPage = selectedCategory == 0 && selectedItem == 6;
 		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
 
-		if ( infoOverlayPage )
-		{
-			const float cardGap = 12.f;
-			const float columnWidth = ( settingsCardWidth - cardGap ) * 0.5f;
-			const float topCardHeight = 185.f;
-
-			ImGui::BeginChild( "##topOverlayCard" , ImVec2( columnWidth , topCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
-			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Top Overlay Settings" );
-			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
-			DrawSettingsSwitchRow( "Enable" , "##topOverlayEnable" , Settings::InfoOverlay::TopOverlayEnabled , ReferenceIcon::Check );
-			ImGui::BeginDisabled( !Settings::InfoOverlay::TopOverlayEnabled );
-			DrawSettingsSwitchRow( "Show On Allies" , "##showOnAllies" , Settings::InfoOverlay::ShowOnAllies , ReferenceIcon::Allies );
-			DrawSettingsSwitchRow( "Show Dangerous Ability Timer" , "##dangerousAbilityTimer" , Settings::InfoOverlay::ShowDangerousAbilityTimer , ReferenceIcon::Warning );
-			DrawTopOverlayElementsRow();
-			ImGui::EndDisabled();
-			ImGui::EndChild();
-
-			ImGui::SameLine( 0.f , cardGap );
-			ImGui::BeginChild( "##sidePanelsCard" , ImVec2( columnWidth , topCardHeight ) , true , ImGuiWindowFlags_NoScrollbar );
-			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Side Panels Settings" );
-			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
-			DrawSettingsSwitchRow( "Enable" , "##sidePanelsEnable" , Settings::InfoOverlay::SidePanelsEnabled , ReferenceIcon::Check );
-			ImGui::BeginDisabled( !Settings::InfoOverlay::SidePanelsEnabled );
-			DrawSettingsSwitchRow( "Items" , "##sidePanelItems" , Settings::InfoOverlay::ShowItems , ReferenceIcon::Items , true );
-			DrawSettingsSwitchRow( "Networth" , "##sidePanelNetworth" , Settings::InfoOverlay::ShowNetworth , ReferenceIcon::Network , true );
-			DrawSettingsSwitchRow( "Scan Glyph Info" , "##scanGlyphInfo" , Settings::InfoOverlay::ScanGlyphInfo , ReferenceIcon::Glyph , true );
-			ImGui::EndDisabled();
-			ImGui::EndChild();
-
-			ImGui::SetCursorPos( ImVec2( mainContentMargin , 67.f + topCardHeight + cardGap ) );
-			ImGui::BeginChild( "##wardTrackerCard" , ImVec2( settingsCardWidth , 160.f ) , true , ImGuiWindowFlags_NoScrollbar );
-			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Ward Tracker Settings" );
-			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
-			DrawSettingsSwitchRow( "Enable" , "##wardTrackerEnable" , Settings::InfoOverlay::WardTrackerEnabled , ReferenceIcon::Check , true );
-			ImGui::BeginDisabled( !Settings::InfoOverlay::WardTrackerEnabled );
-			static const char* wardShowModes[] = { "Panel" , "On Map" , "Panel, On Map" };
-			static const char* wardWorldRenderModes[] = { "Timer" , "Image" , "Timer, Image" };
-			DrawSettingsComboRow( "Show" , "##wardShowMode" , Settings::InfoOverlay::WardShowMode , wardShowModes , IM_ARRAYSIZE( wardShowModes ) , ReferenceIcon::Visible );
-			DrawSettingsComboRow( "World Render" , "##wardWorldRenderMode" , Settings::InfoOverlay::WardWorldRenderMode , wardWorldRenderModes , IM_ARRAYSIZE( wardWorldRenderModes ) , ReferenceIcon::Radius );
-			ImGui::EndDisabled();
-			ImGui::EndChild();
-		}
-		else if ( dodgerPage )
+		if ( dodgerPage )
 		{
 			// Two columns rather than one tall card: what the dodger reacts to
 			// and how hard it is tuned are separate decisions, and sixteen rows
