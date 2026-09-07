@@ -129,6 +129,14 @@ namespace Settings
 		// CDodger.cpp) as well as to the spells themselves.
 		inline bool DodgeEnemyBlink = true;
 		inline bool SaveAllies = true;
+		// Answer a cast the ability catalog knows nothing about - a hidden
+		// sub-ability, or an item the item list does not carry. Everything the
+		// catalog DOES describe is judged on its own merits and is unaffected
+		// by this; it only decides what happens when there is nothing to judge.
+		// On by default so an unrecognised spell is answered rather than
+		// silently ignored, which is the failure the log's "not treated as
+		// dangerous" lines were reporting.
+		inline bool DodgeUnknownSpells = true;
 		inline bool UseItems = true;
 		inline bool UseAbilities = true;
 		// Blinking away is the loudest reaction there is (it moves the hero),

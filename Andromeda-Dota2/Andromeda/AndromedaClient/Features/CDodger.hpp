@@ -4,6 +4,8 @@
 
 #include <Windows.h>
 
+class C_BaseEntity;
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -98,6 +100,21 @@ private:
 		float cooldown = 0.f;
 		bool inPhase = false;
 		bool initialized = false;
+		// An ability entity's name never changes, so it is resolved once and
+		// kept here. Reading it per castable per tick meant two heap
+		// allocations - the name and its lowercase copy - for every ability and
+		// item every enemy hero owns, ~33 times a second, purely to re-derive a
+		// constant.
+		std::string name;
+		// Handle (index AND serial) the cached name belongs to. The map is keyed
+		// by entity address, so a destroyed ability whose slot is reused would
+		// otherwise inherit the previous entity's name; a serial mismatch
+		// invalidates the entry instead.
+		uint32_t handle = 0;
+		bool nameResolved = false;
+		// Unnamed, or a talent - nothing that is ever cast, so the sampling
+		// below is skipped for it entirely.
+		bool ignored = false;
 		uint32_t lastSeenTick = 0;
 		// Guards against the cast-point edge and the cooldown edge of one cast
 		// both reporting it.
@@ -144,6 +161,11 @@ private:
 	std::unordered_map<int , PositionSample> m_HeroPositions{};
 	ThreatInfo m_Threat{};
 	std::string m_Status = "Idle";
+	// Last hero CLocalHeroResolver handed us, re-confirmed against the hero
+	// scan each tick so the resolver's own full-entity-list walk only has to
+	// run when it actually changes.
+	C_BaseEntity* m_LocalEntity = nullptr;
+	uint32_t m_NextResolveTick = 0;
 	uint32_t m_NextThinkTick = 0;
 	uint32_t m_NextPruneTick = 0;
 	uint32_t m_NextDodgeTick = 0;

@@ -29,6 +29,21 @@ struct AbilityDamageEntry
 	bool pointTarget = false;
 	bool noTarget = false;
 	bool targetEnemy = false;
+	// Whether the source data declared a target team at all. Absent is NOT the
+	// same as "friendly only": ground-targeted AoE ults (Chronosphere, Sun
+	// Strike, Illuminate) simply carry no target_team, so a consumer that reads
+	// a missing field as "not aimed at enemies" throws away exactly the spells
+	// it most needs to see.
+	bool hasTargetTeam = false;
+	// Passive or aura, with no castable behaviour of its own. It matters that
+	// this is recorded rather than simply dropped: a passive still puts its
+	// ability entity on cooldown when it procs (Axe's Counter Helix does it on
+	// nearly every attack he takes), so a cast detector that watches cooldown
+	// edges sees it, and only this flag can tell it that nothing was cast.
+	bool passive = false;
+	// "bkbpierce": "Yes" - goes through spell immunity, so a BKB is never the
+	// answer to it.
+	bool piercesImmunity = false;
 
 	auto IsUsableDamage() const -> bool { return damageCount > 0 && damage[0] > 0.f; }
 	auto DamageForLevel( int level ) const -> float;

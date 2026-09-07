@@ -189,7 +189,13 @@ namespace
 			return false;
 		if ( entry.name.rfind( "generic_" , 0 ) == 0 || entry.name.rfind( "dota_" , 0 ) == 0 )
 			return false;
-		return entry.targetEnemy || entry.unitTarget || entry.pointTarget || entry.noTarget;
+		// Passives are kept even though nothing can cast them: CDodger has to be
+		// able to look one up and recognise it, because a passive that procs
+		// looks exactly like a cast to a cooldown-edge detector. Consumers that
+		// cast abilities (CAutoCombo, CKillStealer) already drop any entry with
+		// no unit/point/no-target behaviour, which is every passive, so they are
+		// unaffected by these being present.
+		return entry.passive || entry.targetEnemy || entry.unitTarget || entry.pointTarget || entry.noTarget;
 	}
 
 	auto SelectLevelValue( const std::array<float , 8>& values , int count , int level ) -> float
@@ -239,6 +245,7 @@ auto CAbilityDamageData::LoadFromFile( const std::string& path ) -> bool
 	std::string currentAttribKey;
 	std::string collectingKey;
 	std::vector<float> collectingValues;
+	bool collectingTargetTeam = false;
 	int objectDepth = 0;
 	std::string line;
 
@@ -275,6 +282,7 @@ auto CAbilityDamageData::LoadFromFile( const std::string& path ) -> bool
 				currentAttribKey.clear();
 				collectingKey.clear();
 				collectingValues.clear();
+				collectingTargetTeam = false;
 			}
 		}
 
@@ -295,10 +303,52 @@ auto CAbilityDamageData::LoadFromFile( const std::string& path ) -> bool
 					current.pointTarget = true;
 				if ( line.find( "\"No Target\"" ) != std::string::npos )
 					current.noTarget = true;
+				// "Passive" / "Aura" appear in the behavior field, which is
+				// either a bare string or a multi-line array, so the quoted
+				// token is matched wherever it lands. Whether it really means
+				// "cannot be cast" is decided once the whole entry is read: an
+				// ability listing both Passive and a targeting behaviour has a
+				// castable form and is not a passive for our purposes.
+				if ( line.find( "\"Passive\"" ) != std::string::npos ||
+					line.find( "\"Aura\"" ) != std::string::npos ||
+					line.find( "\"Not Learnable\"" ) != std::string::npos )
+					current.passive = true;
+				if ( line.find( "\"bkbpierce\"" ) != std::string::npos )
+				{
+					const std::string pierce = ToLower( ExtractJsonStringValue( line ) );
+					current.piercesImmunity = pierce.find( "yes" ) != std::string::npos;
+				}
 				if ( line.find( "\"target_team\"" ) != std::string::npos )
 				{
 					const std::string targetTeam = ToLower( ExtractJsonStringValue( line ) );
-					current.targetEnemy = targetTeam.find( "enemy" ) != std::string::npos;
+					// "Both" is as much an enemy target as "Enemy" is - Doom and
+					// Ion Shell are both filed that way - and matching only the
+					// literal "enemy" dropped every one of them.
+					current.targetEnemy = targetTeam.find( "enemy" ) != std::string::npos ||
+						targetTeam.find( "both" ) != std::string::npos;
+					current.hasTargetTeam = !targetTeam.empty();
+					// Array form - "target_team": [ "Enemy", "Friendly" ] - puts
+					// the values on the lines that follow. Without this the
+					// extract above finds nothing on the opening line and every
+					// spell aimed at both teams reads as aimed at neither.
+					if ( !current.targetEnemy && line.find( '[' ) != std::string::npos &&
+						line.find( ']' ) == std::string::npos )
+						collectingTargetTeam = true;
+				}
+				else if ( collectingTargetTeam )
+				{
+					const std::string lowered = ToLower( line );
+					if ( lowered.find( "enemy" ) != std::string::npos || lowered.find( "both" ) != std::string::npos )
+					{
+						current.targetEnemy = true;
+						current.hasTargetTeam = true;
+					}
+					else if ( lowered.find( "friendly" ) != std::string::npos )
+					{
+						current.hasTargetTeam = true;
+					}
+					if ( line.find( ']' ) != std::string::npos )
+						collectingTargetTeam = false;
 				}
 				if ( line.find( "\"dmg_type\"" ) != std::string::npos )
 				{
@@ -363,10 +413,17 @@ auto CAbilityDamageData::LoadFromFile( const std::string& path ) -> bool
 		if ( !current.name.empty() && depthBefore > 1 && objectDepth == 1 )
 		{
 			FinishCollection();
+			// Passive only counts when the ability has no castable form at all.
+			// Several abilities list Passive alongside a real targeting
+			// behaviour (the passive half is a bonus the active cast carries),
+			// and those must stay castable - and dodgeable.
+			current.passive = current.passive &&
+				!current.unitTarget && !current.pointTarget && !current.noTarget;
 			if ( ShouldKeepEntry( current ) )
 				parsed[current.name] = current;
 			current = {};
 			currentAttribKey.clear();
+			collectingTargetTeam = false;
 		}
 	}
 

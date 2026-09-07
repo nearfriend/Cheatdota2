@@ -20,6 +20,29 @@ namespace
 		int32_t allocationCount = 0;
 		int32_t growSize = 0;
 	};
+
+	// Allocation-free case-insensitive substring search. `needle` must already
+	// be lowercase.
+	auto ContainsNoCase( const char* haystack , const char* needle ) -> bool
+	{
+		if ( !haystack || !needle || !needle[0] )
+			return false;
+
+		for ( const char* start = haystack; *start; ++start )
+		{
+			const char* left = start;
+			const char* right = needle;
+			while ( *right && *left &&
+				std::tolower( static_cast<unsigned char>( *left ) ) == static_cast<unsigned char>( *right ) )
+			{
+				++left;
+				++right;
+			}
+			if ( !*right )
+				return true;
+		}
+		return false;
+	}
 }
 
 auto FeatureSupport::IsReadableRuntimeMemory( const void* ptr , size_t size ) -> bool
@@ -155,7 +178,7 @@ auto FeatureSupport::Distance2D( const Vector3& left , const Vector3& right ) ->
 	return std::sqrt( dx * dx + dy * dy );
 }
 
-auto FeatureSupport::EntityName( C_BaseEntity* entity , CEntityIdentity* identity ) -> std::string
+auto FeatureSupport::EntityNameRaw( C_BaseEntity* entity , CEntityIdentity* identity ) -> const char*
 {
 	if ( identity )
 	{
@@ -169,7 +192,23 @@ auto FeatureSupport::EntityName( C_BaseEntity* entity , CEntityIdentity* identit
 		if ( const char* name = entity->GetSchemaClassName(); name && name[0] )
 			return name;
 	}
-	return {};
+	return nullptr;
+}
+
+auto FeatureSupport::EntityName( C_BaseEntity* entity , CEntityIdentity* identity ) -> std::string
+{
+	const char* name = EntityNameRaw( entity , identity );
+	return name ? std::string( name ) : std::string();
+}
+
+auto FeatureSupport::EntityNameLower( C_BaseEntity* entity , CEntityIdentity* identity , std::string& out ) -> void
+{
+	out.clear();
+	const char* name = EntityNameRaw( entity , identity );
+	if ( !name )
+		return;
+	for ( const char* cursor = name; *cursor; ++cursor )
+		out.push_back( static_cast<char>( std::tolower( static_cast<unsigned char>( *cursor ) ) ) );
 }
 
 auto FeatureSupport::TryEntityAtIndex( CGameEntitySystem* entitySystem , int index ,
@@ -206,15 +245,51 @@ auto FeatureSupport::EntityFromHandle( CGameEntitySystem* entitySystem , CHandle
 	return entity;
 }
 
-auto FeatureSupport::LooksLikeHeroEntity( C_BaseEntity* entity , const std::string& name ) -> bool
+auto FeatureSupport::EntityFromHandleFast( CGameEntitySystem* entitySystem , CHandle handle , CEntityIdentity** identityOut ) -> C_BaseEntity*
+{
+	if ( identityOut )
+		*identityOut = nullptr;
+	if ( !entitySystem || !handle.IsValid() )
+		return nullptr;
+
+	const int index = handle.GetEntryIndex();
+	if ( index < 0 || index >= MAX_TOTAL_ENTITIES )
+		return nullptr;
+
+	auto* chunk = entitySystem->m_pIdentityChunks[index / MAX_ENTITIES_IN_LIST];
+	if ( !chunk )
+		return nullptr;
+
+	// The identity comes out of the chunk directly rather than through
+	// entity->pEntityIdentity(): it is the same object, one dereference fewer,
+	// and it is what the chunk walks already hand to EntityName.
+	auto& identity = chunk->m_pIdentities[index % MAX_ENTITIES_IN_LIST];
+	auto* entity = identity.pBaseEntity();
+	if ( !entity )
+		return nullptr;
+
+	if ( identityOut )
+		*identityOut = &identity;
+	return entity;
+}
+
+auto FeatureSupport::LooksLikeHeroEntity( C_BaseEntity* entity , const char* name ) -> bool
 {
 	if ( !entity )
 		return false;
-	const std::string lower = ToLower( name );
-	if ( lower.find( "npc_dota_hero_" ) != std::string::npos )
+	// Case-insensitive substring on the game's own string rather than
+	// ToLower( name ): this runs on every live entity on the map every think
+	// tick, and the two heap allocations the old form made there (one for the
+	// name, one for its lowercase copy) were the bulk of the scan's cost.
+	if ( ContainsNoCase( name , "npc_dota_hero_" ) )
 		return true;
 	const char* className = entity->GetSchemaClassName();
 	return className && ( std::strstr( className , "DOTA_BaseNPC_Hero" ) || std::strstr( className , "DOTA_Unit_Hero" ) );
+}
+
+auto FeatureSupport::LooksLikeHeroEntity( C_BaseEntity* entity , const std::string& name ) -> bool
+{
+	return LooksLikeHeroEntity( entity , name.c_str() );
 }
 
 auto FeatureSupport::LooksLikeLaneCreep( C_BaseEntity* entity , const std::string& name , uint8_t team ) -> bool

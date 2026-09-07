@@ -157,10 +157,30 @@ namespace FeatureSupport
 	// returns null for entities reached through an identity-chunk walk, which
 	// silently made every name comparison match the empty string.
 	auto EntityName( C_BaseEntity* entity , CEntityIdentity* identity ) -> std::string;
+	// The same name without the copy. The pointer is the game's own string and
+	// stays valid as long as the entity does, so it is only for immediate
+	// inspection - anything kept past the current tick must be copied. Loops
+	// that look at every live entity per tick must use this: EntityName's
+	// std::string is a heap allocation per entity per tick, and the callers
+	// that then lowercase it paid for a second one.
+	auto EntityNameRaw( C_BaseEntity* entity , CEntityIdentity* identity ) -> const char*;
+	// Lowercased into a caller-owned buffer, so a hot loop reuses one
+	// allocation instead of making a fresh string for every entity it sees.
+	auto EntityNameLower( C_BaseEntity* entity , CEntityIdentity* identity , std::string& out ) -> void;
 	auto TryEntityAtIndex( CGameEntitySystem* entitySystem , int index , CEntityIdentity*& identityOut , C_BaseEntity*& entityOut ) -> bool;
 	auto EntityFromHandle( CGameEntitySystem* entitySystem , CHandle handle , CEntityIdentity** identityOut = nullptr ) -> C_BaseEntity*;
+	// Handle -> entity straight out of the entity system's identity table, with
+	// no VirtualQuery. The pointer comes from exactly the same place the
+	// identity-chunk walks read it from (and those dereference it unvalidated),
+	// so the validation EntityFromHandle does buys nothing here while costing a
+	// kernel call per handle - which is hundreds per tick in a loop that reads
+	// every enemy's abilities and items. Use this whenever the handle came from
+	// a vector that was itself already range-checked; use EntityFromHandle for
+	// one-off lookups where the extra syscall does not matter.
+	auto EntityFromHandleFast( CGameEntitySystem* entitySystem , CHandle handle , CEntityIdentity** identityOut = nullptr ) -> C_BaseEntity*;
 
 	auto LooksLikeHeroEntity( C_BaseEntity* entity , const std::string& name ) -> bool;
+	auto LooksLikeHeroEntity( C_BaseEntity* entity , const char* name ) -> bool;
 	// Lane creeps only - melee, ranged and siege - never jungle camps, Roshan,
 	// buildings, wards, couriers, summons or heroes. The needle lists are the
 	// ones CLastHitAssistant.cpp arrived at the hard way; see IsLaneCreep

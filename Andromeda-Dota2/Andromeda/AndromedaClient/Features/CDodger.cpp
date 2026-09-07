@@ -64,6 +64,11 @@ namespace
 	namespace FS = FeatureSupport;
 
 	constexpr uint32_t kThinkIntervalMs = 30;
+	// How long a resolved local hero is trusted before the full identity-chunk
+	// walk that produced it is run again. See the note at the call site: the
+	// hero scan re-confirms it every tick in between, so this is only a
+	// backstop against an entity pointer being recycled unnoticed.
+	constexpr uint32_t kResolveIntervalMs = 1000;
 	// Cursor settle time around a targeted cast. Dota consumes injected input
 	// on its own message loop, not synchronously with SendInput, so the cursor
 	// has to still be on the aim point when the game gets around to the key.
@@ -102,15 +107,11 @@ namespace
 	// know (Ravage-likes are in the table below with a real radius).
 	constexpr float kDefaultNoTargetReach = 600.f;
 	constexpr float kAllySaveRange = 900.f;
-	// These four were menu sliders. They are fixed now because they are
-	// judgement calls, not preferences - the values below are the ones the
-	// sliders shipped with, so behaviour is unchanged, there is just nothing
-	// left to mis-set.
+	// These were menu sliders. They are fixed now because they are judgement
+	// calls, not preferences - the values below are the ones the sliders
+	// shipped with, so behaviour is unchanged, there is just nothing left to
+	// mis-set.
 	//
-	// Damage an ability NOT in the curated danger table has to do before it
-	// counts as a threat at all. Without a bar here every chip-damage spell in
-	// the game would arm a dodge.
-	constexpr float kUnlistedThreatDamage = 150.f;
 	// An ally is worth spending a save on below this much of their health.
 	constexpr float kAllySaveHealthPercent = 40.f;
 	// Health at which the panic save fires for us or a nearby ally.
@@ -163,6 +164,10 @@ namespace
 		{ "pudge_meat_hook" , kProjectile | kDisable | kPure | kPierces , 0.f },
 		{ "mirana_arrow" , kProjectile | kDisable | kMagical , 3000.f },
 		{ "lion_impale" , kProjectile | kDisable | kMagical , 0.f },
+		// Hex. Listed rather than left to the generic path because the generic
+		// path reads a unit-targeted spell as a projectile and would offer a
+		// blink - and nothing you move after a Hex is cast can dodge it.
+		{ "lion_voodoo" , kDisable | kMagical | kInstant , 0.f },
 		{ "lion_finger_of_death" , kMagical | kInstant , 0.f },
 		{ "lina_laguna_blade" , kMagical | kInstant , 0.f },
 		{ "lina_light_strike_array" , kMagical | kDisable | kProjectile , 0.f },
@@ -240,6 +245,19 @@ namespace
 		{ "leshrac_split_earth" , kDisable | kMagical | kProjectile , 0.f },
 		{ "warlock_upheaval" , kDisable | kMagical , 0.f },
 		{ "medusa_stone_gaze" , kDisable | kMagical , 1200.f },
+		// No-target disables that do no damage. The generic path below cannot
+		// reach these: the catalog gives them no target team (it omits it for
+		// every ground/self-centred AoE) and no damage number, which is exactly
+		// the shape of a self-buff, so the only way to tell a Savage Roar from
+		// a War Cry is to name it. Radii are the catalog's own.
+		{ "naga_siren_song_of_the_siren" , kDisable | kMagical , 1400.f },
+		{ "ember_spirit_searing_chains" , kDisable | kMagical , 400.f },
+		{ "lone_druid_savage_roar" , kDisable | kMagical , 350.f },
+		{ "ursa_earthshock" , kDisable | kMagical , 385.f },
+		{ "ringmaster_whoopee_cushion" , kDisable | kMagical , 400.f },
+		{ "earth_spirit_magnetize" , kDisable | kMagical , 350.f },
+		{ "slark_pounce" , kProjectile | kDisable | kMagical , 700.f },
+		{ "tusk_launch_snowball" , kProjectile | kDisable | kMagical , 0.f },
 		// Enemy items - same detector, same answer.
 		{ "item_sheepstick" , kDisable | kMagical | kInstant , 0.f },
 		{ "item_rod_of_atos" , kDisable | kProjectile | kMagical , 0.f },
@@ -515,12 +533,20 @@ namespace
 		}
 	}
 
-	// 0 = harmless / not worth an item. Anything in the curated table above is
-	// dangerous by definition; everything else has to clear the damage bar the
-	// user set.
+	// 0 = not something to answer. Every enemy cast that can land on our team is
+	// worth answering; the only things that score zero are the ones that are
+	// not really a cast at us at all.
+	//
+	// This used to require catalog damage above a bar, which is why a live
+	// capture logged Lion's Hex as "not treated as dangerous" and let it land:
+	// the catalog carries no damage number for a pure disable, so a Hex, a
+	// Silence, a Root or an Ensnare all scored zero - exactly the spells the
+	// feature exists to answer. Damage now only decides which FLAGS a threat
+	// carries, never whether it is one.
 	auto ClassifyThreat( const std::string& loweredName , const AbilityDamageEntry* entry , int level , float& outReach ) -> uint8_t
 	{
 		outReach = 0.f;
+		( void ) level;
 
 		// Whether the spell picks one unit comes from the catalog in both
 		// paths - the curated table describes what a spell DOES, not how it is
@@ -533,17 +559,67 @@ namespace
 			return static_cast<uint8_t>( danger->flags | targeting );
 		}
 
-		if ( !entry || !entry->targetEnemy || !entry->IsUsableDamage() )
-			return 0;
-		if ( entry->DamageForLevel( level ) < kUnlistedThreatDamage )
+		if ( !entry )
+		{
+			// Not in the catalog at all - a hidden sub-ability, or an item the
+			// item list does not carry. Nothing is known about it, so this is
+			// the one case where the answer is a preference rather than a fact.
+			return Settings::Dodger::DodgeUnknownSpells
+				? static_cast<uint8_t>( kMagical | kDisable | kProjectile )
+				: uint8_t{ 0 };
+		}
+
+		// A passive or an aura was never cast: it just came off cooldown on its
+		// own. Axe's Counter Helix alone does that on nearly every attack he
+		// takes, and the live capture shows the detector seeing every one of
+		// them - answering those would empty the inventory in one creep wave.
+		if ( entry->passive )
 			return 0;
 
-		uint8_t flags = DamageTypeFlag( entry->damageType );
+		if ( entry->hasTargetTeam )
+		{
+			// Declared as aimed at their own team: a self-buff, a heal, a
+			// shield, a Repel. Not our problem however big the numbers on it
+			// are. ("Both" counts as aimed at us - Doom is filed that way.)
+			if ( !entry->targetEnemy )
+				return 0;
+		}
+		// No declared target team at all, which the catalog does for two very
+		// different kinds of spell: ground-targeted AoE (Chronosphere, Sun
+		// Strike, Illuminate and Black Hole all omit it) and self-buffs
+		// (Warcry, Windrun, Blade Fury, Sprint, God's Strength). Treating the
+		// missing field as "aimed at enemies" arms a dodge on all of them;
+		// treating it as "not aimed at enemies" throws away the biggest ults in
+		// the game. Point-targeting is what separates the two - nobody aims a
+		// self-buff at the ground - and for the rest, doing damage is.
+		else if ( !entry->pointTarget && !entry->IsUsableDamage() )
+		{
+			return 0;
+		}
+
+		uint8_t flags = 0;
+		if ( entry->IsUsableDamage() )
+		{
+			flags |= DamageTypeFlag( entry->damageType );
+		}
+		else
+		{
+			// Pointed at an enemy and does no damage: by definition a disable or
+			// a debuff. kMagical rides along so the flag matcher can still reach
+			// the answers that only claim to stop magic.
+			flags |= kDisable | kMagical;
+		}
+
 		// A unit-targeted nuke almost always arrives as a projectile, so a
 		// blink/Eul's genuinely removes it; a point/no-target one lands where
 		// it was aimed.
 		if ( entry->unitTarget )
 			flags |= kProjectile;
+		// Straight from the catalog's bkbpierce, so a BKB is never offered
+		// against something that goes through it.
+		if ( entry->piercesImmunity )
+			flags |= kPierces;
+
 		return static_cast<uint8_t>( flags | targeting );
 	}
 
@@ -588,8 +664,14 @@ namespace
 				// costs nothing extra - no re-lookup, and no VirtualQuery per
 				// creep on the map (every lane creep also has health and a
 				// playable team, so this loop sees all of them).
-				const std::string name = FS::EntityName( entity , &identity );
-				if ( !FS::LooksLikeHeroEntity( entity , name ) )
+				//
+				// Raw pointer, not std::string: every lane creep, ward, building
+				// and courier reaches this line ~33 times a second, and copying
+				// the name (plus the lowercase copy LooksLikeHeroEntity used to
+				// make) was two heap allocations per unit per tick for a test
+				// that discards all but ten of them.
+				const char* rawName = FS::EntityNameRaw( entity , &identity );
+				if ( !FS::LooksLikeHeroEntity( entity , rawName ) )
 					continue;
 
 				Vector3 origin{};
@@ -604,7 +686,8 @@ namespace
 				HeroSnapshot snapshot{};
 				snapshot.entity = entity;
 				snapshot.entIndex = entIndex;
-				snapshot.name = name;
+				if ( rawName )
+					snapshot.name = rawName;
 				snapshot.origin = origin;
 				snapshot.team = team;
 				snapshot.health = health;
@@ -622,6 +705,10 @@ namespace
 		std::vector<ReadyResponse> ready;
 		static constexpr std::array<WORD , 6> kItemKeys = { 'Z' , 'X' , 'C' , 'V' , 'B' , 'N' };
 		static constexpr std::array<WORD , 6> kAbilityKeys = { 'Q' , 'W' , 'E' , 'D' , 'F' , 'R' };
+		// One buffer for every name this function lowercases, instead of two
+		// fresh strings per item and per ability.
+		std::string nameBuffer;
+		std::vector<CHandle> handles;
 
 		auto Usable = [&]( C_BaseEntity* castable , const AbilityDamageEntry* entry , int level ) -> bool
 		{
@@ -637,18 +724,18 @@ namespace
 
 		if ( Settings::Dodger::UseItems && allowItems )
 		{
-			std::vector<CHandle> itemHandles;
-			if ( FS::ReadInventoryHandles( local.entity , offsets , itemHandles ) )
+			if ( FS::ReadInventoryHandles( local.entity , offsets , handles ) )
 			{
-				const int slotLimit = (std::min)( static_cast<int>( itemHandles.size() ) , static_cast<int>( kItemKeys.size() ) );
+				const int slotLimit = (std::min)( static_cast<int>( handles.size() ) , static_cast<int>( kItemKeys.size() ) );
 				for ( int slot = 0; slot < slotLimit; ++slot )
 				{
 					CEntityIdentity* identity = nullptr;
-					auto* item = FS::EntityFromHandle( entitySystem , itemHandles[slot] , &identity );
+					auto* item = FS::EntityFromHandleFast( entitySystem , handles[slot] , &identity );
 					if ( !item )
 						continue;
 
-					const std::string itemName = FS::ToLower( FS::EntityName( item , identity ) );
+					FS::EntityNameLower( item , identity , nameBuffer );
+					const std::string& itemName = nameBuffer;
 					const auto* def = FindResponseDef( itemName );
 					if ( !def || def->isAbility )
 						continue;
@@ -669,18 +756,18 @@ namespace
 
 		if ( Settings::Dodger::UseAbilities && allowAbilities )
 		{
-			std::vector<CHandle> abilityHandles;
-			if ( FS::ReadAbilityHandles( local.entity , offsets , abilityHandles ) )
+			if ( FS::ReadAbilityHandles( local.entity , offsets , handles ) )
 			{
 				int fallbackSlot = 0;
-				for ( const auto& handle : abilityHandles )
+				for ( const auto& handle : handles )
 				{
 					CEntityIdentity* identity = nullptr;
-					auto* ability = FS::EntityFromHandle( entitySystem , handle , &identity );
+					auto* ability = FS::EntityFromHandleFast( entitySystem , handle , &identity );
 					if ( !ability )
 						continue;
 
-					const std::string abilityName = FS::ToLower( FS::EntityName( ability , identity ) );
+					FS::EntityNameLower( ability , identity , nameBuffer );
+					const std::string& abilityName = nameBuffer;
 					if ( abilityName.empty() || abilityName.rfind( "special_bonus_" , 0 ) == 0 )
 						continue;
 
@@ -759,14 +846,16 @@ namespace
 		if ( !FS::ReadInventoryHandles( localEntity , offsets , itemHandles ) )
 			return false;
 
+		std::string itemName;
 		const int slotLimit = (std::min)( static_cast<int>( itemHandles.size() ) , 6 );
 		for ( int slot = 0; slot < slotLimit; ++slot )
 		{
 			CEntityIdentity* identity = nullptr;
-			auto* item = FS::EntityFromHandle( entitySystem , itemHandles[slot] , &identity );
+			auto* item = FS::EntityFromHandleFast( entitySystem , itemHandles[slot] , &identity );
 			if ( !item )
 				continue;
-			if ( FS::ToLower( FS::EntityName( item , identity ) ) != "item_sphere" )
+			FS::EntityNameLower( item , identity , itemName );
+			if ( itemName != "item_sphere" )
 				continue;
 
 			const float cooldown = FS::ReadField<float>( item , offsets.abilityCooldown , 0.f );
@@ -793,7 +882,7 @@ namespace
 			for ( int slot = 0; slot < count; ++slot )
 			{
 				CEntityIdentity* identity = nullptr;
-				auto* item = FS::EntityFromHandle( entitySystem , handles[slot] , &identity );
+				auto* item = FS::EntityFromHandleFast( entitySystem , handles[slot] , &identity );
 				if ( !item )
 					continue;
 				const std::string name = FS::ToLower( FS::EntityName( item , identity ) );
@@ -809,7 +898,7 @@ namespace
 			for ( const auto& handle : handles )
 			{
 				CEntityIdentity* identity = nullptr;
-				auto* ability = FS::EntityFromHandle( entitySystem , handle , &identity );
+				auto* ability = FS::EntityFromHandleFast( entitySystem , handle , &identity );
 				if ( !ability )
 					continue;
 				const std::string name = FS::ToLower( FS::EntityName( ability , identity ) );
@@ -844,7 +933,7 @@ namespace
 			for ( const auto& handle : handles )
 			{
 				CEntityIdentity* identity = nullptr;
-				auto* ability = FS::EntityFromHandle( entitySystem , handle , &identity );
+				auto* ability = FS::EntityFromHandleFast( entitySystem , handle , &identity );
 				if ( !ability )
 					continue;
 
@@ -1321,6 +1410,8 @@ auto CDodger::OnRender() -> void
 		if ( !m_HeroPositions.empty() )
 			m_HeroPositions.clear();
 		m_Threat = {};
+		m_LocalEntity = nullptr;
+		m_NextResolveTick = 0;
 		m_Status = "Disabled";
 		return;
 	}
@@ -1382,31 +1473,64 @@ auto CDodger::OnRender() -> void
 			offsets.hasUnitState ? "m_nUnitState64" : "NONE (state guards inert)" );
 	}
 
-	C_BaseEntity* localEntity = nullptr;
-	int localEntIndex = -1;
-	if ( !CLocalHeroResolver::Resolve( entitySystem , localEntity , localEntIndex ) )
-	{
-		m_Status = "Local hero unresolved";
-		return;
-	}
-
 	const auto heroes = ScanHeroes( entitySystem , offsets );
-	const HeroSnapshot* local = nullptr;
-	for ( const auto& hero : heroes )
+
+	auto FindLocal = [&]( C_BaseEntity* entity ) -> const HeroSnapshot*
 	{
-		if ( hero.entity == localEntity )
+		if ( !entity )
+			return nullptr;
+		for ( const auto& hero : heroes )
 		{
-			local = &hero;
-			break;
+			if ( hero.entity == entity )
+				return &hero;
+		}
+		return nullptr;
+	};
+
+	// CLocalHeroResolver::Resolve walks all 64x512 identity slots - the same
+	// sweep ScanHeroes just did - for an answer that only changes when we die
+	// or respawn. Running both every 30ms was two full walks per tick, so the
+	// resolved hero is kept and re-confirmed against the scan we already have:
+	// if it is still there and alive, that IS the confirmation. It drops out of
+	// the scan the moment it dies, which forces the resolve below, and the
+	// timer re-resolves periodically anyway so a recycled entity pointer cannot
+	// be trusted indefinitely.
+	const HeroSnapshot* local = nullptr;
+	if ( m_LocalEntity && now < m_NextResolveTick )
+	{
+		local = FindLocal( m_LocalEntity );
+		// Dead, not lost: the hero entity survives death, it just stops being a
+		// live hero in the scan. The resolver would not find a live one either,
+		// so there is nothing to gain from re-walking the entity list every
+		// tick until we respawn - at which point the scan picks it back up.
+		if ( !local && FS::ReadField<int>( m_LocalEntity , offsets.health , 0 ) <= 0 )
+		{
+			m_Status = "Hero is dead";
+			return;
 		}
 	}
 	if ( !local )
 	{
-		// ScanHeroes drops dead and pre-spawn heroes, so the common reason to
-		// land here is simply being dead - say that rather than something that
-		// reads like a resolver failure.
-		m_Status = FS::ReadField<int>( localEntity , offsets.health , 0 ) <= 0 ? "Hero is dead" : "Local hero not in scan";
-		return;
+		m_NextResolveTick = now + kResolveIntervalMs;
+
+		C_BaseEntity* localEntity = nullptr;
+		int localEntIndex = -1;
+		if ( !CLocalHeroResolver::Resolve( entitySystem , localEntity , localEntIndex ) )
+		{
+			m_Status = "Local hero unresolved";
+			return;
+		}
+
+		local = FindLocal( localEntity );
+		if ( !local )
+		{
+			// ScanHeroes drops dead and pre-spawn heroes, so the common reason
+			// to land here is simply being dead - say that rather than something
+			// that reads like a resolver failure.
+			m_Status = FS::ReadField<int>( localEntity , offsets.health , 0 ) <= 0 ? "Hero is dead" : "Local hero not in scan";
+			return;
+		}
+		m_LocalEntity = localEntity;
 	}
 
 	// Did the last thing we fired actually happen? An item that is still ready
@@ -1680,6 +1804,11 @@ auto CDodger::OnRender() -> void
 			LogInventorySlots( entitySystem , offsets , local->entity );
 	};
 
+	// Hoisted out of the loop below: one allocation for the whole tick instead
+	// of three per enemy hero.
+	std::vector<CastEvent> casts;
+	std::vector<CHandle> watchHandles;
+
 	for ( const auto& enemy : heroes )
 	{
 		if ( enemy.team == local->team || enemy.entity == local->entity )
@@ -1720,14 +1849,29 @@ auto CDodger::OnRender() -> void
 			}
 		}
 
-		std::vector<CastEvent> casts;
-		auto WatchCastable = [&]( C_BaseEntity* castable , CEntityIdentity* identity , bool isItem )
+		casts.clear();
+		auto WatchCastable = [&]( C_BaseEntity* castable , CEntityIdentity* identity , CHandle handle , bool isItem )
 		{
 			if ( !castable )
 				return;
 
-			const std::string name = FS::ToLower( FS::EntityName( castable , identity ) );
-			if ( name.empty() || name.rfind( "special_bonus_" , 0 ) == 0 )
+			auto& watch = m_Watches[reinterpret_cast<uintptr_t>( castable )];
+			// The name is a constant per ability entity, so it is read once and
+			// kept. A serial mismatch means this address now holds a different
+			// entity: re-read the name and drop the previous sample with it,
+			// because a cooldown edge measured against the old entity would be
+			// a phantom cast.
+			if ( !watch.nameResolved || watch.handle != handle.m_Index )
+			{
+				watch.handle = handle.m_Index;
+				watch.nameResolved = true;
+				watch.initialized = false;
+				watch.lastFiredTick = 0;
+				FS::EntityNameLower( castable , identity , watch.name );
+				watch.ignored = watch.name.empty() || watch.name.rfind( "special_bonus_" , 0 ) == 0;
+			}
+			watch.lastSeenTick = now;
+			if ( watch.ignored )
 				return;
 
 			const int level = isItem
@@ -1740,7 +1884,6 @@ auto CDodger::OnRender() -> void
 			const bool inPhase = offsets.hasAbilityInPhase &&
 				FS::ReadField<bool>( castable , offsets.abilityInPhase , false );
 
-			auto& watch = m_Watches[reinterpret_cast<uintptr_t>( castable )];
 			const bool hadSample = watch.initialized;
 			const float previousCooldown = watch.cooldown;
 			const bool previousPhase = watch.inPhase;
@@ -1748,7 +1891,6 @@ auto CDodger::OnRender() -> void
 			watch.cooldown = std::isfinite( cooldown ) ? cooldown : 0.f;
 			watch.inPhase = inPhase;
 			watch.initialized = true;
-			watch.lastSeenTick = now;
 
 			if ( !hadSample )
 				return;
@@ -1767,31 +1909,29 @@ auto CDodger::OnRender() -> void
 
 			CastEvent event{};
 			event.ability = castable;
-			event.name = name;
+			event.name = watch.name;
 			event.level = level;
 			casts.push_back( std::move( event ) );
 		};
 
-		std::vector<CHandle> abilityHandles;
-		if ( FS::ReadAbilityHandles( enemy.entity , offsets , abilityHandles ) )
+		if ( FS::ReadAbilityHandles( enemy.entity , offsets , watchHandles ) )
 		{
-			for ( const auto& handle : abilityHandles )
+			for ( const auto& handle : watchHandles )
 			{
 				CEntityIdentity* identity = nullptr;
-				auto* ability = FS::EntityFromHandle( entitySystem , handle , &identity );
-				WatchCastable( ability , identity , false );
+				auto* ability = FS::EntityFromHandleFast( entitySystem , handle , &identity );
+				WatchCastable( ability , identity , handle , false );
 			}
 		}
 
-		std::vector<CHandle> itemHandles;
-		if ( FS::ReadInventoryHandles( enemy.entity , offsets , itemHandles ) )
+		if ( FS::ReadInventoryHandles( enemy.entity , offsets , watchHandles ) )
 		{
-			const int slotLimit = (std::min)( static_cast<int>( itemHandles.size() ) , 6 );
+			const int slotLimit = (std::min)( static_cast<int>( watchHandles.size() ) , 6 );
 			for ( int slot = 0; slot < slotLimit; ++slot )
 			{
 				CEntityIdentity* identity = nullptr;
-				auto* item = FS::EntityFromHandle( entitySystem , itemHandles[slot] , &identity );
-				WatchCastable( item , identity , true );
+				auto* item = FS::EntityFromHandleFast( entitySystem , watchHandles[slot] , &identity );
+				WatchCastable( item , identity , watchHandles[slot] , true );
 			}
 		}
 
@@ -1812,10 +1952,17 @@ auto CDodger::OnRender() -> void
 			{
 				// Logged because "nothing happened" is otherwise indistinguishable
 				// from "never saw the cast", and those have completely different
-				// fixes: this line means detection works and the spell simply is
-				// not on the danger list / under Min Danger Damage.
-				DEV_LOG( "[dodger] seen: %s cast %s - not treated as dangerous\n" ,
-					enemy.name.c_str() , cast.name.c_str() );
+				// fixes: this line means detection works and the classifier
+				// deliberately let it through. The reason matters - a passive
+				// proc is correct to skip, a catalog miss is not - so say which
+				// it was rather than the old blanket "not treated as dangerous".
+				const char* reason = !entry
+					? "not in the ability catalog and Dodge Unknown Spells is off"
+					: ( entry->passive
+						? "passive/aura, nothing was cast"
+						: "does not target enemies" );
+				DEV_LOG( "[dodger] seen: %s cast %s - skipped: %s\n" ,
+					enemy.name.c_str() , cast.name.c_str() , reason );
 				continue;
 			}
 			// A magical nuke or a normal disable is already handled by the

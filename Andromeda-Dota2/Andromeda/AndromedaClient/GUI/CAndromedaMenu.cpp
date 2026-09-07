@@ -1525,6 +1525,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			DrawSwitchRow( "Dodge My Hero" , "##dodgerSelf" , Settings::Dodger::DodgeSelf , ReferenceIcon::Aggro );
 			DrawSwitchRow( "React To Enemy Blink" , "##dodgerEnemyBlink" , Settings::Dodger::DodgeEnemyBlink , ReferenceIcon::Distance );
 			DrawSwitchRow( "Save Allies" , "##dodgerAllies" , Settings::Dodger::SaveAllies , ReferenceIcon::Allies );
+			DrawSwitchRow( "Dodge Unknown Spells" , "##dodgerUnknown" , Settings::Dodger::DodgeUnknownSpells , ReferenceIcon::Sparkles );
 			DrawSwitchRow( "Panic Save On Low HP" , "##dodgerPanic" , Settings::Dodger::PanicSaveEnable , ReferenceIcon::Warning );
 			DrawSwitchRow( "Use Items" , "##dodgerItems" , Settings::Dodger::UseItems , ReferenceIcon::Items );
 			DrawSwitchRow( "Use Abilities" , "##dodgerAbilities" , Settings::Dodger::UseAbilities , ReferenceIcon::Sparkles );
