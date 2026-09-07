@@ -59,8 +59,21 @@ namespace
 
 	// Keep the line already held unless another beats it by this margin. Pure
 	// hysteresis: two lines covering the same creeps are equally good, and
-	// swapping between them every order is the wobble all over again.
+	// swapping between them every order is the wobble all over again. Contact,
+	// not a better score, is what normally ends a line - see kBumpCooldownMs.
 	constexpr float kHeldLineBonus = 1.12f;
+
+	// Centre-to-centre distance at which the hero counts as crashed into a
+	// creep. Contact range plus a creep's own radius of slack, because origins
+	// are sampled a frame apart and a hull graze should still register.
+	constexpr float kContactDetectRange = kContactRange + kCreepCollisionRadius;
+
+	// How long a creep stays "already dealt with" after the hero crashes into
+	// it. The collision stalls that creep on its own; standing on it afterwards
+	// blocks nothing new while the rest of the wave walks by. Long enough for
+	// the hero to cross to another creep and back, short enough that a creep
+	// which has recovered and retaken the lead gets blocked again.
+	constexpr uint32_t kBumpCooldownMs = 1000;
 
 	// Click targeting radius, which is NOT the collision radius - a right click
 	// this close to a unit's centre selects the unit and becomes a follow order
@@ -137,6 +150,9 @@ namespace
 		float yaw = 0.f;
 		bool hasYaw = false;
 		C_BaseEntity* entity = nullptr;
+		// Already crashed into recently, so it is stalled and the hero's body is
+		// better spent on a creep that is still walking.
+		bool bumped = false;
 	};
 
 	auto ForwardFromYaw( float yawDegrees ) -> Vector3
@@ -303,11 +319,17 @@ namespace
 		return Dot2D( creep.origin , direction ) - heroProjection;
 	}
 
-	// One creep's line across the lane, and how much it matters.
+	// One creep's line across the lane, and how much it matters. `lateral` is
+	// measured FROM THE HERO, not from the world origin: the lane frame rotates
+	// a little every order, and a projection of a coordinate ~3700 units from
+	// origin swings by hundreds of units when it does. Relative to the hero the
+	// same rotation moves it by a few units, because the creep is close by.
 	struct RankCreep
 	{
 		float lateral = 0.f;
 		float weight = 0.f;
+		bool bumped = false;
+		C_BaseEntity* entity = nullptr;
 	};
 
 	// How much of the front rank a hero standing on this line actually covers.
@@ -317,11 +339,18 @@ namespace
 	// and he covers about 64 of it, which is the fact the old lateral average
 	// could not represent: averaging two creeps walking either side of him
 	// returns the empty ground between them, a line that covers neither.
-	auto CoverageScore( const std::vector<RankCreep>& rank , float line ) -> float
+	// countBumped false scores only the creeps still worth blocking, which is
+	// what the line choice runs on: a creep the hero has already crashed into is
+	// stalled whether he stands on it or not, so covering it again earns nothing.
+	// True scores every hull he physically reaches, which is what the log wants.
+	auto CoverageScore( const std::vector<RankCreep>& rank , float line , bool countBumped ) -> float
 	{
 		float score = 0.f;
 		for ( const auto& creep : rank )
 		{
+			if ( creep.bumped && !countBumped )
+				continue;
+
 			const float offset = std::fabs( creep.lateral - line );
 			if ( offset >= kCoverageFalloff )
 				continue;
@@ -340,33 +369,79 @@ namespace
 	// The line already held gets a small bonus: when two lines cover the same
 	// creeps they are equally good, and swapping between them every order is
 	// the wobble this whole design exists to avoid.
-	auto ChooseCoverageLine( const std::vector<RankCreep>& rank , float heldLine , bool hasHeldLine ) -> float
+	//
+	// Creeps already crashed into are skipped as candidates and score nothing,
+	// so the moment the hero connects with one, the line he is standing on goes
+	// worthless and the next creep along wins on its own merits. That is the
+	// hand-off: hold a line until contact, then take the next one. No special
+	// case is needed to break the hysteresis - the held line simply stops
+	// scoring, and the bonus has nothing left to protect.
+	//
+	// The line being held is identified by WHICH CREEP it belongs to, not by a
+	// coordinate. Coordinates in this frame are not comparable across orders:
+	// the lane heading moves a little each time, and the same line reads
+	// hundreds of units different afterwards. A creep is the same creep whatever
+	// the frame does, so anchoring to it is the only stable way to say "keep
+	// covering what I was covering" - stored as a coordinate the bonus applied
+	// to garbage and the choice collapsed to argmax on every order.
+	//
+	// Returns the index into rank, or -1 when there is nothing to stand on.
+	auto ChooseCoverageLine( const std::vector<RankCreep>& rank , const C_BaseEntity* heldEntity ) -> int
 	{
-		float bestLine = hasHeldLine ? heldLine : 0.f;
-		float bestScore = hasHeldLine ? CoverageScore( rank , heldLine ) * kHeldLineBonus : -1.f;
+		int best = -1;
+		float bestScore = 0.f;
 
-		for ( const auto& creep : rank )
+		for ( size_t index = 0; index < rank.size(); ++index )
 		{
-			const float score = CoverageScore( rank , creep.lateral );
-			if ( score > bestScore )
+			const auto& creep = rank[index];
+			if ( creep.bumped )
+				continue;
+
+			float score = CoverageScore( rank , creep.lateral , false );
+			if ( heldEntity && creep.entity == heldEntity )
+				score *= kHeldLineBonus;
+
+			if ( best < 0 || score > bestScore )
 			{
+				best = static_cast<int>( index );
 				bestScore = score;
-				bestLine = creep.lateral;
 			}
 		}
 
-		return bestLine;
+		if ( best >= 0 )
+			return best;
+
+		// Every creep in reach has been crashed into already. Rather than stand
+		// on a line he is finished with, cover whatever is physically there -
+		// the cooldowns expire in under a second and the cycle starts again.
+		bestScore = 0.f;
+		for ( size_t index = 0; index < rank.size(); ++index )
+		{
+			const float score = CoverageScore( rank , rank[index].lateral , true );
+			if ( best < 0 || score > bestScore )
+			{
+				best = static_cast<int>( index );
+				bestScore = score;
+			}
+		}
+
+		return best;
 	}
 
-	// Where the plug has to sit, expressed in the lane's own frame: how far the
-	// wave has come along the lane, and which line across it to stand on.
+	// Where the plug has to sit, in the lane's frame and RELATIVE TO THE HERO.
+	// Both figures are offsets from where he stands, never absolute projections:
+	// the frame rotates slightly every order, and an absolute projection of a
+	// world coordinate thousands of units from origin is a different number
+	// afterwards even though nothing moved.
 	struct WaveFront
 	{
-		float progress = 0.f;   // leading blockable creep's distance along the lane
-		float lateral = 0.f;    // the line across the lane that covers the most rank
+		float leadOffset = 0.f; // leading blockable creep, along the lane, from the hero
+		float lateral = 0.f;    // the line to stand on, across the lane, from the hero
 		float coverage = 0.f;   // weighted rank actually covered from that line
 		float groundZ = 0.f;
 		int rankSize = 0;
+		int bumpedCount = 0;    // of those, ones already crashed into
+		C_BaseEntity* lineEntity = nullptr; // creep whose line was chosen
 		bool valid = false;
 		// Nothing is blockable any more, but the wave has not cleared out
 		// either. The hero stands his ground on the line he already holds -
@@ -388,7 +463,8 @@ namespace
 	// when the choice is close. Two creeps swapping the lead changes neither, so
 	// there is nothing to wobble about.
 	auto ComputeWaveFront( const std::vector<WaveCreep>& wave , const Vector3& direction ,
-		const Vector3& lateralAxis , float heroProjection , float heldLine , bool hasHeldLine ) -> WaveFront
+		const Vector3& lateralAxis , const Vector3& heroOrigin , float heroProjection ,
+		const C_BaseEntity* heldEntity ) -> WaveFront
 	{
 		WaveFront front{};
 
@@ -397,7 +473,7 @@ namespace
 		// this single max is what the block point is built from, so one escaped
 		// creep left in it puts the aim point beyond the hero and walks him down
 		// the lane behind the wave.
-		float leadProgress = 0.f;
+		float leadOffset = 0.f;
 		bool hasLead = false;
 		int presentCount = 0;
 		for ( const auto& creep : wave )
@@ -410,10 +486,9 @@ namespace
 			if ( lead > kBlockableTolerance )
 				continue;
 
-			const float progress = Dot2D( creep.origin , direction );
-			if ( !hasLead || progress > leadProgress )
+			if ( !hasLead || lead > leadOffset )
 			{
-				leadProgress = progress;
+				leadOffset = lead;
 				front.groundZ = creep.origin.m_z;
 				hasLead = true;
 			}
@@ -441,30 +516,41 @@ namespace
 			if ( hasLead && lead > kBlockableTolerance )
 				continue;
 
-			const float depth = hasLead ? leadProgress - Dot2D( creep.origin , direction ) : 0.f;
+			const float depth = hasLead ? leadOffset - lead : 0.f;
 			if ( depth > kFrontRankDepth )
 				continue;
 
 			// Linear falloff: the leading creep matters most to cover, the ones
 			// at the back of the rank least. The leader always weighs 1.
+			// Measured from the hero, so the number survives the frame turning.
+			const Vector3 heroToCreep( creep.origin.m_x - heroOrigin.m_x ,
+				creep.origin.m_y - heroOrigin.m_y , 0.f );
+
 			RankCreep entry{};
-			entry.lateral = Dot2D( creep.origin , lateralAxis );
+			entry.lateral = Dot2D( heroToCreep , lateralAxis );
 			entry.weight = 1.f - depth / kFrontRankDepth;
+			entry.bumped = creep.bumped;
+			entry.entity = creep.entity;
 			rank.push_back( entry );
+
+			if ( creep.bumped )
+				++front.bumpedCount;
 		}
 
 		front.rankSize = static_cast<int>( rank.size() );
 
-		if ( rank.empty() )
+		const int chosen = rank.empty() ? -1 : ChooseCoverageLine( rank , heldEntity );
+		if ( chosen < 0 )
 		{
 			front.valid = false;
 			front.holding = false;
 			return front;
 		}
 
-		front.progress = leadProgress;
-		front.lateral = ChooseCoverageLine( rank , heldLine , hasHeldLine );
-		front.coverage = CoverageScore( rank , front.lateral );
+		front.leadOffset = leadOffset;
+		front.lateral = rank[chosen].lateral;
+		front.lineEntity = rank[chosen].entity;
+		front.coverage = CoverageScore( rank , front.lateral , true );
 		front.valid = true;
 		return front;
 	}
@@ -519,7 +605,9 @@ auto CCreepBlocker::OnRender() -> void
 		m_isCreepBlocking = false;
 		m_Marker.valid = false;
 		m_HasLaneDirection = false;
-		m_HasHeldLine = false;
+		m_HeldLineEntity = nullptr;
+		for ( auto& bump : m_Bumped )
+			bump = {};
 		return;
 	}
 
@@ -529,7 +617,9 @@ auto CCreepBlocker::OnRender() -> void
 		m_isCreepBlocking = false;
 		m_Marker.valid = false;
 		m_HasLaneDirection = false;
-		m_HasHeldLine = false;
+		m_HeldLineEntity = nullptr;
+		for ( auto& bump : m_Bumped )
+			bump = {};
 		return;
 	}
 
@@ -540,7 +630,9 @@ auto CCreepBlocker::OnRender() -> void
 		m_isCreepBlocking = false;
 		m_Marker.valid = false;
 		m_HasLaneDirection = false;
-		m_HasHeldLine = false;
+		m_HeldLineEntity = nullptr;
+		for ( auto& bump : m_Bumped )
+			bump = {};
 		return;
 	}
 
@@ -682,6 +774,28 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		return false;
 	}
 
+	// Anything the hero is physically crashed into right now is a creep he has
+	// already done his job on - the collision stalls it whether he keeps leaning
+	// on it or not. Record the contact, then mark everything still inside its
+	// cooldown, so the line choice below hands him on to a creep that is still
+	// walking rather than parking him against one that has already stopped.
+	int freshContacts = 0;
+	float nearestCreep = kWaveSearchRadius;
+	for ( auto& creep : wave )
+	{
+		const float gap = FeatureSupport::Distance2D( creep.origin , heroOrigin );
+		nearestCreep = ( std::min )( nearestCreep , gap );
+		if ( gap > kContactDetectRange )
+			continue;
+
+		if ( !IsBumped( creep.entity , now ) )
+			++freshContacts;
+		RegisterBump( creep.entity , now );
+	}
+
+	for ( auto& creep : wave )
+		creep.bumped = IsBumped( creep.entity , now );
+
 	Vector3 rawDirection{};
 	if ( !TryWaveDirection( wave , now , rawDirection ) )
 	{
@@ -712,8 +826,8 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	const Vector3 lateralAxis( -direction.m_y , direction.m_x , 0.f );
 	const float heroProjection = Dot2D( heroOrigin , direction );
 
-	const WaveFront front = ComputeWaveFront( wave , direction , lateralAxis , heroProjection ,
-		m_HeldLine , m_HasHeldLine );
+	const WaveFront front = ComputeWaveFront( wave , direction , lateralAxis , heroOrigin ,
+		heroProjection , m_HeldLineEntity );
 	if ( !front.valid )
 	{
 		// Every creep in range is already past the hero: there is nothing left
@@ -732,13 +846,11 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	// line is crossed over several orders with his body sweeping the ground in
 	// between - which blocks creeps on the way - instead of teleporting the aim
 	// point across and leaving that ground open.
-	const float heroLateral = Dot2D( heroOrigin , lateralAxis );
-	const float lineShift = std::clamp( front.lateral - heroLateral ,
+	// front.lateral is already measured from the hero, so it IS the shift.
+	const float lineShift = std::clamp( front.lateral ,
 		-Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
-	const float blockLateral = heroLateral + lineShift;
 
-	m_HeldLine = front.lateral;
-	m_HasHeldLine = true;
+	m_HeldLineEntity = front.lineEntity;
 
 	// Along the lane, the plug stands a fixed standoff in front of the leading
 	// edge. Standoff is the whole game: too short and the click resolves behind
@@ -747,9 +859,9 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	//
 	// While holding, there is no leading edge left to stand in front of, so the
 	// hero keeps the line he is on and only works sideways.
-	float blockProgress = front.holding
-		? heroProjection
-		: front.progress + Settings::CreepBlocker::BlockAhead;
+	float forwardStep = front.holding
+		? 0.f
+		: front.leadOffset + Settings::CreepBlocker::BlockAhead;
 
 	// The invariant that makes following impossible, whatever the estimate says:
 	// an order may never send the hero more than contact range down-lane of
@@ -758,15 +870,17 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	// but this is the property that actually matters, so it is enforced rather
 	// than assumed. Walking down-lane is how the hero ends up trailing the wave,
 	// and he is slower than the creeps, so that ground never comes back.
-	blockProgress = ( std::min )( blockProgress , heroProjection + kMaxForwardCommit );
+	forwardStep = ( std::min )( forwardStep , kMaxForwardCommit );
 
-	// Back to world space. {direction, lateralAxis} is orthonormal, so a point
-	// is just its two projections scaled back onto those axes. While holding
-	// there is no front creep to take ground height from, so the hero's own
-	// height stands in - the projection needs a sane z or the click misses.
+	// Built as an offset from the hero rather than from the world origin. The
+	// old form reconstructed an absolute point from two absolute projections,
+	// which is exact only while the frame holds still - and it does not, so a
+	// few degrees of heading drift moved the point hundreds of units sideways
+	// with nothing in the world having changed. While holding there is no front
+	// creep to take ground height from, so the hero's own height stands in.
 	Vector3 blockPoint(
-		direction.m_x * blockProgress + lateralAxis.m_x * blockLateral ,
-		direction.m_y * blockProgress + lateralAxis.m_y * blockLateral ,
+		heroOrigin.m_x + direction.m_x * forwardStep + lateralAxis.m_x * lineShift ,
+		heroOrigin.m_y + direction.m_y * forwardStep + lateralAxis.m_y * lineShift ,
 		front.holding ? heroOrigin.m_z : front.groundZ );
 
 	blockPoint = BlockPointClearOfCreeps( wave , lateralAxis , blockPoint );
@@ -857,8 +971,11 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		DEV_LOG( "[creep-block] %s team=%s wave=%zu rank=%d dir=(%.2f,%.2f)\n" ,
 			front.holding ? "HOLD" : "BLOCK" , GetTeamName( heroTeam ) , wave.size() , front.rankSize ,
 			direction.m_x , direction.m_y );
-		DEV_LOG( "  hero@(%.0f,%.0f) front_edge=%.0f hero_along=%.0f (hero leads by %.0f)\n" ,
-			heroOrigin.m_x , heroOrigin.m_y , front.progress , heroProjection , heroProjection - front.progress );
+		// lead is how far the hero is in front of the leading blockable creep;
+		// nearest is the closest creep of any kind, which is what has to fall
+		// inside contact range before a bump can register.
+		DEV_LOG( "  hero@(%.0f,%.0f) leads_front_edge_by=%.0f nearest_creep=%.0f (contact at %.0f)\n" ,
+			heroOrigin.m_x , heroOrigin.m_y , -front.leadOffset , nearestCreep , kContactDetectRange );
 		// down_lane is the number that matters for the following bug: it is how
 		// far the order sends the hero in the wave's own direction. It must
 		// never exceed kMaxForwardCommit.
@@ -868,12 +985,54 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// coverage is the weighted count of front-rank creeps whose hulls the
 		// hero actually reaches from the chosen line. Near zero while creeps
 		// are present means he is standing on empty ground blocking nobody.
-		DEV_LOG( "  line_shift=%.0f coverage=%.2f/%d block_point@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
-			lineShift , front.coverage , front.rankSize , blockPoint.m_x , blockPoint.m_y ,
-			heroToBlockDist , blockPointAlongDir , kMaxForwardCommit );
+		// bumped is how many of the rank he has already crashed into and handed
+		// off; a fresh contact is what moves him onto the next creep's line.
+		DEV_LOG( "  line_shift=%.0f coverage=%.2f/%d bumped=%d(+%d) block_point@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
+			lineShift , front.coverage , front.rankSize , front.bumpedCount , freshContacts ,
+			blockPoint.m_x , blockPoint.m_y , heroToBlockDist , blockPointAlongDir , kMaxForwardCommit );
 	}
 
 	return true;
+}
+
+// Newest contact wins its slot; a creep already in the table just has its
+// timestamp refreshed, so leaning on one creep for a while does not fill the
+// table with copies of it. When the table is full the least recently touched
+// entry is reused - empty slots have tick 0 and so are always chosen first.
+auto CCreepBlocker::RegisterBump( C_BaseEntity* entity , uint32_t now ) -> void
+{
+	if ( !entity )
+		return;
+
+	int oldest = 0;
+	for ( int index = 0; index < kBumpMemory; ++index )
+	{
+		if ( m_Bumped[index].entity == entity )
+		{
+			m_Bumped[index].tick = now;
+			return;
+		}
+
+		if ( m_Bumped[index].tick < m_Bumped[oldest].tick )
+			oldest = index;
+	}
+
+	m_Bumped[oldest].entity = entity;
+	m_Bumped[oldest].tick = now;
+}
+
+auto CCreepBlocker::IsBumped( const C_BaseEntity* entity , uint32_t now ) const -> bool
+{
+	if ( !entity )
+		return false;
+
+	for ( const auto& bump : m_Bumped )
+	{
+		if ( bump.entity == entity )
+			return now >= bump.tick && now - bump.tick < kBumpCooldownMs;
+	}
+
+	return false;
 }
 
 auto CCreepBlocker::DrawBlockMarker() const -> void

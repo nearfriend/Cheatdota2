@@ -13,8 +13,10 @@
 // - Estimates the lane heading from the wave itself
 // - Measures the front rank in that frame - how far the leading edge has come,
 //   and where across the lane its creeps are
-// - Stands a settable standoff in front of that edge, leaning toward whichever
-//   side of the rank is furthest along
+// - Stands a settable standoff in front of that edge, on the line across the
+//   lane that covers the most of the front rank
+// - Moves to the next creep's line the moment it crashes into one, since a
+//   stalled creep no longer needs him and the rest of the wave still does
 // - Re-issues the order frequently so the hero keeps walking into the wave
 //   instead of stopping on contact
 //
@@ -41,6 +43,9 @@ private:
 	auto TryIssueBlockOrder( uint32_t now ) -> bool;
 	auto ValidateBlockingConditions( uint32_t now ) -> bool;
 	auto DrawBlockMarker() const -> void;
+
+	auto RegisterBump( class C_BaseEntity* entity , uint32_t now ) -> void;
+	auto IsBumped( const class C_BaseEntity* entity , uint32_t now ) const -> bool;
 
 	OrderPhase m_Phase = OrderPhase::Idle;
 	uint32_t m_NextPhaseTick = 0;
@@ -72,11 +77,27 @@ private:
 	Vector3 m_LaneDirection{};
 	bool m_HasLaneDirection = false;
 
-	// The line across the lane the hero is currently covering, kept so the next
-	// order can prefer to stay on it. Deliberately the line that was CHOSEN, not
-	// the point that was finally clicked: the click gets slid sideways to clear
-	// creep models, and feeding that back in would let one slide latch the hero
-	// onto ground he never meant to cover.
-	float m_HeldLine = 0.f;
-	bool m_HasHeldLine = false;
+	// The creep whose line the hero is currently covering, kept so the next order
+	// can prefer to stay on it.
+	//
+	// Held as an identity, not a coordinate. Lateral coordinates live in the lane
+	// frame, which turns a little every order, so the same line reads hundreds of
+	// units different one order later and a stored number is not comparable to a
+	// fresh one. A creep is the same creep whatever the frame does. Compared
+	// only, never dereferenced.
+	class C_BaseEntity* m_HeldLineEntity = nullptr;
+
+	// Creeps the hero has already crashed into, and when. Leaning on one creep
+	// only stalls that creep - the rest of the wave walks past while he does it.
+	// So contact is the signal to move on: a creep in here is skipped when the
+	// next covering line is picked, until its entry ages out and it is worth
+	// blocking again. Pointers are only ever compared, never dereferenced, so a
+	// creep dying with an entry still in the table is harmless.
+	static constexpr int kBumpMemory = 8;
+	struct BumpedCreep
+	{
+		class C_BaseEntity* entity = nullptr;
+		uint32_t tick = 0;
+	};
+	BumpedCreep m_Bumped[kBumpMemory]{};
 };
