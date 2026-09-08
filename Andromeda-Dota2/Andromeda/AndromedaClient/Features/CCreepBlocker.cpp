@@ -125,6 +125,27 @@ namespace
 	// are faster, so ground given up that way is never recovered.
 	constexpr float kMaxForwardCommit = 40.f;
 
+	// Once he is crashed into a creep, the order goes DIAGONALLY across its
+	// front rather than straight down the lane.
+	//
+	// Straight ahead does not block anything for long. The hero and the creep
+	// are then travelling the same line, he is the slower of the two, and the
+	// creep simply steps around a body that is only ever directly in front of
+	// it. Cutting across its front keeps his hull between the creep and the way
+	// it is trying to go, and it is what blocking looks like by hand - nobody
+	// blocks a wave by walking backwards in a straight line.
+	//
+	// How far forward to hold while cutting: enough to stay in front of the
+	// creep, not enough to walk away from it.
+	constexpr float kDiagonalForward = kContactRange;
+
+	// How decisively the creep must be angling to one side before the hero
+	// switches the side he is cutting to. Sine of roughly nine degrees - below
+	// that the creep is walking straight at him and the side he is already
+	// cutting to is as good as either, so he keeps it rather than flicking
+	// between the two on noise.
+	constexpr float kDiagonalDriftThreshold = 0.15f;
+
 	// Fraction of the freshly measured heading folded into the working lane
 	// direction each order. The raw estimate swings 20 degrees and more between
 	// orders - creeps turn to step around each other and the facing average
@@ -606,6 +627,9 @@ auto CCreepBlocker::OnRender() -> void
 		m_Marker.valid = false;
 		m_HasLaneDirection = false;
 		m_HeldLineEntity = nullptr;
+		m_CreepDebugCount = 0;
+		m_HasDebugFrame = false;
+		m_CutSide = 0;
 		for ( auto& bump : m_Bumped )
 			bump = {};
 		return;
@@ -618,6 +642,9 @@ auto CCreepBlocker::OnRender() -> void
 		m_Marker.valid = false;
 		m_HasLaneDirection = false;
 		m_HeldLineEntity = nullptr;
+		m_CreepDebugCount = 0;
+		m_HasDebugFrame = false;
+		m_CutSide = 0;
 		for ( auto& bump : m_Bumped )
 			bump = {};
 		return;
@@ -631,6 +658,9 @@ auto CCreepBlocker::OnRender() -> void
 		m_Marker.valid = false;
 		m_HasLaneDirection = false;
 		m_HeldLineEntity = nullptr;
+		m_CreepDebugCount = 0;
+		m_HasDebugFrame = false;
+		m_CutSide = 0;
 		for ( auto& bump : m_Bumped )
 			bump = {};
 		return;
@@ -822,6 +852,25 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	m_LaneDirection = direction;
 	m_HasLaneDirection = true;
 
+	// Snapshot for the overlay, taken once the heading is settled and the bump
+	// flags are marked, so what gets drawn is what this order actually worked
+	// from rather than a re-derivation that could quietly disagree with it.
+	m_CreepDebugCount = 0;
+	m_DebugHeroOrigin = heroOrigin;
+	m_HasDebugFrame = true;
+	for ( const auto& creep : wave )
+	{
+		if ( m_CreepDebugCount >= kDebugCreeps )
+			break;
+
+		auto& entry = m_CreepDebug[m_CreepDebugCount++];
+		entry.origin = creep.origin;
+		entry.hasFacing = creep.hasYaw;
+		entry.facing = creep.hasYaw ? ForwardFromYaw( creep.yaw ) : direction;
+		entry.contact = FeatureSupport::Distance2D( creep.origin , heroOrigin ) <= kContactDetectRange;
+		entry.bumped = creep.bumped;
+	}
+
 	// The lane's own frame: along it, and across it.
 	const Vector3 lateralAxis( -direction.m_y , direction.m_x , 0.f );
 	const float heroProjection = Dot2D( heroOrigin , direction );
@@ -847,10 +896,48 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	// between - which blocks creeps on the way - instead of teleporting the aim
 	// point across and leaving that ground open.
 	// front.lateral is already measured from the hero, so it IS the shift.
-	const float lineShift = std::clamp( front.lateral ,
+	float lineShift = std::clamp( front.lateral ,
 		-Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
 
 	m_HeldLineEntity = front.lineEntity;
+
+	// The creep he is working, so contact with THAT one can be told apart from
+	// contact with whatever else happens to be nearby.
+	const WaveCreep* lineCreep = nullptr;
+	for ( const auto& creep : wave )
+	{
+		if ( creep.entity == front.lineEntity )
+		{
+			lineCreep = &creep;
+			break;
+		}
+	}
+
+	const bool crashed = !front.holding && lineCreep
+		&& FeatureSupport::Distance2D( lineCreep->origin , heroOrigin ) <= kContactDetectRange;
+
+	if ( crashed )
+	{
+		// Which way the creep is trying to get around him. Its own facing, not
+		// the lane heading: a creep peeling off to one side is exactly the case
+		// the lane average cannot see, and it is the only thing that says which
+		// side needs cutting off.
+		if ( lineCreep->hasYaw )
+		{
+			const float drift = Dot2D( ForwardFromYaw( lineCreep->yaw ) , lateralAxis );
+			if ( drift > kDiagonalDriftThreshold )
+				m_CutSide = 1;
+			else if ( drift < -kDiagonalDriftThreshold )
+				m_CutSide = -1;
+		}
+
+		// Straight at him, and no side chosen yet: cut toward whichever side of
+		// him it already sits on, which is the shorter way to be in its path.
+		if ( m_CutSide == 0 )
+			m_CutSide = front.lateral >= 0.f ? 1 : -1;
+
+		lineShift = static_cast<float>( m_CutSide ) * Settings::CreepBlocker::SideStep;
+	}
 
 	// Along the lane, the plug stands a fixed standoff in front of the leading
 	// edge. Standoff is the whole game: too short and the click resolves behind
@@ -871,6 +958,15 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	// than assumed. Walking down-lane is how the hero ends up trailing the wave,
 	// and he is slower than the creeps, so that ground never comes back.
 	forwardStep = ( std::min )( forwardStep , kMaxForwardCommit );
+
+	// The other half of the diagonal. While crashed the forward component is
+	// held at a fixed short step instead of whatever the standoff worked out to:
+	// paired with the full sideways cut above it makes the order a diagonal
+	// across the creep's front, which is the movement that keeps a body in its
+	// way. Left to the standoff alone it would sometimes come out near zero and
+	// the "diagonal" would be a pure sidestep out of the creep's path.
+	if ( crashed )
+		forwardStep = kDiagonalForward;
 
 	// Built as an offset from the hero rather than from the world origin. The
 	// old form reconstructed an absolute point from two absolute projections,
@@ -987,8 +1083,13 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// are present means he is standing on empty ground blocking nobody.
 		// bumped is how many of the rank he has already crashed into and handed
 		// off; a fresh contact is what moves him onto the next creep's line.
-		DEV_LOG( "  line_shift=%.0f coverage=%.2f/%d bumped=%d(+%d) block_point@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
+		// cut is the diagonal: 0 while approaching, +1 cutting left of the wave's
+		// heading, -1 cutting right. While it is non-zero the order should show
+		// both a full line_shift and a short positive down_lane - that pair IS
+		// the diagonal. Either one alone is a sidestep or a straight retreat.
+		DEV_LOG( "  line_shift=%.0f coverage=%.2f/%d bumped=%d(+%d) cut=%d block_point@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
 			lineShift , front.coverage , front.rankSize , front.bumpedCount , freshContacts ,
+			crashed ? m_CutSide : 0 ,
 			blockPoint.m_x , blockPoint.m_y , heroToBlockDist , blockPointAlongDir , kMaxForwardCommit );
 	}
 
@@ -1037,47 +1138,94 @@ auto CCreepBlocker::IsBumped( const C_BaseEntity* entity , uint32_t now ) const 
 
 auto CCreepBlocker::DrawBlockMarker() const -> void
 {
-	if ( !Settings::CreepBlocker::DrawBlockMarker || !m_Marker.valid )
+	if ( !Settings::CreepBlocker::DrawBlockMarker )
+		return;
+
+	auto* drawList = ImGui::GetForegroundDrawList();
+
+	// Where each creep is pointing, drawn from the creep itself. This is the
+	// facing the heading estimator reads, so it is the input to check first when
+	// the hero walks somewhere strange: arrows that disagree with each other, or
+	// with the lane arrow below, mean the frame everything is measured in is a
+	// guess. A creep with no replicated yaw gets the lane heading instead and is
+	// drawn faint, so a wave of faint arrows says the facing path is unavailable
+	// and the estimate is coming from travel alone.
+	for ( int index = 0; index < m_CreepDebugCount; ++index )
+	{
+		const auto& creep = m_CreepDebug[index];
+
+		ImVec2 creepScreen{};
+		if ( !Math::WorldToScreen( creep.origin , creepScreen ) )
+			continue;
+
+		// Contact state, so the hand-off can be watched happening: white while
+		// the hero is against it, grey once it counts as dealt with.
+		ImU32 ringColor = IM_COL32( 90 , 170 , 255 , 200 );
+		if ( creep.contact )
+			ringColor = IM_COL32( 255 , 255 , 255 , 255 );
+		else if ( creep.bumped )
+			ringColor = IM_COL32( 130 , 130 , 130 , 180 );
+
+		drawList->AddCircle( creepScreen , 7.f , ringColor , 12 , 1.5f );
+
+		constexpr float kArrowLength = 90.f;
+		const Vector3 tip( creep.origin.m_x + creep.facing.m_x * kArrowLength ,
+			creep.origin.m_y + creep.facing.m_y * kArrowLength , creep.origin.m_z );
+
+		ImVec2 tipScreen{};
+		if ( !Math::WorldToScreen( tip , tipScreen ) )
+			continue;
+
+		const ImU32 arrowColor = creep.hasFacing
+			? IM_COL32( 90 , 170 , 255 , 230 )
+			: IM_COL32( 90 , 170 , 255 , 80 );
+		drawList->AddLine( creepScreen , tipScreen , arrowColor , creep.hasFacing ? 2.f : 1.f );
+		drawList->AddCircleFilled( tipScreen , creep.hasFacing ? 3.f : 2.f , arrowColor , 8 );
+	}
+
+	// The working lane heading, from the hero. This is the frame the front edge,
+	// the escape test and the block point are all measured in, so it should
+	// point the same way the creep arrows do. When it does not, that difference
+	// is the bug rather than anything downstream of it.
+	if ( m_HasDebugFrame && m_HasLaneDirection )
+	{
+		constexpr float kLaneArrowLength = 200.f;
+		const Vector3 tip( m_DebugHeroOrigin.m_x + m_LaneDirection.m_x * kLaneArrowLength ,
+			m_DebugHeroOrigin.m_y + m_LaneDirection.m_y * kLaneArrowLength , m_DebugHeroOrigin.m_z );
+
+		ImVec2 originScreen{};
+		ImVec2 tipScreen{};
+		if ( Math::WorldToScreen( m_DebugHeroOrigin , originScreen ) && Math::WorldToScreen( tip , tipScreen ) )
+		{
+			const ImU32 laneColor = IM_COL32( 255 , 200 , 60 , 220 );
+			drawList->AddLine( originScreen , tipScreen , laneColor , 2.5f );
+			drawList->AddCircleFilled( tipScreen , 4.f , laneColor , 10 );
+		}
+	}
+
+	if ( !m_Marker.valid )
 		return;
 
 	ImVec2 blockScreen{};
 	if ( !Math::WorldToScreen( m_Marker.blockPoint , blockScreen ) )
 		return;
 
-	auto* drawList = ImGui::GetForegroundDrawList();
-
-	// Distance from hero to block point
+	// The block point is always red. It marks one thing - the spot the hero is
+	// being sent to - and a marker that changes colour with state has to be
+	// decoded before it can be read. On station is still distinguishable: the
+	// ring grows and gains an inner one.
 	const Vector3 heroToBlock( m_Marker.blockPoint.m_x - m_Marker.heroOrigin.m_x ,
 		m_Marker.blockPoint.m_y - m_Marker.heroOrigin.m_y , 0.f );
-	const float distToBlock = Length2D( heroToBlock );
+	const bool onStation = Length2D( heroToBlock ) < 50.f && m_isCreepBlocking;
 
-	// RED circle when hero is at block point (ready for next creep)
-	// GREEN circle when blocking is active
-	// YELLOW circle when idle
-	ImU32 color;
-	float circleSize = 16.f;
-	if ( distToBlock < 50.f && m_isCreepBlocking )
-	{
-		// Hero at block point: RED - ready to receive next creep
-		color = IM_COL32( 255 , 50 , 50 , 255 );
-		circleSize = 20.f;  // Larger to indicate active blocking position
-	}
-	else if ( m_isCreepBlocking )
-	{
-		// Actively blocking: GREEN
-		color = IM_COL32( 90 , 220 , 130 , 235 );
-	}
-	else
-	{
-		// Idle: YELLOW
-		color = IM_COL32( 235 , 190 , 60 , 235 );
-	}
-
-	drawList->AddCircle( blockScreen , circleSize , color , 24 , 2.f );
+	const ImU32 blockColor = IM_COL32( 255 , 50 , 50 , 255 );
+	drawList->AddCircle( blockScreen , onStation ? 20.f : 14.f , blockColor , 24 , 2.5f );
+	if ( onStation )
+		drawList->AddCircle( blockScreen , 8.f , blockColor , 16 , 1.5f );
 
 	ImVec2 heroScreen{};
 	if ( Math::WorldToScreen( m_Marker.heroOrigin , heroScreen ) )
-		drawList->AddLine( heroScreen , blockScreen , color , 1.5f );
+		drawList->AddLine( heroScreen , blockScreen , blockColor , 1.5f );
 }
 
 auto CCreepBlocker::ValidateBlockingConditions( uint32_t now ) -> bool

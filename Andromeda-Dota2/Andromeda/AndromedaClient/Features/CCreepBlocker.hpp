@@ -87,6 +87,14 @@ private:
 	// only, never dereferenced.
 	class C_BaseEntity* m_HeldLineEntity = nullptr;
 
+	// Which side of the lane the hero is currently cutting across while crashed
+	// into a creep: +1 left of the wave's heading, -1 right, 0 before the first
+	// contact. Held across orders so he commits to a diagonal instead of
+	// reversing it every time the creep's facing wobbles - and reversing mid
+	// cut is worse than either direction, since he ends up back where the creep
+	// wanted to go.
+	int m_CutSide = 0;
+
 	// Creeps the hero has already crashed into, and when. Leaning on one creep
 	// only stalls that creep - the rest of the wave walks past while he does it.
 	// So contact is the signal to move on: a creep in here is skipped when the
@@ -100,4 +108,24 @@ private:
 		uint32_t tick = 0;
 	};
 	BumpedCreep m_Bumped[kBumpMemory]{};
+
+	// Snapshot of what the last order saw, purely so the overlay can draw it.
+	// Kept apart from the working state on purpose: it is written on the order
+	// cadence but read every frame, and drawing must never be able to change
+	// what the blocker decides.
+	static constexpr int kDebugCreeps = 16;
+	struct CreepDebug
+	{
+		Vector3 origin{};
+		Vector3 facing{};
+		bool hasFacing = false;
+		bool contact = false;
+		bool bumped = false;
+	};
+	CreepDebug m_CreepDebug[kDebugCreeps]{};
+	int m_CreepDebugCount = 0;
+	// Hero position the lane heading was measured from, so the heading arrow can
+	// be drawn from where it actually applies.
+	Vector3 m_DebugHeroOrigin{};
+	bool m_HasDebugFrame = false;
 };
