@@ -123,28 +123,52 @@ namespace
 	// against a creep drawing level with him and no more. Walking further than
 	// this in the wave's own direction is following, not blocking: the creeps
 	// are faster, so ground given up that way is never recovered.
-	constexpr float kMaxForwardCommit = 40.f;
+	constexpr float kMaxForwardCommit = 100.f;
 
-	// Once he is crashed into a creep, the order goes DIAGONALLY across its
-	// front rather than straight down the lane.
+	// The order is always a DIAGONAL across the wave's front, never a straight
+	// walk down the lane and never a pure sidestep.
 	//
-	// Straight ahead does not block anything for long. The hero and the creep
+	// Straight ahead does not block anything for long: the hero and the creep
 	// are then travelling the same line, he is the slower of the two, and the
-	// creep simply steps around a body that is only ever directly in front of
-	// it. Cutting across its front keeps his hull between the creep and the way
-	// it is trying to go, and it is what blocking looks like by hand - nobody
-	// blocks a wave by walking backwards in a straight line.
+	// creep steps around a body that is only ever directly in front of it. A
+	// pure sidestep is worse - it leaves the creep's path entirely. Cutting
+	// across its front keeps his hull between the creep and the way it is trying
+	// to go, which is what blocking looks like by hand.
 	//
-	// How far forward to hold while cutting: enough to stay in front of the
-	// creep, not enough to walk away from it.
-	constexpr float kDiagonalForward = kContactRange;
+	// The angle is held at 45 degrees (gaining ground while crossing) or 135
+	// (giving ground while crossing) by giving the forward and sideways legs the
+	// SAME LENGTH - a right triangle with equal sides has no other option. There
+	// is no angle constant to tune here on purpose: the two legs being equal IS
+	// the 45, and anything that changes one without the other bends it.
+	//
+	// The floor on how far in front of the leading creep the block point must
+	// sit, along the wave's heading. Contact range, because that is where the
+	// hulls touch - nearer and the creep is past him, further and it is walking
+	// free. Enforced at the very end of the order, after every clamp and slide,
+	// so no later stage can quietly drop the point behind the creep.
+	constexpr float kMinAheadOfLeader = kContactRange;
 
-	// How decisively the creep must be angling to one side before the hero
-	// switches the side he is cutting to. Sine of roughly nine degrees - below
-	// that the creep is walking straight at him and the side he is already
-	// cutting to is as good as either, so he keeps it rather than flicking
-	// between the two on noise.
-	constexpr float kDiagonalDriftThreshold = 0.15f;
+	// How long one leg of the zigzag runs when nothing interrupts it.
+	//
+	// Contact is what normally ends a leg - he touches a creep, that creep is
+	// stalled, and he sets off the other way. This timer only ends a leg that
+	// never meets anything. Roughly the time to walk one leg at hero speed, so
+	// a sweep across open ground does not run on past the width of the wave.
+	constexpr uint32_t kZigMaxDwellMs = 250;
+
+	// How far to one side the next leader has to be before it is taken as
+	// telling the hero which way to cut. Roughly a hero hull: nearer than that
+	// it is effectively straight behind the current leader, where cutting either
+	// way is as good, and reading a side out of the noise would just make him
+	// flick between them.
+	constexpr float kNextLeaderSideThreshold = 25.f;
+
+	// How close to the edge of the wave counts as having reached it. Measured on
+	// the far extent as seen from the hero, so it is "there is barely any wave
+	// left on this side". A hero hull, because once the last creep on that side
+	// is within his own radius he is already covering it and the ground beyond
+	// is empty lane.
+	constexpr float kZigEdgeMargin = kHeroCollisionRadius;
 
 	// Fraction of the freshly measured heading folded into the working lane
 	// direction each order. The raw estimate swings 20 degrees and more between
@@ -174,6 +198,11 @@ namespace
 		// Already crashed into recently, so it is stalled and the hero's body is
 		// better spent on a creep that is still walking.
 		bool bumped = false;
+		// Got away for good. Written off by every part of the aim - it is not
+		// the front-most creep, it does not widen the wave, it never joins the
+		// rank. Still avoided when the click point is placed, because the model
+		// is in the cursor's way regardless.
+		bool escaped = false;
 	};
 
 	auto ForwardFromYaw( float yawDegrees ) -> Vector3
@@ -460,6 +489,47 @@ namespace
 		float lateral = 0.f;    // the line to stand on, across the lane, from the hero
 		float coverage = 0.f;   // weighted rank actually covered from that line
 		float groundZ = 0.f;
+		// The leading blockable creep's own world position. Kept because the
+		// block point has to be checked against it AFTER every clamp and slide
+		// below has had its say - leadOffset is measured from the hero, so it
+		// stops being comparable the moment anything moves the point for a
+		// reason of its own.
+		Vector3 leaderOrigin{};
+		bool hasLeader = false;
+		// RULE 1's creep: the front-most one still in play, blockable or not.
+		//
+		// Distinct from leaderOrigin above, and the distinction is the whole of
+		// rule 1. leaderOrigin comes from the BLOCKABLE band only, so a creep
+		// that slipped more than kBlockableTolerance past the hero drops out of
+		// it and stops being aimed at - which is exactly how creeps got in front
+		// of him and stayed there. This one never drops a creep until it has
+		// escaped outright, so the aim keeps trying to get ahead of everything
+		// that can still be caught.
+		Vector3 frontMostOrigin{};
+		float frontMostLead = 0.f;   // along the lane, from the hero
+		bool hasFrontMost = false;
+		// How wide the wave is across the lane, as offsets from the hero.
+		//
+		// This is what makes "in front of ALL creeps" mean anything. Being ahead
+		// along the lane is only half of it - the hero's hull is 64 units wide
+		// and a lane wave spans several hundred, so creeps to either side of him
+		// walk past however far ahead he is. The sweep has to run between these
+		// two edges to put his body in every creep's path in turn; swept around
+		// his own position instead, it covers whatever happens to be near him
+		// and lets the rest through.
+		float lateralMin = 0.f;
+		float lateralMax = 0.f;
+		bool hasExtent = false;
+		// RULE 2. The creep that becomes the leader once the current one is
+		// stalled - the second most advanced still worth blocking.
+		//
+		// Blocking the leader is what promotes this one, so by the time the
+		// hand-off happens it is already too late to start moving: the hero has
+		// to be crossing toward it while he is still on the first. That is what
+		// the diagonal is for, and this is the creep it aims at.
+		Vector3 nextLeaderOrigin{};
+		float nextLateral = 0.f;  // across the lane, from the hero
+		bool hasNextLeader = false;
 		int rankSize = 0;
 		int bumpedCount = 0;    // of those, ones already crashed into
 		C_BaseEntity* lineEntity = nullptr; // creep whose line was chosen
@@ -497,22 +567,84 @@ namespace
 		float leadOffset = 0.f;
 		bool hasLead = false;
 		int presentCount = 0;
+		// Second place, tracked alongside first so rule 2 has a creep to aim at.
+		float nextLead = 0.f;
+		const WaveCreep* leaderCreep = nullptr;
+		const WaveCreep* nextCreep = nullptr;
 		for ( const auto& creep : wave )
 		{
 			const float lead = LeadOverHero( creep , direction , heroProjection );
-			if ( lead > kEscapeTolerance )
+			// Written off already - see the escape table. Not the front-most
+			// creep, not part of the wave's width, never in the rank.
+			if ( creep.escaped )
 				continue;
 
 			++presentCount;
+
+			// Front-most first, and deliberately BEFORE the blockable filter
+			// below. This is the creep rule 1 measures against, and it has to
+			// include the ones that have got past the hero - those are precisely
+			// the creeps he needs to be told to get back in front of.
+			if ( !front.hasFrontMost || lead > front.frontMostLead )
+			{
+				front.frontMostLead = lead;
+				front.frontMostOrigin = creep.origin;
+				front.hasFrontMost = true;
+			}
+
+			// Width of the wave, over the same set - every creep still in play,
+			// not just the blockable ones. A creep that has edged past the hero
+			// is still one he has to sweep across to get back in front of.
+			{
+				const Vector3 heroToCreep( creep.origin.m_x - heroOrigin.m_x ,
+					creep.origin.m_y - heroOrigin.m_y , 0.f );
+				const float side = Dot2D( heroToCreep , lateralAxis );
+				if ( !front.hasExtent )
+				{
+					front.lateralMin = side;
+					front.lateralMax = side;
+					front.hasExtent = true;
+				}
+				else
+				{
+					front.lateralMin = ( std::min )( front.lateralMin , side );
+					front.lateralMax = ( std::max )( front.lateralMax , side );
+				}
+			}
+
 			if ( lead > kBlockableTolerance )
 				continue;
 
 			if ( !hasLead || lead > leadOffset )
 			{
+				// New leader; the old one drops into second place, which is
+				// exactly what rule 2 wants to aim at.
+				if ( hasLead )
+				{
+					nextLead = leadOffset;
+					nextCreep = leaderCreep;
+				}
 				leadOffset = lead;
+				leaderCreep = &creep;
 				front.groundZ = creep.origin.m_z;
+				front.leaderOrigin = creep.origin;
+				front.hasLeader = true;
 				hasLead = true;
 			}
+			else if ( !nextCreep || lead > nextLead )
+			{
+				nextLead = lead;
+				nextCreep = &creep;
+			}
+		}
+
+		if ( nextCreep )
+		{
+			const Vector3 heroToNext( nextCreep->origin.m_x - heroOrigin.m_x ,
+				nextCreep->origin.m_y - heroOrigin.m_y , 0.f );
+			front.nextLeaderOrigin = nextCreep->origin;
+			front.nextLateral = Dot2D( heroToNext , lateralAxis );
+			front.hasNextLeader = true;
 		}
 
 		// Nothing left to get in front of, but creeps are still about: hold the
@@ -529,7 +661,7 @@ namespace
 		for ( const auto& creep : wave )
 		{
 			const float lead = LeadOverHero( creep , direction , heroProjection );
-			if ( lead > kEscapeTolerance )
+			if ( creep.escaped )
 				continue;
 
 			// While holding there is no front edge to measure depth from, so
@@ -630,6 +762,11 @@ auto CCreepBlocker::OnRender() -> void
 		m_CreepDebugCount = 0;
 		m_HasDebugFrame = false;
 		m_CutSide = 0;
+		m_ZigSide = 1;
+		m_ZigFlipTick = 0;
+		m_WasCrashed = false;
+		m_EscapedCount = 0;
+		m_FreshCrash = false;
 		for ( auto& bump : m_Bumped )
 			bump = {};
 		return;
@@ -645,6 +782,11 @@ auto CCreepBlocker::OnRender() -> void
 		m_CreepDebugCount = 0;
 		m_HasDebugFrame = false;
 		m_CutSide = 0;
+		m_ZigSide = 1;
+		m_ZigFlipTick = 0;
+		m_WasCrashed = false;
+		m_EscapedCount = 0;
+		m_FreshCrash = false;
 		for ( auto& bump : m_Bumped )
 			bump = {};
 		return;
@@ -661,6 +803,11 @@ auto CCreepBlocker::OnRender() -> void
 		m_CreepDebugCount = 0;
 		m_HasDebugFrame = false;
 		m_CutSide = 0;
+		m_ZigSide = 1;
+		m_ZigFlipTick = 0;
+		m_WasCrashed = false;
+		m_EscapedCount = 0;
+		m_FreshCrash = false;
 		for ( auto& bump : m_Bumped )
 			bump = {};
 		return;
@@ -694,6 +841,17 @@ auto CCreepBlocker::OnRender() -> void
 
 	// Adaptive intervals: very tight when close for smooth collision, looser when far
 	uint32_t nextInterval = kOrderIntervalMs;
+
+	// A fresh crash outranks the ladder below. The instant he touches a creep
+	// the sweep has already reversed, and the order carrying him the other way
+	// should go out on the very next frame - any wait here is time spent leaning
+	// on a creep that is already stopped while the rest of the wave walks past.
+	if ( m_FreshCrash )
+	{
+		m_NextOrderTick = now;
+		return;
+	}
+
 	if ( m_Marker.valid && orderIssued )
 	{
 		const Vector3 heroToBlock( m_Marker.blockPoint.m_x - m_Marker.heroOrigin.m_x ,
@@ -875,6 +1033,31 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	const Vector3 lateralAxis( -direction.m_y , direction.m_x , 0.f );
 	const float heroProjection = Dot2D( heroOrigin , direction );
 
+	// Write off whatever has got away, and keep it written off.
+	//
+	// A creep this far past the hero cannot be caught - lane creeps walk at 325
+	// and most heroes move less - so every order still counting it drags the aim
+	// down-lane after a creep that is only going to get further away, and the
+	// creeps still in front of him go unblocked while that happens.
+	//
+	// Recorded rather than re-tested each order. The old form asked "is it more
+	// than kEscapeTolerance ahead right now", which let a creep sitting near the
+	// boundary drop back into the set every time the heading estimate moved a
+	// few degrees; the hero would then turn back toward something he had already
+	// given up on, and turn away again a moment later.
+	int escapedThisOrder = 0;
+	for ( auto& creep : wave )
+	{
+		if ( !IsEscaped( creep.entity ) &&
+			LeadOverHero( creep , direction , heroProjection ) > kEscapeTolerance )
+		{
+			RegisterEscaped( creep.entity );
+			++escapedThisOrder;
+		}
+
+		creep.escaped = IsEscaped( creep.entity );
+	}
+
 	const WaveFront front = ComputeWaveFront( wave , direction , lateralAxis , heroOrigin ,
 		heroProjection , m_HeldLineEntity );
 	if ( !front.valid )
@@ -890,15 +1073,17 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		return false;
 	}
 
-	// Across the lane, walk onto the covering line rather than jumping to it.
-	// SideStep caps how far one order may pull the hero sideways, so a change of
-	// line is crossed over several orders with his body sweeping the ground in
-	// between - which blocks creeps on the way - instead of teleporting the aim
-	// point across and leaving that ground open.
-	// front.lateral is already measured from the hero, so it IS the shift.
-	float lineShift = std::clamp( front.lateral ,
-		-Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep );
-
+	// Across the lane, the hero SWEEPS BACK AND FORTH across the covering line
+	// rather than settling on it.
+	//
+	// Sitting on the line only blocks whatever is directly behind him - a lane
+	// is several hundred units wide and his hull covers about 64 of it, so
+	// creeps either side simply walk past. Sweeping drags that hull through the
+	// full width of the wave, so every creep meets it in turn, and a creep that
+	// steps around him walks into where he is going next. It is also just what
+	// blocking looks like by hand: nobody blocks a wave by walking a straight
+	// line in front of it.
+	//
 	m_HeldLineEntity = front.lineEntity;
 
 	// The creep he is working, so contact with THAT one can be told apart from
@@ -916,57 +1101,194 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	const bool crashed = !front.holding && lineCreep
 		&& FeatureSupport::Distance2D( lineCreep->origin , heroOrigin ) <= kContactDetectRange;
 
-	if ( crashed )
+	// Contact is the trigger for the next leg of the zigzag. The moment he
+	// touches a creep, that creep is stalled and the useful thing to do is set
+	// off across the wave the other way - the creeps he has NOT touched are the
+	// ones still walking. Leaning on the one he has just stopped blocks nothing
+	// new while the rest stream past either side.
+	//
+	// Rising edge only. While he stays in contact the side must hold, or it
+	// would flip every order at the order cadence and he would vibrate in place
+	// instead of crossing.
+	m_FreshCrash = crashed && !m_WasCrashed;
+	m_WasCrashed = crashed;
+
+	if ( m_FreshCrash )
 	{
-		// Which way the creep is trying to get around him. Its own facing, not
-		// the lane heading: a creep peeling off to one side is exactly the case
-		// the lane average cannot see, and it is the only thing that says which
-		// side needs cutting off.
-		if ( lineCreep->hasYaw )
-		{
-			const float drift = Dot2D( ForwardFromYaw( lineCreep->yaw ) , lateralAxis );
-			if ( drift > kDiagonalDriftThreshold )
-				m_CutSide = 1;
-			else if ( drift < -kDiagonalDriftThreshold )
-				m_CutSide = -1;
-		}
-
-		// Straight at him, and no side chosen yet: cut toward whichever side of
-		// him it already sits on, which is the shorter way to be in its path.
-		if ( m_CutSide == 0 )
-			m_CutSide = front.lateral >= 0.f ? 1 : -1;
-
-		lineShift = static_cast<float>( m_CutSide ) * Settings::CreepBlocker::SideStep;
+		m_ZigSide = -m_ZigSide;
+		m_ZigFlipTick = now;
 	}
 
-	// Along the lane, the plug stands a fixed standoff in front of the leading
-	// edge. Standoff is the whole game: too short and the click resolves behind
-	// the leader so it walks past, too long and the hero is out in front of the
-	// wave rather than in it, giving the creeps free ground every order.
+	// Flip on the dwell timer too, for the case where he crosses without
+	// touching anything. With the fixed-length diagonal below the aim point
+	// keeps its distance from him as he walks, so there is no "arrived" moment
+	// to detect - the timer is what ends a leg that never meets a creep.
+	if ( !m_FreshCrash && m_ZigFlipTick && now - m_ZigFlipTick > kZigMaxDwellMs )
+	{
+		m_ZigSide = -m_ZigSide;
+		m_ZigFlipTick = now;
+	}
+	else if ( !m_ZigFlipTick )
+	{
+		m_ZigFlipTick = now;
+	}
+
+	// RULE 2, and it overrides both flips above. The diagonal is not a blind
+	// alternation - it is aimed at the creep that is about to become the leader,
+	// so the hero is already crossing toward it while he is still on the current
+	// one. By the time blocking the first creep promotes the second, he is
+	// there.
 	//
-	// While holding, there is no leading edge left to stand in front of, so the
-	// hero keeps the line he is on and only works sideways.
-	float forwardStep = front.holding
-		? 0.f
-		: front.leadOffset + Settings::CreepBlocker::BlockAhead;
+	// Only when that creep is clearly to one side. Directly behind the leader it
+	// says nothing about which way to cut, so the alternation above stands and
+	// the hero keeps sweeping rather than freezing on an ambiguous answer.
+	bool aimedAtNext = false;
+	if ( front.hasNextLeader && std::fabs( front.nextLateral ) > kNextLeaderSideThreshold )
+	{
+		const int nextSide = front.nextLateral >= 0.f ? 1 : -1;
+		if ( nextSide != m_ZigSide )
+			m_ZigFlipTick = now;
+		m_ZigSide = nextSide;
+		aimedAtNext = true;
+	}
 
-	// The invariant that makes following impossible, whatever the estimate says:
-	// an order may never send the hero more than contact range down-lane of
-	// where he already stands. Everything above is meant to respect this
-	// already - the front edge only ever comes from creeps he is in front of -
-	// but this is the property that actually matters, so it is enforced rather
-	// than assumed. Walking down-lane is how the hero ends up trailing the wave,
-	// and he is slower than the creeps, so that ground never comes back.
-	forwardStep = ( std::min )( forwardStep , kMaxForwardCommit );
+	// Reached the edge of the wave: turn round. This is what keeps the sweep
+	// covering ALL of it rather than oscillating over one part.
+	//
+	// The extents are measured from the hero, so lateralMax dropping to about
+	// zero means there is no creep left on his right - he is at or past that
+	// edge and the useful direction is back across. Same on the other side.
+	//
+	// Checked after rule 2 on purpose: aiming at the next leader is worth more
+	// than finishing a leg, but not worth walking off the end of the wave, and
+	// this is the correction that stops that.
+	if ( front.hasExtent )
+	{
+		if ( m_ZigSide > 0 && front.lateralMax <= kZigEdgeMargin )
+		{
+			m_ZigSide = -1;
+			m_ZigFlipTick = now;
+		}
+		else if ( m_ZigSide < 0 && front.lateralMin >= -kZigEdgeMargin )
+		{
+			m_ZigSide = 1;
+			m_ZigFlipTick = now;
+		}
+	}
 
-	// The other half of the diagonal. While crashed the forward component is
-	// held at a fixed short step instead of whatever the standoff worked out to:
-	// paired with the full sideways cut above it makes the order a diagonal
-	// across the creep's front, which is the movement that keeps a body in its
-	// way. Left to the standoff alone it would sometimes come out near zero and
-	// the "diagonal" would be a pure sidestep out of the creep's path.
-	if ( crashed )
-		forwardStep = kDiagonalForward;
+	// How far forward the block point has to be for RULE 1 to hold, as an offset
+	// from the hero. BlockAhead is the standoff the player asked for;
+	// kMinAheadOfLeader is the floor under it, since a point nearer than contact
+	// range is not in front of the creep in any useful sense.
+	//
+	// Measured from the FRONT-MOST creep, not the leading blockable one. That is
+	// the fix for the hero not being in front: the blockable band cuts off at
+	// kBlockableTolerance, so a creep further past him than that used to vanish
+	// from this sum entirely and he stopped trying to get ahead of it. The
+	// end-of-order rule then had to drag the point forward by ninety-odd units
+	// to compensate, which both arrived too late to steer him and flattened the
+	// diagonal to twenty degrees. Aiming at the front-most creep here means the
+	// correction has nothing left to do.
+	const float standoff = ( std::max )( Settings::CreepBlocker::BlockAhead , kMinAheadOfLeader );
+	const float minForward = front.hasFrontMost ? front.frontMostLead + standoff : 0.f;
+
+	// THE DIAGONAL. Both legs are the same length, which is the entire reason
+	// the angle comes out at 45 or 135 degrees: a right triangle with equal
+	// sides has no other option.
+	//
+	// This replaces a forward term and a sideways term that were computed
+	// independently - the standoff decided one, the sweep decided the other -
+	// so the angle between them was whatever those two happened to work out to,
+	// anything from a straight walk down the lane to a pure sidestep. Nothing
+	// held it at a diagonal at all.
+	// Has a creep got past him? This decides everything below, because rule 1
+	// outranks the diagonal and the two want different things here.
+	const bool behind = front.hasFrontMost && front.frontMostLead > 0.f;
+
+	// Never sweep away from a wave he has not reached yet. When the covering
+	// line is further off than a sidestep, the side is forced toward it; only
+	// once he is within reach does the sweep alternate freely. Without this the
+	// zigzag is happy to oscillate in open ground beside the creeps.
+	if ( std::fabs( front.lateral ) > Settings::CreepBlocker::SideStep )
+		m_ZigSide = front.lateral >= 0.f ? 1 : -1;
+
+	float forwardStep = 0.f;
+	float lineShift = 0.f;
+
+	if ( behind )
+	{
+		// RECOVERY. A creep is past him and rule 1 is broken; getting back in
+		// front is the only thing that matters until it is not.
+		//
+		// The diagonal is dropped here on purpose, and the reason is arithmetic
+		// rather than preference: at 45 degrees he closes down-lane at his own
+		// speed times 0.707 - about 212 for a 300-speed hero - while lane creeps
+		// walk at 325. Crossing while behind therefore LOSES ground every order,
+		// and a capture showed exactly that, hero_ahead running -43, -84, -148
+		// with no way back. Straight down-lane spends every unit of his speed on
+		// the gap, which is the only setting under which it closes at all.
+		//
+		// kMaxForwardCommit is deliberately not applied. It exists to stop him
+		// chasing a wave he is already in front of; while he is behind, refusing
+		// to aim far enough forward is refusing to obey rule 1, and that cap
+		// does not get to outrank it. A capture showed the cap holding the aim
+		// at 100 while the rule needed 180, with the end-of-order correction
+		// then shoving the difference in and flattening the angle to 29 degrees.
+		forwardStep = minForward;
+
+		// A small sideways component only, so he is still sweeping rather than
+		// running a dead straight line - but never enough to cost him the
+		// down-lane speed he needs.
+		lineShift = static_cast<float>( m_ZigSide ) * ( Settings::CreepBlocker::SideStep * 0.25f );
+	}
+	else
+	{
+		// IN FRONT. Rule 1 already holds, so the diagonal is free to do its job.
+		//
+		// The leg is long enough to carry him to the far EDGE of the wave, not a
+		// fixed sidestep from wherever he stands. That is the difference between
+		// sweeping the whole wave and sweeping a patch of it: a capture showed
+		// coverage stuck at 1.6 of 3-4 creeps with nearest_creep never under 75,
+		// which is a hero crossing back and forth beside the wave rather than
+		// through it, while the creeps he never reached walked past.
+		//
+		// One hull of margin past the edge creep, so he actually clears it
+		// instead of stopping on its centre line.
+		const float edgeTarget = m_ZigSide > 0 ? front.lateralMax : front.lateralMin;
+		const float sweepReach = front.hasExtent
+			? std::fabs( edgeTarget ) + kHeroCollisionRadius
+			: Settings::CreepBlocker::SideStep;
+
+		// SideStep is the floor, not the value: it keeps a sweep alive when the
+		// wave is narrow or its extent is unavailable.
+		float leg = ( std::max )( Settings::CreepBlocker::SideStep , sweepReach );
+
+		// 135 degrees - cutting BACK across the wave's front - only when the
+		// hero is far enough ahead that giving up that ground still leaves the
+		// point in front of the front-most creep. Otherwise 45 degrees, gaining
+		// ground while crossing. The rule decides which of the two angles is
+		// available; it is never a free choice.
+		const bool forwardDiagonal = -leg < minForward;
+		if ( forwardDiagonal && minForward > leg )
+		{
+			// A short leg would land behind the creep. Grow the diagonal
+			// instead of bending it - the angle is the thing being preserved.
+			leg = minForward;
+		}
+
+		// The cap may shorten the diagonal, but never below what rule 1 needs.
+		// Capping under minForward is what forced the end-of-order correction to
+		// fire, and that correction is forward-only, so it bends the very angle
+		// this branch exists to hold.
+		leg = ( std::min )( leg , ( std::max )( kMaxForwardCommit , minForward ) );
+
+		forwardStep = forwardDiagonal ? leg : -leg;
+		lineShift = static_cast<float>( m_ZigSide ) * leg;
+	}
+
+	// m_CutSide is kept only so the log can still show which way he is cutting;
+	// the sweep above is what actually steers him now.
+	m_CutSide = m_ZigSide;
 
 	// Built as an offset from the hero rather than from the world origin. The
 	// old form reconstructed an absolute point from two absolute projections,
@@ -997,10 +1319,101 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		}
 	}
 
+	// FIRST RULE, enforced last: the block point is IN FRONT OF EVERY CREEP,
+	// along the direction the wave is walking. Always.
+	//
+	// EVERY creep, not just the one picked as leader. The leader is chosen from
+	// the blockable band only, so a creep that slipped past that band but has
+	// not escaped outright would sit ahead of the block point while the rule
+	// still read as satisfied. Measuring the true front-most creep closes that
+	// gap; when the leader IS front-most, which is the normal case, this comes
+	// out identical.
+	//
+	// It is checked here, at the very end, against real world positions - not
+	// asserted earlier and hoped for. Everything upstream works in offsets from
+	// the HERO, and three separate stages move the point for reasons of their
+	// own after those offsets are chosen: the standoff clamp, the sideways slide
+	// that keeps the click off creep models, and the per-order step clamp. That
+	// last one is the worst offender, because it drags the new point back toward
+	// the PREVIOUS order's point, and the wave has walked forward since - so a
+	// point that was correct when built lands behind the creep by the time it is
+	// used.
+	//
+	// Any shortfall is pushed straight back out along the wave's heading. That
+	// only ever moves the point down-lane, so it cannot bend the diagonal
+	// sideways, and the floor is contact range: close enough that the hulls
+	// touch, which is the only distance at which a block physically happens.
+	float aheadOfLeader = 0.f;
+	float aheadCorrection = 0.f;
+	int creepsPastBlock = 0;
+
+	// The same front-most creep the aim was built from, so the check and the aim
+	// cannot disagree. Creeps beyond kEscapeTolerance are excluded from it on
+	// purpose - they cannot be caught (lane creeps move 325, most heroes less),
+	// so demanding the point stay in front of one would walk the hero down the
+	// lane after a wave he has already lost.
+	if ( front.hasFrontMost )
+	{
+		const Vector3 creepToBlock( blockPoint.m_x - front.frontMostOrigin.m_x ,
+			blockPoint.m_y - front.frontMostOrigin.m_y , 0.f );
+		aheadOfLeader = Dot2D( creepToBlock , direction );
+
+		if ( aheadOfLeader < kMinAheadOfLeader )
+		{
+			aheadCorrection = kMinAheadOfLeader - aheadOfLeader;
+
+			// Pushed along the DIAGONAL, not straight down-lane. A forward-only
+			// shove satisfies the rule while flattening the very angle the order
+			// was built around - a capture caught it taking 45 degrees down to
+			// 29. Adding an equal sideways component on the side already being
+			// cut to keeps the correction parallel to the order it is
+			// correcting, so the angle survives.
+			//
+			// The lateral term is skipped while recovering, where the order is
+			// deliberately not a 45 and adding one would slow the catch-up.
+			const float lateralPart = behind ? 0.f
+				: aheadCorrection * ( lineShift >= 0.f ? 1.f : -1.f );
+
+			blockPoint = Vector3(
+				blockPoint.m_x + direction.m_x * aheadCorrection + lateralAxis.m_x * lateralPart ,
+				blockPoint.m_y + direction.m_y * aheadCorrection + lateralAxis.m_y * lateralPart ,
+				blockPoint.m_z );
+			aheadOfLeader = kMinAheadOfLeader;
+		}
+	}
+
+	// Rule 1, verified rather than assumed: how many creeps still in play are
+	// past the final block point. Should be zero on every order. Anything else
+	// is the rule failing, and the count says how badly.
+	const float blockAlong = Dot2D( blockPoint , direction );
+	for ( const auto& creep : wave )
+	{
+		if ( creep.escaped )
+			continue;
+		if ( Dot2D( creep.origin , direction ) > blockAlong )
+			++creepsPastBlock;
+	}
+
 	// Validation: check if block point is actually forward of hero along the expected direction
 	const Vector3 heroToBlock( blockPoint.m_x - heroOrigin.m_x , blockPoint.m_y - heroOrigin.m_y , 0.f );
 	const float heroToBlockDist = Length2D( heroToBlock );
 	const float blockPointAlongDir = Dot2D( heroToBlock , direction );
+
+	// Snapshot for the on-screen debug, taken from the values this order
+	// actually used rather than re-derived while drawing - a re-derivation can
+	// quietly disagree with the decision it is supposed to be showing.
+	m_RuleDebug.hasFrontMost = front.hasFrontMost;
+	m_RuleDebug.frontMostOrigin = front.frontMostOrigin;
+	m_RuleDebug.pastCount = creepsPastBlock;
+	m_RuleDebug.hasNextLeader = front.hasNextLeader;
+	m_RuleDebug.nextLeaderOrigin = front.nextLeaderOrigin;
+	m_RuleDebug.aimedAtNext = aimedAtNext;
+	m_RuleDebug.legForward = blockPointAlongDir;
+	m_RuleDebug.legSide = lineShift;
+	m_RuleDebug.angleDegrees = ( std::fabs( blockPointAlongDir ) > 0.001f || std::fabs( lineShift ) > 0.001f )
+		? std::atan2( std::fabs( lineShift ) , blockPointAlongDir ) * 57.2957795f
+		: 0.f;
+	m_RuleDebug.crashed = crashed;
 
 	if ( shouldLog )
 	{
@@ -1072,24 +1485,63 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// inside contact range before a bump can register.
 		DEV_LOG( "  hero@(%.0f,%.0f) leads_front_edge_by=%.0f nearest_creep=%.0f (contact at %.0f)\n" ,
 			heroOrigin.m_x , heroOrigin.m_y , -front.leadOffset , nearestCreep , kContactDetectRange );
-		// down_lane is the number that matters for the following bug: it is how
-		// far the order sends the hero in the wave's own direction. It must
-		// never exceed kMaxForwardCommit.
-		// coverage is the weighted count of front-rank creeps whose hulls the
-		// hero actually reaches from the chosen line. Near zero while creeps
-		// are present means he is standing on empty ground blocking nobody.
-		// coverage is the weighted count of front-rank creeps whose hulls the
-		// hero actually reaches from the chosen line. Near zero while creeps
-		// are present means he is standing on empty ground blocking nobody.
-		// bumped is how many of the rank he has already crashed into and handed
-		// off; a fresh contact is what moves him onto the next creep's line.
-		// cut is the diagonal: 0 while approaching, +1 cutting left of the wave's
-		// heading, -1 cutting right. While it is non-zero the order should show
-		// both a full line_shift and a short positive down_lane - that pair IS
-		// the diagonal. Either one alone is a sidestep or a straight retreat.
-		DEV_LOG( "  line_shift=%.0f coverage=%.2f/%d bumped=%d(+%d) cut=%d block_point@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
-			lineShift , front.coverage , front.rankSize , front.bumpedCount , freshContacts ,
-			crashed ? m_CutSide : 0 ,
+		// RULE 1. past=0 is the rule holding: no creep still in play is ahead of
+		// the block point. Any other value is the rule broken, and the number
+		// says how many got by. ahead is the margin over the front-most creep,
+		// measured on the FINAL point after every clamp and slide; it must never
+		// read below min. corr is how far the rule had to shove the point back
+		// out to keep that true - zero means everything upstream already agreed,
+		// while a large steady corr means some stage above fights it every order.
+		// hero_ahead is the one that answers "is my hero in front of every
+		// creep" - the block point being in front is necessary but not the same
+		// thing, and only this number says whether HE got there. Positive means
+		// he is ahead of the front-most creep still in play; negative means that
+		// many units behind it, and creeps are past him no matter what past=
+		// says about the aim point.
+		// mode=RECOVER means a creep is past him and the diagonal has been
+		// dropped so every unit of his speed goes into closing the gap; at 45
+		// degrees only 0.707 of it would, which is less than a creep walks, so
+		// crossing while behind loses ground instead of gaining it. mode=BLOCK
+		// is the normal state, rule 1 already satisfied and the diagonal free
+		// to work. Sustained RECOVER means he cannot get back in front at all.
+		// gone is how many creeps have been written off for the rest of this
+		// hold, and (+n) how many joined them on this order. Every number on
+		// these lines - hero_ahead, past, coverage, wave_lat - counts only the
+		// creeps still in play, so a rising gone with the rest looking healthy
+		// means the wave is being lost rather than blocked.
+		DEV_LOG( "  RULE1 hero_ahead=%.0f mode=%s past=%d gone=%d(+%d) ahead=%.0f (min %.0f) corr=%.0f\n" ,
+			front.hasFrontMost ? -front.frontMostLead : 0.f , behind ? "RECOVER" : "BLOCK" ,
+			creepsPastBlock , m_EscapedCount , escapedThisOrder ,
+			aheadOfLeader , kMinAheadOfLeader , aheadCorrection );
+
+		// RULE 2. next_lat is where the creep about to inherit the lead sits
+		// across the lane, from the hero. aim=1 means the diagonal is pointed at
+		// it, which is the rule working; aim=0 means it was too near straight
+		// behind the leader to say, so the sweep is alternating instead. zig is
+		// the side being cut to, and crash=1 marks the order where contact
+		// reversed it.
+		// wave_lat is the wave's left and right edges as seen from the hero, and
+		// the sweep has to run between them. Read it against line_shift on the
+		// DIAG line: a shift that never reaches either edge is a hero crossing
+		// beside the wave, and the creeps outside his sweep are the ones that
+		// escape while he blocks the first. coverage says how many of the rank
+		// his hull actually reaches from where he is now; well under rank means
+		// most of the wave is walking past untouched.
+		DEV_LOG( "  RULE2 next_lat=%.0f aim=%d zig=%+d crash=%d wave_lat=[%.0f,%.0f] bumped=%d(+%d) coverage=%.2f/%d\n" ,
+			front.hasNextLeader ? front.nextLateral : 0.f , aimedAtNext ? 1 : 0 ,
+			m_ZigSide , m_FreshCrash ? 1 : 0 ,
+			front.hasExtent ? front.lateralMin : 0.f , front.hasExtent ? front.lateralMax : 0.f ,
+			front.bumpedCount , freshContacts , front.coverage , front.rankSize );
+
+		// THE DIAGONAL. fwd and side are the two legs; they are equal by
+		// construction, so angle should read 45 or 135 and nothing else. A
+		// reading that is not one of those two means something downstream bent
+		// the order after the legs were set.
+		const float legAngle = ( std::fabs( blockPointAlongDir ) > 0.001f || std::fabs( lineShift ) > 0.001f )
+			? std::atan2( std::fabs( lineShift ) , blockPointAlongDir ) * 57.2957795f
+			: 0.f;
+		DEV_LOG( "  DIAG fwd=%.0f side=%.0f angle=%.0f block@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
+			blockPointAlongDir , lineShift , legAngle ,
 			blockPoint.m_x , blockPoint.m_y , heroToBlockDist , blockPointAlongDir , kMaxForwardCommit );
 	}
 
@@ -1131,6 +1583,32 @@ auto CCreepBlocker::IsBumped( const C_BaseEntity* entity , uint32_t now ) const 
 	{
 		if ( bump.entity == entity )
 			return now >= bump.tick && now - bump.tick < kBumpCooldownMs;
+	}
+
+	return false;
+}
+
+// No ageing and no eviction, unlike the bump table. A creep that has got away
+// has got away for the rest of the hold, and the table is cleared when the key
+// comes up. Once it is full the extra creeps simply keep being re-tested, which
+// is the old behaviour and no worse than it was.
+auto CCreepBlocker::RegisterEscaped( C_BaseEntity* entity ) -> void
+{
+	if ( !entity || m_EscapedCount >= kEscapeMemory || IsEscaped( entity ) )
+		return;
+
+	m_Escaped[m_EscapedCount++] = entity;
+}
+
+auto CCreepBlocker::IsEscaped( const C_BaseEntity* entity ) const -> bool
+{
+	if ( !entity )
+		return false;
+
+	for ( int index = 0; index < m_EscapedCount; ++index )
+	{
+		if ( m_Escaped[index] == entity )
+			return true;
 	}
 
 	return false;
@@ -1224,8 +1702,64 @@ auto CCreepBlocker::DrawBlockMarker() const -> void
 		drawList->AddCircle( blockScreen , 8.f , blockColor , 16 , 1.5f );
 
 	ImVec2 heroScreen{};
-	if ( Math::WorldToScreen( m_Marker.heroOrigin , heroScreen ) )
+	const bool hasHero = Math::WorldToScreen( m_Marker.heroOrigin , heroScreen );
+	if ( hasHero )
 		drawList->AddLine( heroScreen , blockScreen , blockColor , 1.5f );
+
+	// RULE 1, drawn. Yellow ring on the front-most creep still in play - the one
+	// the block point must stay ahead of. A red bar through it means creeps have
+	// got past the block point, which is the rule broken and the thing to look
+	// at before anything else on screen.
+	if ( m_RuleDebug.hasFrontMost )
+	{
+		ImVec2 frontScreen{};
+		if ( Math::WorldToScreen( m_RuleDebug.frontMostOrigin , frontScreen ) )
+		{
+			const bool ruleBroken = m_RuleDebug.pastCount > 0;
+			const ImU32 ruleColor = ruleBroken
+				? IM_COL32( 255 , 60 , 60 , 255 )
+				: IM_COL32( 255 , 210 , 60 , 230 );
+			drawList->AddCircle( frontScreen , 12.f , ruleColor , 20 , 2.5f );
+			if ( ruleBroken )
+			{
+				drawList->AddLine( ImVec2( frontScreen.x - 16.f , frontScreen.y ) ,
+					ImVec2( frontScreen.x + 16.f , frontScreen.y ) , ruleColor , 3.f );
+			}
+		}
+	}
+
+	// RULE 2, drawn. Cyan ring on the creep about to inherit the lead, with a
+	// line from the block point to it when the diagonal is aimed there. That
+	// line is the anticipation working: the hero is already crossing toward the
+	// creep he will have to block next. No line means the next creep was too
+	// near straight behind the leader to give a side, so the sweep is
+	// alternating instead.
+	if ( m_RuleDebug.hasNextLeader )
+	{
+		ImVec2 nextScreen{};
+		if ( Math::WorldToScreen( m_RuleDebug.nextLeaderOrigin , nextScreen ) )
+		{
+			const ImU32 nextColor = m_RuleDebug.aimedAtNext
+				? IM_COL32( 80 , 220 , 255 , 240 )
+				: IM_COL32( 80 , 220 , 255 , 110 );
+			drawList->AddCircle( nextScreen , 9.f , nextColor , 16 , 2.f );
+			if ( m_RuleDebug.aimedAtNext )
+				drawList->AddLine( blockScreen , nextScreen , nextColor , 2.f );
+		}
+	}
+
+	// The diagonal, as a number, next to the point it describes. It should read
+	// 45 or 135 and nothing else - the two legs are built equal, so any other
+	// value means something bent the order after they were set. Green while it
+	// holds, red the moment it does not.
+	char angleText[48];
+	const int angle = static_cast<int>( m_RuleDebug.angleDegrees + 0.5f );
+	const bool angleOk = std::abs( angle - 45 ) <= 3 || std::abs( angle - 135 ) <= 3;
+	snprintf( angleText , sizeof( angleText ) , "%d deg%s past=%d" ,
+		angle , m_RuleDebug.crashed ? " CRASH" : "" , m_RuleDebug.pastCount );
+	drawList->AddText( ImVec2( blockScreen.x + 18.f , blockScreen.y - 8.f ) ,
+		angleOk ? IM_COL32( 120 , 255 , 140 , 235 ) : IM_COL32( 255 , 90 , 90 , 235 ) ,
+		angleText );
 }
 
 auto CCreepBlocker::ValidateBlockingConditions( uint32_t now ) -> bool
