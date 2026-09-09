@@ -508,6 +508,17 @@ namespace
 		Vector3 frontMostOrigin{};
 		float frontMostLead = 0.f;   // along the lane, from the hero
 		bool hasFrontMost = false;
+		// Diagnostics for the RECOVER-entry question: is a hero_ahead collapse a
+		// single creep genuinely lagging, or the same order re-projected onto a
+		// jerked lane heading? Identity that holds while the number jumps points
+		// at reprojection; identity that hops points at membership/estimator
+		// noise; a steady identity tracking downward is the real thing. Lateral
+		// offset scales how much a heading swing can move frontMostLead, so a
+		// large one beside a drift spike is the tell for a phantom.
+		C_BaseEntity* frontMostEntity = nullptr;
+		float frontMostLateral = 0.f; // the front-most creep, across the lane, from the hero
+		float secondLead = 0.f;       // next-highest lead among creeps still in play
+		bool hasSecond = false;
 		// How wide the wave is across the lane, as offsets from the hero.
 		//
 		// This is what makes "in front of ALL creeps" mean anything. Being ahead
@@ -587,9 +598,25 @@ namespace
 			// the creeps he needs to be told to get back in front of.
 			if ( !front.hasFrontMost || lead > front.frontMostLead )
 			{
+				// Old front-most drops to second place, so the log can show
+				// whether the lead is held by one creep or being traded around.
+				if ( front.hasFrontMost )
+				{
+					front.secondLead = front.frontMostLead;
+					front.hasSecond = true;
+				}
 				front.frontMostLead = lead;
 				front.frontMostOrigin = creep.origin;
+				front.frontMostEntity = creep.entity;
+				const Vector3 heroToFront( creep.origin.m_x - heroOrigin.m_x ,
+					creep.origin.m_y - heroOrigin.m_y , 0.f );
+				front.frontMostLateral = Dot2D( heroToFront , lateralAxis );
 				front.hasFrontMost = true;
+			}
+			else if ( !front.hasSecond || lead > front.secondLead )
+			{
+				front.secondLead = lead;
+				front.hasSecond = true;
 			}
 
 			// Width of the wave, over the same set - every creep still in play,
@@ -1513,6 +1540,23 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 			front.hasFrontMost ? -front.frontMostLead : 0.f , behind ? "RECOVER" : "BLOCK" ,
 			creepsPastBlock , m_EscapedCount , escapedThisOrder ,
 			aheadOfLeader , kMinAheadOfLeader , aheadCorrection );
+
+		// FRONT. Diagnostics to settle whether a hero_ahead collapse is one creep
+		// really lagging or the same order re-projected onto a jerked heading.
+		// ent is the front-most creep's identity: it holding across a jump in lead
+		// means reprojection or that one creep drifting; ent hopping means the
+		// lead is being traded around (membership/estimator noise). lat is that
+		// creep's offset across the lane - a large lat next to a drift spike on
+		// the frame line is how a few degrees of heading swing move lead by a
+		// hundred units. second is the next creep's lead; lead jumping while
+		// second stays put is a single-creep effect, both moving together is the
+		// whole set being re-projected.
+		DEV_LOG( "  FRONT ent=%p lead=%.0f lat=%.0f second=%.0f gap=%.0f\n" ,
+			static_cast<const void*>( front.hasFrontMost ? front.frontMostEntity : nullptr ) ,
+			front.hasFrontMost ? front.frontMostLead : 0.f ,
+			front.hasFrontMost ? front.frontMostLateral : 0.f ,
+			front.hasSecond ? front.secondLead : 0.f ,
+			( front.hasFrontMost && front.hasSecond ) ? front.frontMostLead - front.secondLead : 0.f );
 
 		// RULE 2. next_lat is where the creep about to inherit the lead sits
 		// across the lane, from the hero. aim=1 means the diagonal is pointed at
