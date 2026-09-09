@@ -1263,10 +1263,35 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// then shoving the difference in and flattening the angle to 29 degrees.
 		forwardStep = minForward;
 
-		// A small sideways component only, so he is still sweeping rather than
-		// running a dead straight line - but never enough to cost him the
-		// down-lane speed he needs.
-		lineShift = static_cast<float>( m_ZigSide ) * ( Settings::CreepBlocker::SideStep * 0.25f );
+		// COVERAGE HOLDS DURING RECOVERY when more than the escaping creep is
+		// still in the rank. A capture (line ~722) showed the failure the old
+		// near-straight chase caused: the hero drops the sweep to run down-lane
+		// after one creep he cannot catch (300 vs 325, lead held ~120 and never
+		// closed), and while the sweep is gone the OTHER creeps walk the flanks
+		// he stopped covering, reach the dead band, and escape alongside the one
+		// he was chasing - gone jumped +2 in a single order. Chasing straight
+		// spent his whole speed on a catch that never happens and lost the rest
+		// of the wave doing it. So keep his body across the width instead: sweep
+		// toward the covering edge exactly as the in-front branch does, but never
+		// let the side leg exceed the forward push, so down-lane stays dominant
+		// and rule 1 is still being pursued for the front-most creep - no creep
+		// is written off, he simply stops abandoning the many to chase the one.
+		//
+		// With nothing else in the rank there is no width to hold, so fall back
+		// to the straight chase: it is the only setting that can still close on a
+		// lone straggler that is barely ahead.
+		if ( front.rankSize > 1 )
+		{
+			const float edgeTarget = m_ZigSide > 0 ? front.lateralMax : front.lateralMin;
+			const float sweepReach = front.hasExtent
+				? std::fabs( edgeTarget ) + kHeroCollisionRadius
+				: Settings::CreepBlocker::SideStep;
+			lineShift = static_cast<float>( m_ZigSide ) * ( std::min )( sweepReach , forwardStep );
+		}
+		else
+		{
+			lineShift = static_cast<float>( m_ZigSide ) * ( Settings::CreepBlocker::SideStep * 0.25f );
+		}
 	}
 	else
 	{
