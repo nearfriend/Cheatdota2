@@ -110,13 +110,24 @@ namespace
 	// further ahead can ever pull the block point down-lane.
 	constexpr float kBlockableTolerance = kContactRange;
 
-	// "Is there anything left here at all?" - decides whether to keep working.
-	// Deliberately generous: measured lead over the front edge sits around
-	// 40-100 units during normal blocking, so a tight gate plus a few tens of
-	// units of noise reads as "wave escaped" and shuts the feature off at the
-	// exact moment it is doing its job. Between the two thresholds the hero
-	// holds his ground rather than either chasing or giving up.
-	constexpr float kEscapeTolerance = 150.f;
+	// "Is there anything left here at all?" - decides whether to keep working,
+	// and also when a creep is written off so it stops driving RECOVER. Once a
+	// creep is escaped it leaves frontMostLead, so the hero stops chasing it
+	// down-lane and re-blocks whatever is still behind him.
+	//
+	// Lowered 150 -> 100. At 150 a creep had to be a full 150 ahead before it
+	// was given up, so the hero FOLLOWED it down-lane the whole way (a capture
+	// showed RECOVER chasing creeps 111-136 ahead with down_lane orders of
+	// 155-246) while blockable creeps sat unblocked behind him. A creep 100+
+	// ahead of the hero is past him and, at 300 vs 325, uncatchable - so treat
+	// it as gone and put him back on the creeps he can still block. This is a
+	// deliberate policy call by the user: an escaped creep is no longer "in
+	// play", so rule 1 still holds for the rest. Kept clear of the ~40-100
+	// creep-lead seen during normal spread-wave blocking so a single flank
+	// creep drifting forward is not written off prematurely; and since escape
+	// is sticky, the cost is that a rare heading-noise spike past 100 can retire
+	// a creep for the hold. See feedback_creepblock_rule1 for why "in play".
+	constexpr float kEscapeTolerance = 100.f;
 
 	// Hard ceiling on how far down-lane a single order may send the hero past
 	// his own position - roughly contact range, enough to re-seat the plug

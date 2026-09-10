@@ -125,6 +125,100 @@ static bool LoadTextureFromPaths( const std::vector<std::wstring>& paths , GuiTe
 	return false;
 }
 
+// Shared placeholder shown wherever a spell/item/hero icon is missing from disk
+// and the CDN cache has not filled it yet. Rather than a bare lettered box, the
+// tile carries a small diamond emblem (echoing the brand mark) baked into a real
+// texture, so a missing icon still reads as an icon. Generated once on the D3D
+// device and cached for the process lifetime.
+static ID3D11ShaderResourceView* GetDefaultIconSrv()
+{
+	static ID3D11ShaderResourceView* s_srv = nullptr;
+	static bool s_attempted = false;
+
+	if ( s_attempted )
+		return s_srv;
+	s_attempted = true;
+
+	auto pDevice = GetAndromedaGUI()->GetDevice();
+	if ( !pDevice )
+	{
+		// Leave s_attempted set only if we truly have a device; otherwise allow a
+		// later retry once the device exists.
+		s_attempted = false;
+		return nullptr;
+	}
+
+	constexpr UINT kSize = 64;
+	std::vector<BYTE> pixels( kSize * kSize * 4 );
+
+	auto setPixel = [&]( UINT x , UINT y , BYTE r , BYTE g , BYTE b )
+	{
+		BYTE* p = &pixels[( y * kSize + x ) * 4];
+		p[0] = r; p[1] = g; p[2] = b; p[3] = 255;
+	};
+
+	for ( UINT y = 0; y < kSize; ++y )
+	{
+		for ( UINT x = 0; x < kSize; ++x )
+		{
+			const float u = static_cast<float>( x ) / ( kSize - 1 );
+			const float v = static_cast<float>( y ) / ( kSize - 1 );
+
+			// Soft diagonal gradient background.
+			const float g = ( u + v ) * 0.5f;
+			float r = 38.f - 16.f * g;
+			float gg = 40.f - 17.f * g;
+			float b = 47.f - 19.f * g;
+
+			// Diamond emblem centred in the tile: a ring plus a small core, tinted
+			// toward the accent red so the placeholder is on-brand.
+			const float dx = u - 0.5f;
+			const float dy = v - 0.5f;
+			const float diamond = fabsf( dx ) + fabsf( dy );
+			const bool onRing = fabsf( diamond - 0.26f ) < 0.045f;
+			const bool inCore = ( std::max )( fabsf( dx ) , fabsf( dy ) ) < 0.055f;
+			if ( onRing || inCore )
+			{
+				r = 150.f; gg = 92.f; b = 100.f;
+			}
+
+			// A 2px inset frame for definition.
+			if ( x < 2 || y < 2 || x >= kSize - 2 || y >= kSize - 2 )
+			{
+				r = 58.f; gg = 60.f; b = 66.f;
+			}
+
+			setPixel( x , y , static_cast<BYTE>( r ) , static_cast<BYTE>( gg ) , static_cast<BYTE>( b ) );
+		}
+	}
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = kSize;
+	desc.Height = kSize;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+	D3D11_SUBRESOURCE_DATA initData = {};
+	initData.pSysMem = pixels.data();
+	initData.SysMemPitch = kSize * 4;
+
+	Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+	if ( FAILED( pDevice->CreateTexture2D( &desc , &initData , &texture ) ) )
+		return nullptr;
+
+	if ( FAILED( pDevice->CreateShaderResourceView( texture.Get() , nullptr , &s_srv ) ) )
+	{
+		s_srv = nullptr;
+		return nullptr;
+	}
+
+	return s_srv;
+}
+
 static void ReleaseTexture( GuiTexture& tex )
 {
 	if ( tex.srv )
@@ -154,6 +248,7 @@ struct MeepoTextures
 static std::unordered_map<std::string , GuiTexture> g_SpellIcons;
 
 static GuiTexture* GetSpellIcon( const std::string& abilityName );
+static void DrawCardTitle( const char* text );
 
 static MeepoTextures g_MeepoTextures{};
 static GuiTexture g_LogoTexture{};
@@ -372,6 +467,50 @@ static GuiTexture* GetSpellIcon( const std::string& abilityName )
 	return stored.srv ? &stored : nullptr;
 }
 
+// Hero portraits keyed by entity name (e.g. "npc_dota_hero_lion"), loaded on
+// first use and cached like the spell icons above. Our shipped set files them
+// under the full entity name; Dota's panorama set uses the short name.
+static std::unordered_map<std::string , GuiTexture> g_HeroIcons;
+
+static GuiTexture* GetHeroIcon( const std::string& heroName )
+{
+	if ( heroName.empty() )
+		return nullptr;
+
+	if ( const auto it = g_HeroIcons.find( heroName ); it != g_HeroIcons.end() )
+		return it->second.srv ? &it->second : nullptr;
+
+	std::string shortName = heroName;
+	constexpr const char* kHeroPrefix = "npc_dota_hero_";
+	if ( shortName.rfind( kHeroPrefix , 0 ) == 0 )
+		shortName.erase( 0 , std::strlen( kHeroPrefix ) );
+
+	const std::wstring wideFull = ansi_to_unicode( heroName );
+	const std::wstring wideShort = ansi_to_unicode( shortName );
+	const std::wstring dllBase = ansi_to_unicode( GetDllDir() );
+
+	std::vector<std::wstring> paths =
+	{
+		dllBase + L"Assets\\Icons\\Heroes\\" + wideFull + L".png",
+		dllBase + L"Assets\\Icons\\Heroes\\" + wideShort + L".png",
+	};
+	for ( const auto& base : GetDotaBaseCandidates() )
+	{
+		paths.push_back( base + L"game\\dota\\panorama\\images\\heroes\\" + wideShort + L".png" );
+		paths.push_back( base + L"game\\dota\\panorama\\images\\heroes\\" + wideFull + L".png" );
+	}
+
+	GuiTexture texture{};
+	std::string usedPath;
+	const bool loaded = LoadTextureFromPaths( paths , texture , usedPath );
+	DEV_LOG( "[ui] hero icon '%s' %s\n" , heroName.c_str() ,
+		loaded ? usedPath.c_str() : "not found" );
+
+	auto& stored = g_HeroIcons[heroName];
+	stored = texture;
+	return stored.srv ? &stored : nullptr;
+}
+
 struct SpellStripEntry
 {
 	std::string displayName;
@@ -473,9 +612,20 @@ static void DrawSpellOrderStrip( const char* dragType , int count , int* order ,
 			dl->AddImageRounded( reinterpret_cast<ImTextureID>( icon->srv ) , p0 , p1 ,
 				ImVec2( 0 , 0 ) , ImVec2( 1 , 1 ) , tint , kIconRounding );
 		}
+		else if ( ID3D11ShaderResourceView* fallback = GetDefaultIconSrv() )
+		{
+			// No icon on disk - show the shared default image so the row still
+			// reads as a strip of icons rather than a gap.
+			const ImU32 tint = isEnabled
+				? ( hovered ? IM_COL32( 255 , 255 , 255 , 255 ) : IM_COL32( 236 , 236 , 240 , 255 ) )
+				: IM_COL32( 255 , 255 , 255 , 60 );
+			dl->AddImageRounded( reinterpret_cast<ImTextureID>( fallback ) , p0 , p1 ,
+				ImVec2( 0 , 0 ) , ImVec2( 1 , 1 ) , tint , kIconRounding );
+		}
 		else
 		{
-			// No icon on disk - keep the tile usable with a label.
+			// Last resort if even the default texture could not be created - keep
+			// the tile usable with a label.
 			const char* label = !entry.keyLabel.empty() ? entry.keyLabel.c_str() : entry.displayName.c_str();
 			const size_t shown = ( std::min )( std::strlen( label ) , static_cast<size_t>( 7 ) );
 			dl->AddText( ImVec2( p0.x + 4.f , p0.y + kIconSize * 0.5f - 6.f ) ,
@@ -1004,6 +1154,9 @@ static bool DrawCastableTile( const std::string& name , float size , bool select
 			srv = icon->srv;
 	}
 
+	if ( !srv )
+		srv = GetDefaultIconSrv();
+
 	if ( srv )
 	{
 		dl->AddImageRounded( reinterpret_cast<ImTextureID>( srv ) , pos , pMax ,
@@ -1011,6 +1164,7 @@ static bool DrawCastableTile( const std::string& name , float size , bool select
 	}
 	else
 	{
+		// Only reached if the default texture itself could not be created.
 		dl->AddRectFilled( pos , pMax , IM_COL32( 30 , 32 , 37 , alpha ) , rounding );
 		char initials[4] = {};
 		snprintf( initials , sizeof( initials ) , "%.2s" , tooltip.c_str() );
@@ -1075,7 +1229,7 @@ static void DrawDodgerCombinations( float margin , float width , float topOffset
 
 	ImGui::SetCursorPos( ImVec2( margin , topOffset ) );
 	ImGui::BeginChild( "##dodgerCombosCard" , ImVec2( width , 226.f ) , true , ImGuiWindowFlags_NoScrollbar );
-	ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Spell Dodge Combinations" );
+	DrawCardTitle( "Spell Dodge Combinations" );
 	ImGui::SameLine();
 	if ( s_SelectedSpell.empty() )
 	{
@@ -1143,16 +1297,36 @@ static void DrawDodgerCombinations( float margin , float width , float topOffset
 
 		for ( const auto& hero : heroOrder )
 		{
-			std::string heroLabel = hero;
+			std::string heroPretty = hero;
 			constexpr const char* kHeroPrefix = "npc_dota_hero_";
-			if ( heroLabel.rfind( kHeroPrefix , 0 ) == 0 )
-				heroLabel.erase( 0 , std::strlen( kHeroPrefix ) );
-			heroLabel = PrettyCastableName( heroLabel );
-			if ( heroLabel.size() > 11 )
-				heroLabel.resize( 11 );
+			if ( heroPretty.rfind( kHeroPrefix , 0 ) == 0 )
+				heroPretty.erase( 0 , std::strlen( kHeroPrefix ) );
+			heroPretty = PrettyCastableName( heroPretty );
 
-			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + ( enemyTile - ImGui::GetTextLineHeight() ) * 0.5f );
-			ImGui::TextColored( ImVec4( 0.62f , 0.63f , 0.67f , 1.f ) , "%s" , heroLabel.c_str() );
+			// Hero portrait instead of a name: it identifies the row at a glance
+			// and frees the label column for the kit. The full name stays on hover,
+			// and a missing portrait falls back to the shared default icon.
+			GuiTexture* heroIcon = GetHeroIcon( hero );
+			ID3D11ShaderResourceView* heroSrv = heroIcon ? heroIcon->srv : GetDefaultIconSrv();
+
+			const float portraitH = enemyTile;
+			float portraitW = portraitH * 16.f / 9.f; // hero portraits are 16:9
+			if ( heroIcon && heroIcon->srv && heroIcon->height > 0 )
+				portraitW = portraitH * static_cast<float>( heroIcon->width ) / static_cast<float>( heroIcon->height );
+			portraitW = ( std::min )( portraitW , kHeroLabelWidth - 8.f );
+
+			const ImVec2 portraitPos = ImGui::GetCursorScreenPos();
+			ImDrawList* rowDl = ImGui::GetWindowDrawList();
+			const ImVec2 portraitMax( portraitPos.x + portraitW , portraitPos.y + portraitH );
+			if ( heroSrv )
+			{
+				rowDl->AddImageRounded( reinterpret_cast<ImTextureID>( heroSrv ) , portraitPos , portraitMax ,
+					ImVec2( 0 , 0 ) , ImVec2( 1 , 1 ) , IM_COL32( 255 , 255 , 255 , 255 ) , 4.f );
+				rowDl->AddRect( portraitPos , portraitMax , IM_COL32( 44 , 46 , 52 , 255 ) , 4.f , 0 , 1.f );
+			}
+			ImGui::Dummy( ImVec2( portraitW , portraitH ) );
+			if ( ImGui::IsItemHovered() )
+				ImGui::SetTooltip( "%s" , heroPretty.c_str() );
 			ImGui::SameLine( kHeroLabelWidth );
 
 			bool firstTile = true;
@@ -1401,6 +1575,18 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 	return changed;
 }
 
+// Section header used at the top of every settings card: a short accent tick
+// followed by the title. Ends on its own line like the plain TextColored it
+// replaced, so callers can still SameLine() a subtitle after it.
+static void DrawCardTitle( const char* text )
+{
+	const ImVec2 hp = ImGui::GetCursorScreenPos();
+	ImGui::GetWindowDrawList()->AddRectFilled( ImVec2( hp.x , hp.y + 1.f ) ,
+		ImVec2( hp.x + 3.f , hp.y + 13.f ) , kAccentColor , 1.5f );
+	ImGui::SetCursorPosX( ImGui::GetCursorPosX() + 9.f );
+	ImGui::TextColored( ImVec4( 0.62f , 0.63f , 0.67f , 1.f ) , "%s" , text );
+}
+
 auto CAndromedaMenu::OnRenderMenu() -> void
 {
 	float menuAlpha = static_cast<float>( Settings::Menu::MenuAlpha ) / 255.f;
@@ -1417,6 +1603,19 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 	{
 		static int selectedCategory = 0;
 		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = { 0 };
+
+		// Signature accent bar across the top edge of the window, plus a thin
+		// outline so the frameless window reads as a defined panel against the
+		// game behind it. Drawn on the foreground list to sit above the child
+		// panels that otherwise cover the window's own border.
+		{
+			ImDrawList* fg = ImGui::GetForegroundDrawList();
+			const ImVec2 wp = ImGui::GetWindowPos();
+			const ImVec2 ws = ImGui::GetWindowSize();
+			const ImVec2 wMax( wp.x + ws.x , wp.y + ws.y );
+			fg->AddRectFilled( wp , ImVec2( wMax.x , wp.y + 2.5f ) , kAccentColor );
+			fg->AddRect( wp , wMax , IM_COL32( 40 , 42 , 48 , 255 ) , 0.f , 0 , 1.f );
+		}
 
 		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
 		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
@@ -1473,9 +1672,27 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 0.f , 0.f ) );
 		ImGui::BeginChild( "##mainContent" , ImVec2( 0.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
 		ImGui::SetCursorPos( ImVec2( mainContentMargin , 20.f ) );
+		// The current page's glyph leads the breadcrumb so the header echoes the
+		// icon shown for it in the navigation column.
+		{
+			const ImVec2 crumbPos = ImGui::GetCursorScreenPos();
+			DrawReferenceIcon( ImGui::GetWindowDrawList() ,
+				ImVec2( crumbPos.x + 7.f , crumbPos.y + 8.f ) , page.icon , kAccentColor , 0.62f );
+		}
+		ImGui::SetCursorPosX( mainContentMargin + 21.f );
 		ImGui::TextDisabled( "Main  /" );
 		ImGui::SameLine();
 		ImGui::TextColored( ImVec4( 0.92f , 0.30f , 0.34f , 1.f ) , "%s" , page.label );
+
+		// Thin rule under the header, separating it from the settings cards.
+		{
+			ImDrawList* headerDl = ImGui::GetWindowDrawList();
+			const ImVec2 winPos = ImGui::GetWindowPos();
+			const float ruleY = winPos.y + 55.f;
+			headerDl->AddLine( ImVec2( winPos.x + mainContentMargin , ruleY ) ,
+				ImVec2( winPos.x + ImGui::GetWindowWidth() - mainContentMargin , ruleY ) ,
+				IM_COL32( 30 , 32 , 36 , 255 ) );
+		}
 
 		static char search[64] = {};
 		const float headerControlsWidth = 28.f + 4.f + 28.f + 7.f + 190.f;
@@ -1518,7 +1735,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			const float cardHeight = 208.f;
 
 			ImGui::BeginChild( "##dodgerReactionCard" , ImVec2( columnWidth , cardHeight ) , true , 0 );
-			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Reaction Settings" );
+			DrawCardTitle( "Reaction Settings" );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 			DrawSwitchRow( "Enable" , "##dodgerEnable" , Settings::Dodger::Enable , ReferenceIcon::Hidden );
 			ImGui::BeginDisabled( !Settings::Dodger::Enable );
@@ -1538,7 +1755,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 
 			ImGui::SameLine( 0.f , cardGap );
 			ImGui::BeginChild( "##dodgerTuningCard" , ImVec2( columnWidth , cardHeight ) , true , 0 );
-			ImGui::TextColored( ImVec4( 0.58f , 0.59f , 0.62f , 1.f ) , "Threat Tuning" );
+			DrawCardTitle( "Threat Tuning" );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 			ImGui::BeginDisabled( !Settings::Dodger::Enable );
 			DrawSliderRow( "Trigger Range" , "##dodgerTriggerRange" , Settings::Dodger::TriggerRange , 600.f , 3000.f , "%.0f" , ReferenceIcon::Radius );
@@ -1567,7 +1784,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			// instead of clipping the overflow away.
 			const ImGuiWindowFlags settingsCardFlags = autoComboPage ? 0 : ImGuiWindowFlags_NoScrollbar;
 			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , settingsCardFlags );
-			ImGui::TextColored( ImVec4( 0.55f , 0.56f , 0.59f , 1.f ) , "%s Settings" , page.label );
+			char cardTitle[96];
+			snprintf( cardTitle , sizeof( cardTitle ) , "%s Settings" , page.label );
+			DrawCardTitle( cardTitle );
 			ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 2.f );
 
 			if ( killStealerPage )
@@ -1606,6 +1825,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSwitchRow( "Draw Block Marker" , "##creepBlockerMarker" , Settings::CreepBlocker::DrawBlockMarker , ReferenceIcon::Visible );
 
 				ImGui::Spacing();
+				// Align the label to the button frame so the row's text and buttons
+				// share one vertical centre line instead of the text riding high.
+				ImGui::AlignTextToFramePadding();
 				ImGui::Text( "Block key" );
 				ImGui::SameLine();
 				static bool capturingBlockKey = false;
@@ -1686,6 +1908,9 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSwitchRow( "Quick Cast Mode" , "##autoComboQuickCast" , Settings::AutoCombo::QuickCast , ReferenceIcon::Speed );
 
 				ImGui::Spacing();
+				// Align the label to the button frame so the row's text and buttons
+				// share one vertical centre line instead of the text riding high.
+				ImGui::AlignTextToFramePadding();
 				ImGui::Text( "Combo key" );
 				ImGui::SameLine();
 				static bool capturingComboAuto = false;
