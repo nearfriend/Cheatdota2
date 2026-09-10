@@ -123,7 +123,29 @@ namespace
 	// against a creep drawing level with him and no more. Walking further than
 	// this in the wave's own direction is following, not blocking: the creeps
 	// are faster, so ground given up that way is never recovered.
-	constexpr float kMaxForwardCommit = 100.f;
+	//
+	// Also caps the diagonal leg (forward == side at 45deg), so it sets how far
+	// the block point sits from the hero. A capture showed it pinned at 100
+	// every order (dist=141), aiming him at a far point he never reaches so the
+	// block point was hard to re-take. Lowered 100 -> 70 (dist ~99): shorter,
+	// tighter diagonals that let him re-establish the block sooner. Does not
+	// cut coverage (the sweep turns at the wave EDGE, not at the leg length) or
+	// forward speed (he still travels the 45deg at full speed); the minForward
+	// floor still extends the leg when he has fallen close, so the standoff is
+	// re-established when it actually needs to be.
+	constexpr float kMaxForwardCommit = 70.f;
+
+	// ADAPTIVE REACH. kMaxForwardCommit keeps the diagonal short for the tight
+	// feel, but a capture showed the remaining escapes were flank creeps on a
+	// wave ~180 wide (wave_lat=[-86,95]): the hero's 70-leg sweep never reached
+	// the far edge, so one flank walked past uncovered and, being faster, got
+	// away. When the wave is wider than the short cap can cover, the leg is
+	// allowed to grow toward the far edge instead - up to this hard ceiling, so
+	// a freak-wide estimate cannot send him on a marathon down-lane. The single
+	// leg still drives forward AND side together, so 45deg is preserved; only
+	// its length adapts, never its angle. Narrow waves keep the short cap
+	// untouched because their edge is already inside it.
+	constexpr float kMaxSweepLeg = 140.f;
 
 	// The order is always a DIAGONAL across the wave's front, never a straight
 	// walk down the lane and never a pure sidestep.
@@ -175,9 +197,15 @@ namespace
 	// orders - creeps turn to step around each other and the facing average
 	// follows them - but the lane itself does not move. Everything downstream
 	// is measured in this frame, so its noise turns directly into hero jitter.
-	// At the 15ms order cadence this settles over roughly 100ms, far quicker
-	// than a lane actually bends.
-	constexpr float kDirectionSmoothing = 0.15f;
+	// At the 15ms order cadence 0.15 settles over roughly 100ms, which felt
+	// sluggish to turn: when the lead creep changes or the lane angle shifts the
+	// hero lagged the wave visibly. Raised to 0.30 (~60ms settle) so he swings
+	// toward the new aim faster. The cost is that more of the raw estimate's
+	// per-order jitter (it swings 20deg+ between orders) passes through, and
+	// since rule 1 is enforced in this frame a snappier frame can flip into
+	// RECOVER on noise more readily - watch the next capture for that. Tunable:
+	// dial back toward 0.15 if it jitters, up toward 0.5 if still sluggish.
+	constexpr float kDirectionSmoothing = 0.30f;
 
 	// A single order may only move the block point this far from the last one.
 	// The hero has a top speed; a block point that jumps further than he can
@@ -1332,7 +1360,15 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// Capping under minForward is what forced the end-of-order correction to
 		// fire, and that correction is forward-only, so it bends the very angle
 		// this branch exists to hold.
-		leg = ( std::min )( leg , ( std::max )( kMaxForwardCommit , minForward ) );
+		//
+		// The ceiling is normally kMaxForwardCommit (short, tight). But when the
+		// wave is wider than that - the flank the escapes come from - let the
+		// ceiling rise toward the far edge (sweepReach), bounded by kMaxSweepLeg,
+		// so the leg can actually carry his hull across to the flank creep. On a
+		// narrow wave sweepReach is already inside kMaxForwardCommit, so this
+		// leaves the short cap untouched.
+		const float coverageReach = ( std::min )( sweepReach , kMaxSweepLeg );
+		leg = ( std::min )( leg , ( std::max )( { kMaxForwardCommit , minForward , coverageReach } ) );
 
 		forwardStep = forwardDiagonal ? leg : -leg;
 		lineShift = static_cast<float>( m_ZigSide ) * leg;
