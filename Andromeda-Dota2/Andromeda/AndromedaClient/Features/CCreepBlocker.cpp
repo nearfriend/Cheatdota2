@@ -82,6 +82,19 @@ namespace
 	// leading creep's own line and has to be slid clear of the models.
 	constexpr float kCreepClearance = 70.f;
 
+	// The own tower is a solid obstacle the blocker used to ignore entirely: it
+	// is not a lane creep so CollectWave never gathered it, and the block point
+	// was only ever slid clear of creeps. A block point placed on or behind the
+	// tower is unreachable (the hull is ~144 across) and, worse, a right click
+	// that close reads as an order on the tower rather than a move to ground.
+	// So the nearest allied tower within this radius of the hero is collected
+	// and the block point is pushed out to kTowerClearance from it - large
+	// enough to clear both the hull and the click-target radius. Search radius
+	// is generous because at the start the tower sits behind the hero while the
+	// wave is still leaving it.
+	constexpr float kTowerSearchRadius = 1200.f;
+	constexpr float kTowerClearance = 160.f;
+
 	// Direction tracking: how far wave's center must move to confirm heading direction
 	constexpr float kMinTravelDistance = 25.f;
 	constexpr uint32_t kTravelSampleMaxAgeMs = 1000;
@@ -111,23 +124,29 @@ namespace
 	constexpr float kBlockableTolerance = kContactRange;
 
 	// "Is there anything left here at all?" - decides whether to keep working,
-	// and also when a creep is written off so it stops driving RECOVER. Once a
-	// creep is escaped it leaves frontMostLead, so the hero stops chasing it
-	// down-lane and re-blocks whatever is still behind him.
-	//
-	// Lowered 150 -> 100. At 150 a creep had to be a full 150 ahead before it
-	// was given up, so the hero FOLLOWED it down-lane the whole way (a capture
-	// showed RECOVER chasing creeps 111-136 ahead with down_lane orders of
-	// 155-246) while blockable creeps sat unblocked behind him. A creep 100+
-	// ahead of the hero is past him and, at 300 vs 325, uncatchable - so treat
-	// it as gone and put him back on the creeps he can still block. This is a
-	// deliberate policy call by the user: an escaped creep is no longer "in
-	// play", so rule 1 still holds for the rest. Kept clear of the ~40-100
-	// creep-lead seen during normal spread-wave blocking so a single flank
-	// creep drifting forward is not written off prematurely; and since escape
-	// is sticky, the cost is that a rare heading-noise spike past 100 can retire
-	// a creep for the hold. See feedback_creepblock_rule1 for why "in play".
-	constexpr float kEscapeTolerance = 100.f;
+	// and marks a creep ESCAPED (sticky, for the rest of the hold) so it leaves
+	// the wave entirely. Deliberately generous and kept at 150: a creep is only
+	// truly written off - removed from the wave's presence, so the feature can
+	// declare the whole wave gone - once it is this far past. Tightening this
+	// gate is what made the feature give up on whole waves prematurely and let a
+	// single heading swing retire several creeps at once (sticky), so the "stop
+	// chasing a gone creep" job was split out to kReclaimTolerance below.
+	constexpr float kEscapeTolerance = 150.f;
+
+	// "Should the hero still try to get back in FRONT of this creep?" - a
+	// separate, LOWER, NON-sticky cutoff. A creep past this drops out of the
+	// front-most aim, so it stops driving RECOVER and the hero re-blocks the
+	// creeps still behind him instead of following it down-lane (a capture at
+	// 150 showed him chasing creeps 111-136 ahead, down_lane up to 246, while
+	// blockable creeps sat behind). A creep 100+ ahead is past him and, at 300
+	// vs 325, uncatchable - so quit chasing it. Unlike kEscapeTolerance this is
+	// re-evaluated every order and never written to the escape table, so a
+	// creep that only reprojected past 100 on a heading swing simply re-enters
+	// the aim next order rather than being retired for good, and the creep still
+	// counts as present so the wave is not declared escaped. User policy call:
+	// a creep this far past is no longer "in play" for the aim, so rule 1 still
+	// holds for the rest. See feedback_creepblock_rule1.
+	constexpr float kReclaimTolerance = 100.f;
 
 	// Hard ceiling on how far down-lane a single order may send the hero past
 	// his own position - roughly contact range, enough to re-seat the plug
@@ -273,10 +292,29 @@ namespace
 	// than indexing GetHighestEntityIndex(): that index is build-dependent and
 	// under-reports here, which silently truncates entity scans (the same trap
 	// CKillStealer.cpp and CLastHitAssistant.cpp both had to back out of).
+	// Tower entity, designer and class names all carry "tower"
+	// (npc_dota_..._tower..., C_DOTA_BaseNPC_Tower), so a case-insensitive
+	// substring is enough to spot one. Creep and hero names never contain it.
+	auto LooksLikeTower( const std::string& name ) -> bool
+	{
+		for ( size_t i = 0; i + 5 <= name.size(); ++i )
+		{
+			if ( ( name[i] | 0x20 ) == 't' && ( name[i + 1] | 0x20 ) == 'o' &&
+				( name[i + 2] | 0x20 ) == 'w' && ( name[i + 3] | 0x20 ) == 'e' &&
+				( name[i + 4] | 0x20 ) == 'r' )
+				return true;
+		}
+		return false;
+	}
+
 	auto CollectWave( CGameEntitySystem* entitySystem , const FeatureSupport::UnitOffsets& offsets ,
-		const Vector3& heroOrigin , uint8_t heroTeam , std::vector<WaveCreep>& out ) -> void
+		const Vector3& heroOrigin , uint8_t heroTeam , std::vector<WaveCreep>& out ,
+		Vector3* towerOut = nullptr , bool* hasTowerOut = nullptr ) -> void
 	{
 		out.clear();
+		if ( hasTowerOut )
+			*hasTowerOut = false;
+		float nearestTowerDist = kTowerSearchRadius;
 		if ( !entitySystem )
 			return;
 
@@ -302,6 +340,26 @@ namespace
 					continue;
 
 				const std::string name = FeatureSupport::EntityName( entity , identity );
+
+				// Allied tower (team already matches above): not a creep, but the
+				// nearest one is kept so the block point can be slid clear of it.
+				if ( towerOut && LooksLikeTower( name ) )
+				{
+					Vector3 towerPos{};
+					if ( FeatureSupport::TryReadOrigin( entity , offsets , towerPos ) )
+					{
+						const float dist = FeatureSupport::Distance2D( towerPos , heroOrigin );
+						if ( dist < nearestTowerDist )
+						{
+							nearestTowerDist = dist;
+							*towerOut = towerPos;
+							if ( hasTowerOut )
+								*hasTowerOut = true;
+						}
+					}
+					continue;
+				}
+
 				if ( !FeatureSupport::LooksLikeLaneCreep( entity , name , team ) )
 					continue;
 
@@ -632,30 +690,42 @@ namespace
 			++presentCount;
 
 			// Front-most first, and deliberately BEFORE the blockable filter
-			// below. This is the creep rule 1 measures against, and it has to
-			// include the ones that have got past the hero - those are precisely
-			// the creeps he needs to be told to get back in front of.
-			if ( !front.hasFrontMost || lead > front.frontMostLead )
+			// below. This is the creep rule 1 measures against, and it includes
+			// the ones that have got past the hero - those are the ones he is
+			// told to get back in front of.
+			//
+			// BUT only up to kReclaimTolerance. A creep further past than that is
+			// gone (300 vs 325, uncatchable), so it must not define the front-most
+			// aim or it drags the hero down-lane after it while blockable creeps
+			// go unblocked. It is still counted in presentCount and the extent
+			// below - it exists, it just is not something to chase. This cutoff is
+			// per-order and non-sticky (unlike the escape table), so a creep that
+			// only reprojected past it on a heading swing returns to the aim next
+			// order.
+			if ( lead <= kReclaimTolerance )
 			{
-				// Old front-most drops to second place, so the log can show
-				// whether the lead is held by one creep or being traded around.
-				if ( front.hasFrontMost )
+				if ( !front.hasFrontMost || lead > front.frontMostLead )
 				{
-					front.secondLead = front.frontMostLead;
+					// Old front-most drops to second place, so the log can show
+					// whether the lead is held by one creep or being traded around.
+					if ( front.hasFrontMost )
+					{
+						front.secondLead = front.frontMostLead;
+						front.hasSecond = true;
+					}
+					front.frontMostLead = lead;
+					front.frontMostOrigin = creep.origin;
+					front.frontMostEntity = creep.entity;
+					const Vector3 heroToFront( creep.origin.m_x - heroOrigin.m_x ,
+						creep.origin.m_y - heroOrigin.m_y , 0.f );
+					front.frontMostLateral = Dot2D( heroToFront , lateralAxis );
+					front.hasFrontMost = true;
+				}
+				else if ( !front.hasSecond || lead > front.secondLead )
+				{
+					front.secondLead = lead;
 					front.hasSecond = true;
 				}
-				front.frontMostLead = lead;
-				front.frontMostOrigin = creep.origin;
-				front.frontMostEntity = creep.entity;
-				const Vector3 heroToFront( creep.origin.m_x - heroOrigin.m_x ,
-					creep.origin.m_y - heroOrigin.m_y , 0.f );
-				front.frontMostLateral = Dot2D( heroToFront , lateralAxis );
-				front.hasFrontMost = true;
-			}
-			else if ( !front.hasSecond || lead > front.secondLead )
-			{
-				front.secondLead = lead;
-				front.hasSecond = true;
 			}
 
 			// Width of the wave, over the same set - every creep still in play,
@@ -1019,7 +1089,9 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	}
 
 	std::vector<WaveCreep> wave;
-	CollectWave( entitySystem , offsets , heroOrigin , heroTeam , wave );
+	Vector3 towerOrigin{};
+	bool hasTower = false;
+	CollectWave( entitySystem , offsets , heroOrigin , heroTeam , wave , &towerOrigin , &hasTower );
 	if ( wave.empty() )
 	{
 		m_Status = "No allied wave nearby";
@@ -1402,6 +1474,27 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 
 	blockPoint = BlockPointClearOfCreeps( wave , lateralAxis , blockPoint );
 
+	// Slide the point clear of the own tower too. Unlike a creep the tower does
+	// not move, so a single radial push is enough: if the point is inside the
+	// clearance, put it on the ring at kTowerClearance straight out from the
+	// tower centre. That keeps it off the hull (so the hero can reach it) and
+	// outside the click-target radius (so the order stays a move, not an order
+	// on the tower). Degenerate case - point sitting on the centre - is pushed
+	// along the lane's cross axis so it still lands beside the tower.
+	if ( hasTower )
+	{
+		const float towerDist = FeatureSupport::Distance2D( blockPoint , towerOrigin );
+		if ( towerDist < kTowerClearance )
+		{
+			Vector3 away( blockPoint.m_x - towerOrigin.m_x , blockPoint.m_y - towerOrigin.m_y , 0.f );
+			Vector3 dir{};
+			if ( !Normalized2D( away , dir ) )
+				dir = lateralAxis;
+			blockPoint = Vector3( towerOrigin.m_x + dir.m_x * kTowerClearance ,
+				towerOrigin.m_y + dir.m_y * kTowerClearance , blockPoint.m_z );
+		}
+	}
+
 	// Step toward the raw target in small increments rather than snapping to it.
 	// Applied on every order now, with no retarget exemption: there is no target
 	// identity left to change, so a large jump is noise in the wave estimate
@@ -1659,6 +1752,16 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		DEV_LOG( "  DIAG fwd=%.0f side=%.0f angle=%.0f block@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
 			blockPointAlongDir , lineShift , legAngle ,
 			blockPoint.m_x , blockPoint.m_y , heroToBlockDist , blockPointAlongDir , kMaxForwardCommit );
+
+		// TOWER. from_block must never read below the clearance - if it does the
+		// push above failed. from_hero shows the tower closing as the wave leaves
+		// it. "none" means no allied tower is within range, so nothing to avoid.
+		if ( hasTower )
+			DEV_LOG( "  TOWER from_hero=%.0f from_block=%.0f (clearance %.0f)\n" ,
+				FeatureSupport::Distance2D( towerOrigin , heroOrigin ) ,
+				FeatureSupport::Distance2D( towerOrigin , blockPoint ) , kTowerClearance );
+		else
+			DEV_LOG( "  TOWER none (within %.0f)\n" , kTowerSearchRadius );
 	}
 
 	return true;
