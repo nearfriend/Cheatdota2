@@ -174,6 +174,9 @@
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_GetProtoCDOTAGameAccountPlus.cpp">
       <Filter>Andromeda\Dota2\Hook</Filter>
     </ClCompile>
+    <ClCompile Include="Andromeda\Dota2\Hook\Hook_GCInventoryAccessor.cpp">
+      <Filter>Andromeda\Dota2\Hook</Filter>
+    </ClCompile>
     <ClCompile Include="Andromeda\Dota2\SDK\Interface\Interface.cpp">
       <Filter>Andromeda\Dota2\SDK\Interface</Filter>
     </ClCompile>
@@ -576,6 +579,9 @@
       <Filter>Andromeda\AndromedaClient\Settings</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_GetProtoCDOTAGameAccountPlus.hpp">
+      <Filter>Andromeda\Dota2\Hook</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\Dota2\Hook\Hook_GCInventoryAccessor.hpp">
       <Filter>Andromeda\Dota2\Hook</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\Dota2\SDK\Interface\CShemaSystemSDK.hpp">

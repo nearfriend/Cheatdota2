@@ -3,6 +3,8 @@
 #include <Common/Common.hpp>
 #include <AndromedaClient/Settings/Heroes/Invoker.hpp>
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -194,8 +196,82 @@ namespace Settings
 		// of that correction happens per order, so a creep wide of the hero
 		// does not send it sprinting across the lane in one go.
 		inline float SideStep = 45.f;
+		// REAL ORDERS (Phase 2b). Off by default and INERT unless a verified
+		// PrepareUnitOrders signature is compiled in (see CFunctionList) - with no
+		// signature FeatureSupport::RealOrdersAvailable() is false and the blocker
+		// stays on the simulated right-click path. When both are true the hero is
+		// moved with a genuine game order, which ignores the ~70u right-click grab
+		// and can be planted in the creep's path for a true body-block/domino.
+		// Leave OFF until the signature+ABI are confirmed on a throwaway lobby - a
+		// wrong order call can crash the game.
+		inline bool UseRealOrders = false;
 		// Circle-and-line marker on the point the hero is being sent to.
 		inline bool DrawBlockMarker = true;
+	}
+	namespace CosmeticChanger
+	{
+		struct Selection
+		{
+			std::string hero;
+			std::string slot;
+			uint32_t defIndex = 0;
+		};
+
+		inline bool Enable = true;
+		inline bool LogEquipped = true;
+		inline bool LogCatalog = true;
+		inline bool LogUiSelections = true;
+		// Actually apply the picked cosmetics to the local hero, instead of only
+		// logging them as a preview. INERT unless a verified SetModel signature is
+		// compiled in (see CFunctionList::SetModel): with no signature
+		// SDK_SetModelAvailable() is false and the apply path no-ops, because a bare
+		// defindex write provably does NOT swap the rendered mesh. Off by default -
+		// the swap calls a game function on live entities, so leave it off until the
+		// signature is confirmed on a throwaway lobby.
+		inline bool ApplyOverrides = false;
+		inline std::vector<Selection> Selections;
+
+		inline auto FindSelection( const std::string& hero , const std::string& slot ) -> Selection*
+		{
+			for ( auto& selection : Selections )
+			{
+				if ( selection.hero == hero && selection.slot == slot )
+					return &selection;
+			}
+			return nullptr;
+		}
+
+		inline auto SetSelection( const std::string& hero , const std::string& slot , uint32_t defIndex ) -> void
+		{
+			if ( hero.empty() || slot.empty() || defIndex == 0 )
+				return;
+
+			if ( auto* selection = FindSelection( hero , slot ) )
+			{
+				selection->defIndex = defIndex;
+				return;
+			}
+
+			Selections.push_back( Selection{ hero , slot , defIndex } );
+		}
+
+		inline auto ClearSelection( const std::string& hero , const std::string& slot ) -> void
+		{
+			Selections.erase( std::remove_if( Selections.begin() , Selections.end() ,
+				[&]( const Selection& selection )
+				{
+					return selection.hero == hero && selection.slot == slot;
+				} ) , Selections.end() );
+		}
+
+		inline auto ClearSelectionsForHero( const std::string& hero ) -> void
+		{
+			Selections.erase( std::remove_if( Selections.begin() , Selections.end() ,
+				[&]( const Selection& selection )
+				{
+					return selection.hero == hero;
+				} ) , Selections.end() );
+		}
 	}
 	namespace AutoCombo
 	{

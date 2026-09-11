@@ -15,10 +15,10 @@
 //   and where across the lane its creeps are
 // - Stands a settable standoff in front of that edge, on the line across the
 //   lane that covers the most of the front rank
-// - Moves to the next creep's line the moment it crashes into one, since a
-//   stalled creep no longer needs him and the rest of the wave still does
-// - Re-issues the order frequently so the hero keeps walking into the wave
-//   instead of stopping on contact
+// - Keeps pressure on contacted creeps instead of treating the first bump as
+//   finished, so the wave can bunch behind the plugged hull
+// - Re-issues the order frequently so the hero keeps walking with the wave and
+//   adjusting his line instead of stopping on contact
 //
 // Aiming at the wave rather than at a creep is what keeps the hero steady: the
 // leading creep changes every time one gets blocked, and an order that follows
@@ -123,12 +123,11 @@ private:
 	// other way should already be going out.
 	bool m_FreshCrash = false;
 
-	// Creeps the hero has already crashed into, and when. Leaning on one creep
-	// only stalls that creep - the rest of the wave walks past while he does it.
-	// So contact is the signal to move on: a creep in here is skipped when the
-	// next covering line is picked, until its entry ages out and it is worth
-	// blocking again. Pointers are only ever compared, never dereferenced, so a
-	// creep dying with an entry still in the table is harmless.
+	// Creeps the hero has already crashed into, and when. Contact is kept as a
+	// timing/debug signal, but it no longer removes that creep from line choice:
+	// the desired behavior is continuous pressure on the plugged hull so the
+	// wave stacks behind it. Pointers are only ever compared, never dereferenced,
+	// so a creep dying with an entry still in the table is harmless.
 	static constexpr int kBumpMemory = 8;
 	struct BumpedCreep
 	{

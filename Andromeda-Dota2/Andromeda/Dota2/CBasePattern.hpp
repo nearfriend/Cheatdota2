@@ -32,6 +32,12 @@ public:
 	virtual const char* GetPatternName() override;
 	virtual const char* GetDllName() override;
 
+	// True only when a non-empty byte signature is configured. An EMPTY pattern
+	// must never be Search()ed: GetIDAPatternSize("") is 0, so FindPattern would
+	// return the very first code address (non-null garbage) instead of failing.
+	// Callers gate optional/placeholder patterns on this before searching.
+	bool HasPattern() const;
+
 private:
 	// !!! std::string_view crash on vmprotect !!!
 	const char* PatternName = nullptr;

@@ -191,6 +191,7 @@
     <ClCompile Include="Andromeda\Dota2\CHook_Loader.cpp" />
     <ClCompile Include="Andromeda\Dota2\CSDK_Loader.cpp" />
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_CreateSwapChain.cpp" />
+    <ClCompile Include="Andromeda\Dota2\Hook\Hook_GCInventoryAccessor.cpp" />
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_GetProtoCDOTAGameAccountPlus.cpp" />
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_OnAddEntity.cpp" />
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_OnCreateMove.cpp" />
@@ -331,6 +332,7 @@
     <ClInclude Include="Andromeda\Dota2\CHook_Loader.hpp" />
     <ClInclude Include="Andromeda\Dota2\CSDK_Loader.hpp" />
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_CreateSwapChain.hpp" />
+    <ClInclude Include="Andromeda\Dota2\Hook\Hook_GCInventoryAccessor.hpp" />
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_GetProtoCDOTAGameAccountPlus.hpp" />
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_OnAddEntity.hpp" />
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_OnCreateMove.hpp" />

@@ -3,6 +3,9 @@
 #include <AndromedaClient/CAndromedaGUI.hpp>
 #include <Dota2/SDK/CSchemaOffset.hpp>
 #include <Dota2/SDK/Interface/CGameEntitySystem.hpp>
+#include <Dota2/SDK/Interface/CLocalHeroResolver.hpp>
+#include <Dota2/SDK/CFunctionList.hpp>
+#include <Dota2/SDK/SDK.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -533,6 +536,61 @@ auto FeatureSupport::SendRightClick() -> bool
 	inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
 	inputs[1].mi.dwExtraInfo = ANDROMEDA_INJECTED_INPUT_TAG;
 	return SendInput( static_cast<UINT>( std::size( inputs ) ) , inputs , sizeof( INPUT ) ) == std::size( inputs );
+}
+
+auto FeatureSupport::RealOrdersAvailable() -> bool
+{
+	return GetFunctionList()->PrepareUnitOrders.GetFunction() != nullptr;
+}
+
+auto FeatureSupport::SendMoveOrder( const Vector3& worldPos ) -> bool
+{
+	// GATE 1: the order function must be resolved. It is an empty placeholder by
+	// default (CFunctionList), so this returns false and does nothing until a
+	// VERIFIED signature for the running build is filled in. Never call a null.
+	PVOID fn = GetFunctionList()->PrepareUnitOrders.GetFunction();
+	if ( !fn )
+		return false;
+
+	// The local player controller is the object the order is issued through.
+	auto* controller = CGameEntitySystem::GetLocalPlayerController();
+	if ( !controller )
+		return false;
+
+	// The hero is the unit being commanded (issuer = PASSED_UNIT_ONLY below), so
+	// the order lands on our hero regardless of what is selected in-game.
+	auto* entitySystem = SDK::Interfaces::GameEntitySystem();
+	C_BaseEntity* hero = nullptr;
+	int heroIndex = -1;
+	if ( !CLocalHeroResolver::Resolve( entitySystem , hero , heroIndex ) || !hero )
+		return false;
+
+	// Canonical Dota 2 order enums. dotaunitorder_t::MOVE_TO_POSITION == 1;
+	// DOTA_ORDER_ISSUER_PASSED_UNIT_ONLY commands exactly the unit we pass.
+	// UNVERIFIED for this build - confirm before enabling the feature.
+	constexpr int kOrderMoveToPosition = 1;
+	constexpr int kIssuerPassedUnitOnly = 2;
+
+	// Position is passed by pointer as a 3-float Vector. Vector3's first three
+	// floats match that layout; copy into a bare float[3] so nothing past z is
+	// ever read by the callee.
+	float position[3] = { worldPos.m_x , worldPos.m_y , worldPos.m_z };
+
+	// Canonical public PrepareUnitOrders prototype (position by pointer):
+	//   void __fastcall PrepareUnitOrders(
+	//       void* pController, int nOrderType, int nTargetIndex, Vector* pPosition,
+	//       int nAbilityIndex, int nOrderIssuer, void* pUnit, bool bQueue,
+	//       bool bShowEffects );
+	// The ABI is build-specific and UNVERIFIED; the feature toggle stays off by
+	// default so this is never reached until a real signature is in place AND the
+	// prototype is confirmed on a throwaway lobby.
+	using PrepareUnitOrdersFn = void( __fastcall* )(
+		void* , int , int , void* , int , int , void* , bool , bool );
+
+	reinterpret_cast<PrepareUnitOrdersFn>( fn )(
+		controller , kOrderMoveToPosition , 0 , position , 0 ,
+		kIssuerPassedUnitOnly , hero , false , false );
+	return true;
 }
 
 auto FeatureSupport::MoveCursorToScreen( int screenX , int screenY ) -> bool
