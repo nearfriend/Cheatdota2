@@ -228,11 +228,7 @@ namespace
 
 			CCosmeticChanger::CatalogItem item;
 			item.hero = fields[0];
-			// The generated TSV leaves the slot column EMPTY for every row (the
-			// items_game export does not carry it), so the raw value is kept only to
-			// detect that and the real slot is derived below.
 			const std::string rawSlot = fields[1];
-			item.slot = rawSlot.empty() ? "unknown" : rawSlot;
 			item.defIndex = static_cast<uint32_t>( std::strtoul( fields[2].c_str() , nullptr , 10 ) );
 			item.name = fields[4].empty() ? fields[3] : fields[4];
 			item.rarity = fields[5];
@@ -240,14 +236,28 @@ namespace
 			item.image = fields.size() > 7 ? fields[7] : std::string();
 			if ( item.image.empty() )
 				item.image = CosmeticImageFromModel( item.model );
-			item.category = CosmeticCategory( item.slot , item.name , item.model );
-			// With no slot in the export, the derived category IS the slot: selections
-			// are keyed by (hero, slot), so leaving every row as "unknown" collapses
-			// the whole loadout into a single override - picking a head replaces the
-			// weapon you picked a moment ago. Using the category gives one real key
-			// per body part (weapon/head/arms/belt/shoulder/...).
-			if ( rawSlot.empty() )
+
+			// items_game's own item_slot is authoritative, so when the export carries
+			// it we use it verbatim for both the slot key and the category. The
+			// keyword heuristic below is only a fallback for the handful of rows with
+			// no slot at all: it matches on name+model too, so an item's NAME can
+			// hijack its classification (a belt called "...Blade..." scores as a
+			// weapon because "blade" is tested before "belt").
+			//
+			// Selections are keyed by (hero, slot), so the slot must be a real body
+			// part - leaving every row "unknown" collapses the whole loadout into one
+			// override, where picking a head silently replaces the weapon picked a
+			// moment earlier.
+			if ( !rawSlot.empty() )
+			{
+				item.slot = LowerText( rawSlot );
+				item.category = item.slot;
+			}
+			else
+			{
+				item.category = CosmeticCategory( std::string() , item.name , item.model );
 				item.slot = item.category;
+			}
 			catalog.push_back( item );
 		}
 
