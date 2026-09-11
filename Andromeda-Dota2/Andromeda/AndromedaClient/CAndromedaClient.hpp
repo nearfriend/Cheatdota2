@@ -12,6 +12,7 @@
 #include <AndromedaClient/Features/CAutoCombo.hpp>
 #include <AndromedaClient/Features/CDodger.hpp>
 #include <AndromedaClient/Features/CCreepBlocker.hpp>
+#include <AndromedaClient/Features/CCosmeticChanger.hpp>
 
 #include <array>
 #include <atomic>
@@ -138,6 +139,7 @@ private:
 	CAutoCombo m_AutoCombo;
 	CDodger m_Dodger;
 	CCreepBlocker m_CreepBlocker;
+	CCosmeticChanger m_CosmeticChanger;
 };
 
 auto GetAndromedaClient() -> CAndromedaClient*;

@@ -30,9 +30,87 @@
 
 static CAndromedaMenu g_CAndromedaMenu{};
 
-static constexpr ImU32 kAccentColor = IM_COL32( 218 , 51 , 62 , 255 );
+// ---- Astral Codex palette --------------------------------------------------
+// A cosmic-void + gold-filigree fantasy skin. The brand ember red is kept as the
+// "gem" colour (lit toggles, selected spell tiles); gold frames and titles the
+// UI; arcane->astral is the magic gradient used for sliders.
+static constexpr ImU32 kAccentColor = IM_COL32( 218 , 51 , 62 , 255 );      // ember gem (brand)
 static constexpr ImU32 kAccentTextColor = IM_COL32( 235 , 77 , 87 , 255 );
-static constexpr ImU32 kAccentTrackColor = IM_COL32( 93 , 31 , 38 , 255 );
+static constexpr ImU32 kAccentTrackColor = IM_COL32( 93 , 31 , 38 , 255 );  // dark ember track
+static constexpr ImU32 kGold = IM_COL32( 217 , 178 , 94 , 255 );
+static constexpr ImU32 kGoldHi = IM_COL32( 242 , 212 , 136 , 255 );
+static constexpr ImU32 kGoldDeep = IM_COL32( 110 , 83 , 39 , 255 );
+static constexpr ImU32 kArcane = IM_COL32( 124 , 108 , 255 , 255 );
+static constexpr ImU32 kAstral = IM_COL32( 79 , 214 , 224 , 255 );
+static constexpr ImU32 kVoidWindow = IM_COL32( 12 , 9 , 24 , 252 );
+static constexpr ImU32 kVoidRail = IM_COL32( 15 , 11 , 30 , 250 );
+static constexpr ImU32 kVoidNav = IM_COL32( 17 , 13 , 34 , 248 );
+static constexpr ImU32 kVoidContent = IM_COL32( 11 , 8 , 22 , 245 );
+static constexpr ImU32 kCardBg = IM_COL32( 25 , 19 , 48 , 250 );
+static constexpr ImU32 kCardBorder = IM_COL32( 74 , 58 , 110 , 255 );
+static constexpr ImU32 kRowLine = IM_COL32( 34 , 26 , 60 , 255 );
+
+// Deterministic starfield: scatters faint stars across a rect so the void reads
+// as cosmic without any texture. Seeded per-region so it stays put between frames.
+static void DrawStarfield( ImDrawList* dl , const ImVec2& mn , const ImVec2& mx , unsigned seed , int count )
+{
+	const float w = mx.x - mn.x;
+	const float h = mx.y - mn.y;
+	if ( w <= 1.f || h <= 1.f )
+		return;
+
+	unsigned s = seed ? seed : 1u;
+	auto rnd = [&]() -> float
+	{
+		s = s * 1664525u + 1013904223u;
+		return static_cast<float>( ( s >> 8 ) & 0xFFFFu ) / 65535.f;
+	};
+
+	for ( int i = 0; i < count; ++i )
+	{
+		const float x = mn.x + rnd() * w;
+		const float y = mn.y + rnd() * h;
+		const float r = 0.5f + rnd() * 1.15f;
+		const int a = 18 + static_cast<int>( rnd() * 74.f );
+		const float tint = rnd();
+		const ImU32 col = tint < 0.18f ? IM_COL32( 255 , 220 , 180 , a )
+			: tint > 0.86f ? IM_COL32( 150 , 210 , 235 , a )
+			: IM_COL32( 205 , 195 , 240 , a );
+		dl->AddCircleFilled( ImVec2( x , y ) , r , col );
+	}
+}
+
+// A four-point gold diamond, used as the slider grab and the toggle knob so the
+// controls read as set gemstones rather than plain handles.
+static void DrawGem( ImDrawList* dl , const ImVec2& c , float half , ImU32 col , ImU32 glow = 0 )
+{
+	if ( glow )
+		dl->AddCircleFilled( c , half + 3.f , glow );
+	dl->AddQuadFilled( ImVec2( c.x , c.y - half ) , ImVec2( c.x + half , c.y ) ,
+		ImVec2( c.x , c.y + half ) , ImVec2( c.x - half , c.y ) , col );
+}
+
+// L-shaped gold flourishes tucked into each corner of the window frame.
+static void DrawCornerFiligree( ImDrawList* dl , const ImVec2& mn , const ImVec2& mx )
+{
+	const float o = 4.f;    // inset from the border
+	const float len = 16.f; // arm length
+	const float th = 1.6f;
+	struct Corner { ImVec2 p; float sx; float sy; };
+	const Corner corners[4] =
+	{
+		{ ImVec2( mn.x + o , mn.y + o ) ,  1.f ,  1.f },
+		{ ImVec2( mx.x - o , mn.y + o ) , -1.f ,  1.f },
+		{ ImVec2( mn.x + o , mx.y - o ) ,  1.f , -1.f },
+		{ ImVec2( mx.x - o , mx.y - o ) , -1.f , -1.f },
+	};
+	for ( const auto& c : corners )
+	{
+		dl->AddLine( c.p , ImVec2( c.p.x + len * c.sx , c.p.y ) , kGold , th );
+		dl->AddLine( c.p , ImVec2( c.p.x , c.p.y + len * c.sy ) , kGold , th );
+		dl->AddCircleFilled( c.p , 2.2f , kGoldHi );
+	}
+}
 
 struct GuiTexture
 {
@@ -529,9 +607,9 @@ static void DrawSpellOrderStrip( const char* dragType , int count , int* order ,
 	if ( count <= 0 || !order || !enabled || entries.empty() )
 		return;
 
-	constexpr float kIconSize = 46.f;
-	constexpr float kIconGap = 7.f;
-	constexpr float kIconRounding = 6.f;
+	constexpr float kIconSize = 48.f;
+	constexpr float kIconGap = 8.f;
+	constexpr float kIconRounding = 8.f;
 
 	ImGui::Spacing();
 	const ImVec2 stripOrigin = ImGui::GetCursorScreenPos();
@@ -710,14 +788,13 @@ static void DrawSpellOrderStrip( const char* dragType , int count , int* order ,
 
 static void DrawBrandMark( ImDrawList* drawList , const ImVec2& center )
 {
-	const ImU32 purple = kAccentColor;
-	const ImU32 white = IM_COL32( 236 , 238 , 242 , 255 );
-
-	drawList->AddTriangleFilled( ImVec2( center.x , center.y - 17.f ) , ImVec2( center.x - 14.f , center.y - 8.f ) , ImVec2( center.x - 5.f , center.y ) , purple );
-	drawList->AddTriangleFilled( ImVec2( center.x + 17.f , center.y ) , ImVec2( center.x + 8.f , center.y - 14.f ) , ImVec2( center.x , center.y - 5.f ) , purple );
-	drawList->AddTriangleFilled( ImVec2( center.x , center.y + 17.f ) , ImVec2( center.x + 14.f , center.y + 8.f ) , ImVec2( center.x + 5.f , center.y ) , purple );
-	drawList->AddTriangleFilled( ImVec2( center.x - 17.f , center.y ) , ImVec2( center.x - 8.f , center.y + 14.f ) , ImVec2( center.x , center.y + 5.f ) , purple );
-	drawList->AddRectFilled( ImVec2( center.x - 4.f , center.y - 4.f ) , ImVec2( center.x + 4.f , center.y + 4.f ) , white , 1.f );
+	// An arcane orb: a dark astral disc rimmed in gold, with an ember gem set at
+	// its heart and a soft outer glow - the crest of the Astral Codex.
+	drawList->AddCircleFilled( center , 17.f , IM_COL32( 124 , 108 , 255 , 40 ) );   // arcane glow
+	drawList->AddCircleFilled( center , 13.f , IM_COL32( 40 , 30 , 74 , 255 ) );     // void disc
+	drawList->AddCircle( center , 13.f , kGold , 28 , 1.8f );                        // gold rim
+	DrawGem( drawList , center , 6.5f , kAccentColor , IM_COL32( 218 , 51 , 62 , 90 ) );
+	DrawGem( drawList , center , 2.6f , kGoldHi );
 }
 
 enum class ReferenceIcon
@@ -920,11 +997,14 @@ static bool DrawRailButton( const char* id , ReferenceIcon icon , bool selected 
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 
 	if ( selected || hovered )
-		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 29 , 34 , 38 , 255 ) : IM_COL32( 25 , 28 , 32 , 220 ) , 5.f );
+		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 36 , 27 , 68 , 255 ) : IM_COL32( 28 , 21 , 52 , 220 ) , 8.f );
 	if ( selected )
-		drawList->AddRectFilled( ImVec2( pos.x - 6.f , pos.y + 9.f ) , ImVec2( pos.x - 3.f , pos.y + 27.f ) , kAccentColor , 2.f );
+	{
+		drawList->AddRect( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , IM_COL32( 217 , 178 , 94 , 90 ) , 8.f , 0 , 1.f );
+		drawList->AddRectFilled( ImVec2( pos.x - 6.f , pos.y + 9.f ) , ImVec2( pos.x - 3.f , pos.y + 27.f ) , kGold , 2.f );
+	}
 
-	DrawReferenceIcon( drawList , ImVec2( pos.x + size.x * 0.5f , pos.y + size.y * 0.5f ) , icon , selected ? kAccentColor : IM_COL32( 181 , 183 , 197 , 255 ) );
+	DrawReferenceIcon( drawList , ImVec2( pos.x + size.x * 0.5f , pos.y + size.y * 0.5f ) , icon , selected ? kGoldHi : IM_COL32( 150 , 140 , 190 , 255 ) );
 	return ImGui::IsItemClicked();
 }
 
@@ -946,12 +1026,15 @@ static bool DrawNavigationItem( const char* label , ReferenceIcon icon , bool se
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 
 	if ( selected || hovered )
-		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 25 , 31 , 34 , 255 ) : IM_COL32( 22 , 25 , 28 , 220 ) , 5.f );
+		drawList->AddRectFilled( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , selected ? IM_COL32( 34 , 26 , 62 , 255 ) : IM_COL32( 26 , 20 , 48 , 220 ) , 8.f );
 	if ( selected )
-		drawList->AddRectFilled( ImVec2( pos.x - 7.f , pos.y + 6.f ) , ImVec2( pos.x - 4.f , pos.y + 26.f ) , kAccentColor , 2.f );
+	{
+		drawList->AddRect( pos , ImVec2( pos.x + size.x , pos.y + size.y ) , IM_COL32( 217 , 178 , 94 , 80 ) , 8.f , 0 , 1.f );
+		drawList->AddRectFilled( ImVec2( pos.x - 7.f , pos.y + 6.f ) , ImVec2( pos.x - 4.f , pos.y + 26.f ) , kGold , 2.f );
+	}
 
-	const ImU32 iconColor = selected ? kAccentColor : IM_COL32( 154 , 156 , 170 , 255 );
-	const ImU32 textColor = selected ? kAccentTextColor : IM_COL32( 166 , 168 , 181 , 255 );
+	const ImU32 iconColor = selected ? kGoldHi : IM_COL32( 150 , 140 , 190 , 255 );
+	const ImU32 textColor = selected ? kGoldHi : IM_COL32( 168 , 158 , 198 , 255 );
 	DrawReferenceIcon( drawList , ImVec2( pos.x + 16.f , pos.y + 16.f ) , icon , iconColor , 0.78f );
 
 	// Keep every label inside the navigation column. Long labels scroll from side
@@ -1138,7 +1221,7 @@ static bool DrawCastableTile( const std::string& name , float size , bool select
 
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	const ImVec2 pMax( pos.x + size , pos.y + size );
-	const float rounding = 5.f;
+	const float rounding = 7.f;
 	const int alpha = dimmed ? 130 : 255;
 
 	// The client's cache first: it downloads whatever is missing from the Dota
@@ -1427,10 +1510,13 @@ static bool DrawSwitchRow( const char* label , const char* id , bool& value , Re
 	if ( clicked )
 		value = !value;
 
-	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? kAccentTrackColor : IM_COL32( 48 , 50 , 56 , 255 ) , 9.f );
+	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? kAccentTrackColor : IM_COL32( 36 , 30 , 56 , 255 ) , 9.f );
+	drawList->AddRect( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? IM_COL32( 218 , 51 , 62 , 160 ) : IM_COL32( 60 , 52 , 88 , 255 ) , 9.f );
 	const float knobX = value ? switchPos.x + 21.f : switchPos.x + 9.f;
-	drawList->AddCircleFilled( ImVec2( knobX , switchPos.y + 9.f ) , 7.5f , value ? kAccentColor : IM_COL32( 150 , 152 , 160 , 255 ) );
-	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	DrawGem( drawList , ImVec2( knobX , switchPos.y + 9.f ) , 7.f ,
+		value ? kGoldHi : IM_COL32( 130 , 124 , 158 , 255 ) ,
+		value ? IM_COL32( 242 , 212 , 136 , 70 ) : 0 );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , kRowLine );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
 	return clicked;
 }
@@ -1465,10 +1551,13 @@ static bool DrawSettingsSwitchRow( const char* label , const char* id , bool& va
 	if ( clicked )
 		value = !value;
 
-	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? kAccentTrackColor : IM_COL32( 38 , 40 , 45 , 255 ) , 9.f );
+	drawList->AddRectFilled( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? kAccentTrackColor : IM_COL32( 34 , 28 , 52 , 255 ) , 9.f );
+	drawList->AddRect( switchPos , ImVec2( switchPos.x + 30.f , switchPos.y + 18.f ) , value ? IM_COL32( 218 , 51 , 62 , 160 ) : IM_COL32( 58 , 50 , 84 , 255 ) , 9.f );
 	const float knobX = value ? switchPos.x + 21.f : switchPos.x + 9.f;
-	drawList->AddCircleFilled( ImVec2( knobX , switchPos.y + 9.f ) , 7.5f , value ? kAccentColor : IM_COL32( 142 , 144 , 151 , 255 ) );
-	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	DrawGem( drawList , ImVec2( knobX , switchPos.y + 9.f ) , 7.f ,
+		value ? kGoldHi : IM_COL32( 128 , 122 , 154 , 255 ) ,
+		value ? IM_COL32( 242 , 212 , 136 , 70 ) : 0 );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , kRowLine );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
 	return clicked;
 }
@@ -1489,7 +1578,7 @@ static void DrawSettingsComboRow( const char* label , const char* id , int& valu
 	ImGui::SetCursorScreenPos( ImVec2( comboX , rowPos.y + 4.f ) );
 	ImGui::SetNextItemWidth( comboWidth );
 	ImGui::Combo( id , &value , items , itemCount );
-	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , kRowLine );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
 }
 
@@ -1528,7 +1617,7 @@ static void DrawTopOverlayElementsRow()
 		}
 		ImGui::EndCombo();
 	}
-	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+	drawList->AddLine( ImVec2( rowPos.x , rowPos.y + rowHeight - 1.f ) , ImVec2( rowPos.x + rowWidth , rowPos.y + rowHeight - 1.f ) , kRowLine );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + rowHeight ) );
 }
 
@@ -1566,11 +1655,16 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 
 	const float fraction = std::clamp( ( value - minValue ) / ( maxValue - minValue ) , 0.f , 1.f );
 	const float grabX = trackStartX + trackWidth * fraction;
-	drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( trackEndX , trackY + 2.5f ) , IM_COL32( 35 , 37 , 43 , 255 ) , 2.5f );
+	drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( trackEndX , trackY + 2.5f ) , IM_COL32( 30 , 24 , 48 , 255 ) , 2.5f );
+	// Arcane -> astral ley-line for the filled portion.
 	if ( grabX > trackStartX )
-		drawList->AddRectFilled( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( grabX , trackY + 2.5f ) , kAccentColor , 2.5f );
-	drawList->AddCircleFilled( ImVec2( grabX , trackY ) , handleRadius + 1.f , IM_COL32( 15 , 16 , 18 , 230 ) );
-	drawList->AddCircleFilled( ImVec2( grabX , trackY ) , hovered || ImGui::IsItemActive() ? handleRadius : handleRadius - 0.5f , IM_COL32( 238 , 239 , 242 , 255 ) );
+		drawList->AddRectFilledMultiColor( ImVec2( trackStartX , trackY - 2.5f ) , ImVec2( grabX , trackY + 2.5f ) ,
+			kArcane , kAstral , kAstral , kArcane );
+	// Gold gem grab, glowing when engaged.
+	const bool live = hovered || ImGui::IsItemActive();
+	DrawGem( drawList , ImVec2( grabX , trackY ) , handleRadius + 1.5f , IM_COL32( 15 , 12 , 26 , 235 ) );
+	DrawGem( drawList , ImVec2( grabX , trackY ) , live ? handleRadius : handleRadius - 0.5f , kGoldHi ,
+		live ? IM_COL32( 242 , 212 , 136 , 80 ) : 0 );
 	ImGui::SetCursorScreenPos( ImVec2( rowPos.x , rowPos.y + 48.f ) );
 	return changed;
 }
@@ -1581,10 +1675,12 @@ static bool DrawSliderRow( const char* label , const char* id , float& value , f
 static void DrawCardTitle( const char* text )
 {
 	const ImVec2 hp = ImGui::GetCursorScreenPos();
-	ImGui::GetWindowDrawList()->AddRectFilled( ImVec2( hp.x , hp.y + 1.f ) ,
-		ImVec2( hp.x + 3.f , hp.y + 13.f ) , kAccentColor , 1.5f );
-	ImGui::SetCursorPosX( ImGui::GetCursorPosX() + 9.f );
-	ImGui::TextColored( ImVec4( 0.62f , 0.63f , 0.67f , 1.f ) , "%s" , text );
+	ImGui::GetWindowDrawList()->AddRectFilled( ImVec2( hp.x , hp.y + 2.f ) ,
+		ImVec2( hp.x + 3.f , hp.y + 15.f ) , kGold , 1.5f );
+	ImGui::SetCursorPosX( ImGui::GetCursorPosX() + 10.f );
+	ImGui::PushFont( GetAndromedaGUI()->GetHeaderFont() );
+	ImGui::TextColored( ImVec4( 0.89f , 0.74f , 0.41f , 1.f ) , "%s" , text );
+	ImGui::PopFont();
 }
 
 auto CAndromedaMenu::OnRenderMenu() -> void
@@ -1596,7 +1692,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 	ImGui::SetNextWindowSize( ImVec2( 840.f , 560.f ) , ImGuiCond_Always );
 	ImGui::PushStyleVar( ImGuiStyleVar_Alpha , menuAlpha );
 	ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 0.f , 0.f ) );
-	ImGui::PushStyleColor( ImGuiCol_WindowBg , IM_COL32( 8 , 9 , 10 , 250 ) );
+	ImGui::PushStyleColor( ImGuiCol_WindowBg , kVoidWindow );
 	const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
 	if ( ImGui::Begin( "##AndromedaReferenceMenu" , nullptr , flags ) )
@@ -1604,22 +1700,50 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		static int selectedCategory = 0;
 		static int selectedItems[IM_ARRAYSIZE( g_NavigationCategories )] = { 0 };
 
-		// Signature accent bar across the top edge of the window, plus a thin
-		// outline so the frameless window reads as a defined panel against the
-		// game behind it. Drawn on the foreground list to sit above the child
-		// panels that otherwise cover the window's own border.
+		// Ornate gold frame of the Astral Codex: a gold hairline all around, a
+		// brighter gold bar across the top edge, corner filigree, and a small
+		// hanging crest with the wordmark. Drawn on the foreground list to sit
+		// above the child panels that otherwise cover the window's own border.
 		{
 			ImDrawList* fg = ImGui::GetForegroundDrawList();
 			const ImVec2 wp = ImGui::GetWindowPos();
 			const ImVec2 ws = ImGui::GetWindowSize();
 			const ImVec2 wMax( wp.x + ws.x , wp.y + ws.y );
-			fg->AddRectFilled( wp , ImVec2( wMax.x , wp.y + 2.5f ) , kAccentColor );
-			fg->AddRect( wp , wMax , IM_COL32( 40 , 42 , 48 , 255 ) , 0.f , 0 , 1.f );
+
+			fg->AddRectFilled( wp , ImVec2( wMax.x , wp.y + 2.5f ) , kGold );
+			fg->AddRectFilled( wp , ImVec2( wMax.x , wp.y + 2.5f ) , IM_COL32( 242 , 212 , 136 , 90 ) );
+			fg->AddRect( wp , wMax , kGoldDeep , 0.f , 0 , 1.5f );
+			fg->AddRect( ImVec2( wp.x + 1.f , wp.y + 1.f ) , ImVec2( wMax.x - 1.f , wMax.y - 1.f ) , IM_COL32( 217 , 178 , 94 , 60 ) , 0.f , 0 , 1.f );
+			DrawCornerFiligree( fg , wp , wMax );
+
+			// Hanging crest: a rounded gold-rimmed plate over the top edge, centred
+			// between the breadcrumb (left) and the header controls (right). Set in
+			// the display face with a touch of letter-spacing so the wordmark reads
+			// like an engraved title rather than body text.
+			const float cx = wp.x + ws.x * 0.5f;
+			const char* mark = "ANDROMEDA";
+			ImFont* crestFont = GetAndromedaGUI()->GetTitleFont();
+			const float crestSize = 20.f;
+			const ImVec2 markSize = crestFont->CalcTextSizeA( crestSize , FLT_MAX , 0.f , mark );
+			const float halfW = markSize.x * 0.5f + 30.f;
+			const ImVec2 c0( cx - halfW , wp.y );
+			const ImVec2 c1( cx + halfW , wp.y + 27.f );
+			fg->AddRectFilled( c0 , c1 , IM_COL32( 22 , 16 , 40 , 255 ) , 11.f , ImDrawFlags_RoundCornersBottom );
+			fg->AddRect( c0 , c1 , kGoldDeep , 11.f , ImDrawFlags_RoundCornersBottom , 1.5f );
+			fg->AddRect( ImVec2( c0.x + 1.5f , c0.y ) , ImVec2( c1.x - 1.5f , c1.y - 1.5f ) , IM_COL32( 217 , 178 , 94 , 55 ) , 10.f , ImDrawFlags_RoundCornersBottom , 1.f );
+			DrawGem( fg , ImVec2( cx - halfW + 15.f , wp.y + 13.f ) , 3.4f , kAccentColor , IM_COL32( 218 , 51 , 62 , 80 ) );
+			DrawGem( fg , ImVec2( cx + halfW - 15.f , wp.y + 13.f ) , 3.4f , kAccentColor , IM_COL32( 218 , 51 , 62 , 80 ) );
+			fg->AddText( crestFont , crestSize , ImVec2( cx - markSize.x * 0.5f , wp.y + 4.f ) , kGoldHi , mark );
 		}
 
-		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 13 , 14 , 16 , 247 ) );
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , kVoidRail );
 		ImGui::BeginChild( "##iconRail" , ImVec2( 50.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
-		DrawBrandMark( ImGui::GetWindowDrawList() , ImVec2( ImGui::GetWindowPos().x + 25.f , ImGui::GetWindowPos().y + 25.f ) );
+		{
+			const ImVec2 rp = ImGui::GetWindowPos();
+			const ImVec2 rs = ImGui::GetWindowSize();
+			DrawStarfield( ImGui::GetWindowDrawList() , rp , ImVec2( rp.x + rs.x , rp.y + rs.y ) , 0x51A17u , 34 );
+		}
+		DrawBrandMark( ImGui::GetWindowDrawList() , ImVec2( ImGui::GetWindowPos().x + 25.f , ImGui::GetWindowPos().y + 26.f ) );
 		ImGui::SetCursorPosY( 58.f );
 		for ( int i = 0; i < IM_ARRAYSIZE( g_NavigationCategories ); ++i )
 		{
@@ -1640,12 +1764,12 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		const ReferenceNavigationItem& page = category.items[selectedItem];
 
 		ImGui::SameLine( 0.f , 0.f );
-		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 15 , 16 , 18 , 244 ) );
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , kVoidNav );
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 12.f ) );
 		ImGui::BeginChild( "##navigation" , ImVec2( 164.f , 0.f ) , true , ImGuiWindowFlags_NoScrollbar );
 		ImGui::SetCursorPosY( 21.f );
 		ImGui::SetCursorPosX( 16.f );
-		ImGui::TextColored( ImVec4( 0.66f , 0.67f , 0.72f , 1.f ) , "%s" , category.title );
+		ImGui::TextColored( ImVec4( 0.85f , 0.70f , 0.37f , 1.f ) , "%s" , category.title );
 		ImGui::SetCursorPosY( 63.f );
 		for ( int i = 0; i < category.itemCount; ++i )
 		{
@@ -1667,31 +1791,46 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PopStyleColor();
 
 		ImGui::SameLine( 0.f , 0.f );
-		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 9 , 10 , 11 , 242 ) );
-		const float mainContentMargin = 20.f;
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , kVoidContent );
+		const float mainContentMargin = 22.f;
 		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 0.f , 0.f ) );
 		ImGui::BeginChild( "##mainContent" , ImVec2( 0.f , 0.f ) , false , ImGuiWindowFlags_NoScrollbar );
+		{
+			// Cosmic backdrop for the content pane: a faint nebula glow in the top
+			// corner plus a scatter of stars, showing through the margins around
+			// the cards.
+			ImDrawList* bg = ImGui::GetWindowDrawList();
+			const ImVec2 cp = ImGui::GetWindowPos();
+			const ImVec2 cs = ImGui::GetWindowSize();
+			const ImVec2 cMax( cp.x + cs.x , cp.y + cs.y );
+			bg->AddRectFilledMultiColor( cp , ImVec2( cMax.x , cp.y + cs.y * 0.55f ) ,
+				IM_COL32( 60 , 40 , 96 , 60 ) , IM_COL32( 40 , 30 , 80 , 20 ) ,
+				IM_COL32( 20 , 15 , 40 , 0 ) , IM_COL32( 40 , 25 , 70 , 30 ) );
+			DrawStarfield( bg , cp , cMax , 0xC0FFEEu , 120 );
+		}
 		ImGui::SetCursorPos( ImVec2( mainContentMargin , 20.f ) );
 		// The current page's glyph leads the breadcrumb so the header echoes the
 		// icon shown for it in the navigation column.
 		{
 			const ImVec2 crumbPos = ImGui::GetCursorScreenPos();
 			DrawReferenceIcon( ImGui::GetWindowDrawList() ,
-				ImVec2( crumbPos.x + 7.f , crumbPos.y + 8.f ) , page.icon , kAccentColor , 0.62f );
+				ImVec2( crumbPos.x + 7.f , crumbPos.y + 8.f ) , page.icon , kGold , 0.62f );
 		}
 		ImGui::SetCursorPosX( mainContentMargin + 21.f );
-		ImGui::TextDisabled( "Main  /" );
+		ImGui::TextDisabled( "Codex  /" );
 		ImGui::SameLine();
-		ImGui::TextColored( ImVec4( 0.92f , 0.30f , 0.34f , 1.f ) , "%s" , page.label );
+		ImGui::TextColored( ImVec4( 0.95f , 0.83f , 0.53f , 1.f ) , "%s" , page.label );
 
 		// Thin rule under the header, separating it from the settings cards.
 		{
 			ImDrawList* headerDl = ImGui::GetWindowDrawList();
 			const ImVec2 winPos = ImGui::GetWindowPos();
 			const float ruleY = winPos.y + 55.f;
-			headerDl->AddLine( ImVec2( winPos.x + mainContentMargin , ruleY ) ,
-				ImVec2( winPos.x + ImGui::GetWindowWidth() - mainContentMargin , ruleY ) ,
-				IM_COL32( 30 , 32 , 36 , 255 ) );
+			headerDl->AddRectFilledMultiColor(
+				ImVec2( winPos.x + mainContentMargin , ruleY ) ,
+				ImVec2( winPos.x + ImGui::GetWindowWidth() - mainContentMargin , ruleY + 1.f ) ,
+				IM_COL32( 217 , 178 , 94 , 0 ) , IM_COL32( 217 , 178 , 94 , 150 ) ,
+				IM_COL32( 217 , 178 , 94 , 150 ) , IM_COL32( 217 , 178 , 94 , 0 ) );
 		}
 
 		static char search[64] = {};
@@ -1708,10 +1847,10 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		ImGui::PopStyleVar();
 
 		ImGui::SetCursorPos( ImVec2( mainContentMargin , 67.f ) );
-		ImGui::PushStyleColor( ImGuiCol_ChildBg , IM_COL32( 16 , 17 , 19 , 250 ) );
-		ImGui::PushStyleColor( ImGuiCol_Border , IM_COL32( 31 , 32 , 35 , 255 ) );
-		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 12.f , 9.f ) );
-		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 5.f );
+		ImGui::PushStyleColor( ImGuiCol_ChildBg , kCardBg );
+		ImGui::PushStyleColor( ImGuiCol_Border , kCardBorder );
+		ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding , ImVec2( 14.f , 11.f ) );
+		ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding , 10.f );
 		const bool dodgerPage = selectedCategory == 0 && selectedItem == 0;
 		const bool killStealerPage = selectedCategory == 0 && selectedItem == 1;
 		const bool autoComboPage = selectedCategory == 0 && selectedItem == 2;
@@ -1820,8 +1959,6 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 			{
 				DrawSwitchRow( "Enable" , "##creepBlockerEnable" , Settings::CreepBlocker::Enable , ReferenceIcon::Heroes );
 				ImGui::BeginDisabled( !Settings::CreepBlocker::Enable );
-				DrawSliderRow( "Block Distance" , "##creepBlockerAhead" , Settings::CreepBlocker::BlockAhead , 40.f , 250.f , "%.0f" , ReferenceIcon::Distance );
-				DrawSliderRow( "Side Step" , "##creepBlockerSideStep" , Settings::CreepBlocker::SideStep , 0.f , 120.f , "%.0f" , ReferenceIcon::Mouse );
 				DrawSwitchRow( "Draw Block Marker" , "##creepBlockerMarker" , Settings::CreepBlocker::DrawBlockMarker , ReferenceIcon::Visible );
 
 				ImGui::Spacing();
@@ -1882,7 +2019,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				const char* wheelModes[] = { "Wheel", "Disabled" };
 				ImGui::SetNextItemWidth( 120.f );
 				ImGui::Combo( "##wheelMode" , &Settings::Camera::ZoomUsingWheel , wheelModes , IM_ARRAYSIZE( wheelModes ) );
-				drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , IM_COL32( 31 , 33 , 37 , 255 ) );
+				drawList->AddLine( ImVec2( comboRow.x , comboRow.y + 38.f ) , ImVec2( comboRow.x + comboWidth , comboRow.y + 38.f ) , kRowLine );
 				ImGui::SetCursorScreenPos( ImVec2( comboRow.x , comboRow.y + 39.f ) );
 				DrawSliderRow( "Zoom Speed" , "##zoomSpeed" , Settings::Camera::ZoomSpeed , 1.f , 100.f , "%.0f" , ReferenceIcon::Speed );
 				ImGui::EndDisabled();

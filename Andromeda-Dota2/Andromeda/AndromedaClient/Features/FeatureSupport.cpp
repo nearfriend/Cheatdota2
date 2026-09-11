@@ -112,6 +112,10 @@ auto FeatureSupport::ResolveOffsets() -> const UnitOffsets&
 	offsets.hasAbilityInPhase = schema->TryGetOffset( "C_DOTABaseAbility" , "m_bInAbilityPhase" , offsets.abilityInPhase );
 	offsets.hasAbilityChannelStart = schema->TryGetOffset( "C_DOTABaseAbility" , "m_flChannelStartTime" , offsets.abilityChannelStart );
 	offsets.hasRotation = schema->TryGetOffset( "CGameSceneNode" , "m_angRotation" , offsets.rotation );
+	// Movement vector on the entity itself (not the scene node). m_vecAbsVelocity
+	// is the fallback spelling some builds use.
+	offsets.hasVelocity = schema->TryGetOffset( "C_BaseEntity" , "m_vecVelocity" , offsets.velocity ) ||
+		schema->TryGetOffset( "C_BaseEntity" , "m_vecAbsVelocity" , offsets.velocity );
 
 	const bool hasInventoryContainer = schema->TryGetOffset( "C_DOTA_BaseNPC" , "m_Inventory" , offsets.inventory );
 	const bool hasNestedItems = schema->TryGetOffset( "C_DOTA_UnitInventory" , "m_hItems" , offsets.inventoryItems ) ||
@@ -340,6 +344,17 @@ auto FeatureSupport::TryReadOrigin( C_BaseEntity* entity , const UnitOffsets& of
 	if ( !TryReadField( entity , offsets.sceneNode , sceneNode ) || !sceneNode )
 		return false;
 	if ( !TryReadField( sceneNode , offsets.absOrigin , out ) )
+		return false;
+	return std::isfinite( out.m_x ) && std::isfinite( out.m_y ) && std::isfinite( out.m_z );
+}
+
+auto FeatureSupport::TryReadVelocity( C_BaseEntity* entity , const UnitOffsets& offsets , Vector3& out ) -> bool
+{
+	if ( !offsets.hasVelocity )
+		return false;
+	// m_vecVelocity lives on the entity directly, unlike the origin/rotation
+	// which hang off the scene node.
+	if ( !TryReadField( entity , offsets.velocity , out ) )
 		return false;
 	return std::isfinite( out.m_x ) && std::isfinite( out.m_y ) && std::isfinite( out.m_z );
 }

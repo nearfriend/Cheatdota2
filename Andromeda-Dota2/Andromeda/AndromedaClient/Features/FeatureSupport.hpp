@@ -52,6 +52,11 @@ namespace FeatureSupport
 		uint32_t sceneNode = 0;
 		uint32_t absOrigin = 0;
 		uint32_t rotation = 0;
+		// m_vecVelocity on C_BaseEntity - the unit's actual movement vector this
+		// tick. Its direction is where the creep is really going (far steadier
+		// than the facing yaw, which wobbles as creeps turn around each other),
+		// and its length is the current move speed.
+		uint32_t velocity = 0;
 		uint32_t isIllusion = 0;
 		uint32_t isClone = 0;
 		uint32_t waitingToSpawn = 0;
@@ -71,6 +76,7 @@ namespace FeatureSupport
 		bool hasAbilityInPhase = false;
 		bool hasAbilityChannelStart = false;
 		bool hasRotation = false;
+		bool hasVelocity = false;
 		bool hasIsIllusion = false;
 		bool hasIsClone = false;
 		bool hasWaitingToSpawn = false;
@@ -190,6 +196,9 @@ namespace FeatureSupport
 	auto TryReadOrigin( C_BaseEntity* entity , const UnitOffsets& offsets , Vector3& out ) -> bool;
 	// Facing angle in degrees (scene node yaw), for direction-aware checks.
 	auto TryReadYaw( C_BaseEntity* entity , const UnitOffsets& offsets , float& out ) -> bool;
+	// Movement vector (m_vecVelocity). Direction is where the unit is actually
+	// heading; length is its current speed. false if the field is unresolved.
+	auto TryReadVelocity( C_BaseEntity* entity , const UnitOffsets& offsets , Vector3& out ) -> bool;
 
 	auto ReadHandleVector( const void* field , int maxCount , std::vector<CHandle>& out ) -> bool;
 	auto ReadAbilityHandles( C_BaseEntity* unit , const UnitOffsets& offsets , std::vector<CHandle>& out ) -> bool;

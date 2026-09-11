@@ -27,6 +27,8 @@ public:
 public:
 	auto InitFont() -> void;
 	auto GetHeaderFont() -> ImFont*;
+	auto GetTitleFont() -> ImFont*;
+	auto GetDisplayFont() -> ImFont*;
 
 private:
 	auto SetDotaDarkStyle() -> void;

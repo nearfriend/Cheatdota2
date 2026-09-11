@@ -12,6 +12,8 @@
 
 static CAndromedaGUI g_AndromedaGUI{};
 static ImFont* g_HeaderFont = nullptr;
+static ImFont* g_TitleFont = nullptr;
+static ImFont* g_DisplayFont = nullptr;
 
 IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hwnd , UINT msg , WPARAM wParam , LPARAM lParam );
 
@@ -124,6 +126,12 @@ auto CAndromedaGUI::InitFont() -> void
 		ImFontConfig headerCfg = regularCfg;
 		headerCfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
 		g_HeaderFont = io.Fonts->AddFontFromFileTTF( unicode_to_utf8( TahomaFont ).c_str() , 16.f , &headerCfg , TahomaRanges );
+
+		// Two larger bold faces give the Astral Codex menu a real type hierarchy:
+		// a title size for section/card headers and a display size for the crest
+		// and page heading. Loaded once here so they live in the same atlas.
+		g_TitleFont = io.Fonts->AddFontFromFileTTF( unicode_to_utf8( TahomaFont ).c_str() , 20.f , &headerCfg , TahomaRanges );
+		g_DisplayFont = io.Fonts->AddFontFromFileTTF( unicode_to_utf8( TahomaFont ).c_str() , 27.f , &headerCfg , TahomaRanges );
 	}
 
 	CoTaskMemFree( szWindowsFontPath );
@@ -320,13 +328,14 @@ auto CAndromedaGUI::SetDotaDarkStyle() -> void
 	style.FramePadding = ImVec2( 9.f , 6.f );
 	style.ItemSpacing = ImVec2( 8.f , 7.f );
 	style.ItemInnerSpacing = ImVec2( 8.f , 6.f );
-	style.WindowRounding = 8.f;
-	style.FrameRounding = 8.f;
-	style.ChildRounding = 8.f;
-	style.PopupRounding = 8.f;
+	style.WindowRounding = 10.f;
+	style.FrameRounding = 7.f;
+	style.ChildRounding = 10.f;
+	style.PopupRounding = 10.f;
 	style.ScrollbarRounding = 12.f;
-	style.GrabRounding = 10.f;
+	style.GrabRounding = 7.f;
 	style.TabRounding = 8.f;
+	style.PopupBorderSize = 1.f;
 	style.WindowBorderSize = 1.f;
 	style.FrameBorderSize = 1.f;
 	style.Alpha = 1.0f;
@@ -335,23 +344,24 @@ auto CAndromedaGUI::SetDotaDarkStyle() -> void
 	style.ScrollbarSize = 14.f;
 	style.WindowTitleAlign = ImVec2( 0.05f , 0.5f );
 
-	const ImVec4 bg0 = ImVec4( 0.035f , 0.038f , 0.043f , 0.98f );
-	const ImVec4 bg1 = ImVec4( 0.050f , 0.054f , 0.060f , 0.98f );
-	const ImVec4 bg2 = ImVec4( 0.075f , 0.080f , 0.090f , 1.00f );
-	// Matches the menu's custom red accent (kAccentColor = 218,51,62) so the
-	// native widgets - combos, search box, scrollbars, buttons - read as part of
-	// the same theme instead of the old purple that clashed with the red UI.
-	const ImVec4 accent = ImVec4( 0.855f , 0.235f , 0.275f , 1.00f );
+	// Astral Codex: a cosmic-void base in deep indigo, accented by filigree gold
+	// so the native widgets - combos, search box, scrollbars, buttons - read as
+	// part of the menu's gold-on-void fantasy skin. The menu's own ember red is
+	// reserved for the custom-drawn "gem" controls.
+	const ImVec4 bg0 = ImVec4( 0.047f , 0.035f , 0.094f , 0.98f );
+	const ImVec4 bg1 = ImVec4( 0.066f , 0.051f , 0.125f , 0.98f );
+	const ImVec4 bg2 = ImVec4( 0.098f , 0.078f , 0.172f , 1.00f );
+	const ImVec4 accent = ImVec4( 0.851f , 0.698f , 0.369f , 1.00f );  // filigree gold
 	const ImVec4 accentSoft = ImVec4( accent.x , accent.y , accent.z , 0.35f );
-	const ImVec4 text = ImVec4( 0.82f , 0.83f , 0.86f , 1.0f );
-	const ImVec4 textMuted = ImVec4( 0.48f , 0.49f , 0.54f , 1.0f );
+	const ImVec4 text = ImVec4( 0.87f , 0.84f , 0.93f , 1.0f );
+	const ImVec4 textMuted = ImVec4( 0.56f , 0.53f , 0.66f , 1.0f );
 
 	colors[ImGuiCol_Text] = text;
 	colors[ImGuiCol_TextDisabled] = textMuted;
 	colors[ImGuiCol_WindowBg] = bg0;
 	colors[ImGuiCol_ChildBg] = ImVec4( bg1.x , bg1.y , bg1.z , 0.92f );
 	colors[ImGuiCol_PopupBg] = bg1;
-	colors[ImGuiCol_Border] = ImVec4( 0.18f , 0.20f , 0.24f , 1.0f );
+	colors[ImGuiCol_Border] = ImVec4( 0.28f , 0.23f , 0.42f , 1.0f );
 	colors[ImGuiCol_BorderShadow] = ImVec4( 0 , 0 , 0 , 0 );
 
 	colors[ImGuiCol_FrameBg] = bg2;
@@ -460,5 +470,15 @@ auto GetAndromedaGUI() -> CAndromedaGUI*
 auto CAndromedaGUI::GetHeaderFont() -> ImFont*
 {
 	return g_HeaderFont ? g_HeaderFont : ImGui::GetFont();
+}
+
+auto CAndromedaGUI::GetTitleFont() -> ImFont*
+{
+	return g_TitleFont ? g_TitleFont : GetHeaderFont();
+}
+
+auto CAndromedaGUI::GetDisplayFont() -> ImFont*
+{
+	return g_DisplayFont ? g_DisplayFont : GetTitleFont();
 }
 
