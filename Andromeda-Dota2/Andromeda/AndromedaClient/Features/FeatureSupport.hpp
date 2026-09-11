@@ -220,6 +220,24 @@ namespace FeatureSupport
 	// attack order - the two things automation needs that a left click cannot
 	// express.
 	auto SendRightClick() -> bool;
+	// Issues a REAL move-to-position order for the local hero via the game's own
+	// PrepareUnitOrders, bypassing the simulated-mouse click-grab (a right click
+	// within ~70u of a unit becomes a follow/attack instead of a ground move).
+	// That grab is why the creep blocker can only shadow from >=70u and never
+	// reaches body contact; a real order can be placed right in the creep's path
+	// for a true block/domino.
+	//
+	// Returns false and does NOTHING when the order function is unavailable - the
+	// PrepareUnitOrders signature is an empty placeholder by default (see
+	// CFunctionList) so this is inert until a VERIFIED signature for the running
+	// build is filled in. Callers must treat false as "fall back to SendRightClick".
+	// The prototype/enum values used here are the canonical public Dota 2 ones but
+	// the exact ABI is build-specific and UNVERIFIED - keep the feature toggle off
+	// until confirmed in-game on a throwaway lobby.
+	auto SendMoveOrder( const Vector3& worldPos ) -> bool;
+	// Whether SendMoveOrder has a resolved order function behind it. Lets a
+	// feature choose the real-order path only when it will actually work.
+	auto RealOrdersAvailable() -> bool;
 	// Absolute cursor move through SendInput, NOT SetCursorPos - the game only
 	// sees the former. Use this for restoring the cursor too, so the game's
 	// crosshair goes back with the Windows one.

@@ -58,3 +58,8 @@ auto CBasePattern::GetFunction() -> PVOID
 {
 	return pFunction;
 }
+
+auto CBasePattern::HasPattern() const -> bool
+{
+	return Pattern != nullptr && Pattern[0] != '\0';
+}

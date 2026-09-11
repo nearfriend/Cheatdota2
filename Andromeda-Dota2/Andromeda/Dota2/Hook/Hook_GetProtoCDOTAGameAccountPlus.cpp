@@ -1,6 +1,7 @@
 #include "Hook_GetProtoCDOTAGameAccountPlus.hpp"
 
 #include <AndromedaClient/Settings/Settings.hpp>
+#include <Dota2/SDK/FunctionListSDK.hpp>
 
 namespace
 {
@@ -9,10 +10,32 @@ namespace
 	ptrdiff_t g_StatusOffset = kDefaultOffset;
 	bool g_OffsetConfirmed = false;
 	bool g_WarnedNotFound = false;
+	bool g_LoggedGCClientSystem = false;
+
+	// Cached gateway to the GC SharedObject cache; see header. Set on every hook
+	// call regardless of the DotaPlus toggle, so the inventory path can use it.
+	CDOTAGCClientSystem* g_pGCClientSystem = nullptr;
+}
+
+auto CacheGCClientSystem( CDOTAGCClientSystem* pCDOTAGCClientSystem ) -> void
+{
+	if ( !pCDOTAGCClientSystem )
+		return;
+
+	g_pGCClientSystem = pCDOTAGCClientSystem;
+
+	if ( !g_LoggedGCClientSystem )
+	{
+		DEV_LOG( "[cosmetic] GC client system captured: %p (armory path can begin)\n" , pCDOTAGCClientSystem );
+		g_LoggedGCClientSystem = true;
+	}
 }
 
 auto Hook_GetProtoCDOTAGameAccountPlus( CDOTAGCClientSystem* pCDOTAGCClientSystem ) -> CDOTAGameAccountPlus*
 {
+	// Keep this legacy DotaPlus path useful as a fallback GC-system capture.
+	CacheGCClientSystem( pCDOTAGCClientSystem );
+
 	auto pResult = GetProtoCDOTAGameAccountPlus_o( pCDOTAGCClientSystem );
 
 	if ( pResult && Settings::DotaPlus::Enable )
@@ -64,4 +87,18 @@ auto GetDotaPlusStatusOffset() -> ptrdiff_t
 auto IsDotaPlusStatusOffsetConfirmed() -> bool
 {
 	return g_OffsetConfirmed;
+}
+
+auto GetCachedGCClientSystem() -> CDOTAGCClientSystem*
+{
+	// Prefer the hook-captured pointer; if the DotaPlus getter has not fired yet
+	// (e.g. never visited the main menu), fall back to the optional signature-based
+	// getter. That getter returns null until a verified sig is filled in, so this
+	// is a no-op on an unconfigured build and never costs a bad call.
+	if ( !g_pGCClientSystem )
+	{
+		if ( auto* p = SDK_GetDOTAGCClientSystem() )
+			CacheGCClientSystem( p );
+	}
+	return g_pGCClientSystem;
 }

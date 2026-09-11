@@ -4,13 +4,16 @@
 
 #include <AndromedaClient/CAndromedaClient.hpp>
 #include <AndromedaClient/CAndromedaGUI.hpp>
+#include <AndromedaClient/Features/CCosmeticChanger.hpp>
 #include <AndromedaClient/Settings/Settings.hpp>
 #include <AndromedaClient/Data/HeroData.hpp>
 #include <AndromedaClient/Scripting/LuaManager.hpp>
 #include <AndromedaClient/Heroes/Invoker/CInvokerController.hpp>
 #include <AndromedaClient/Heroes/Meepo/CMeepoController.hpp>
 #include <Dota2/Hook/Hook_GetProtoCDOTAGameAccountPlus.hpp>
+#include <Dota2/SDK/FunctionListSDK.hpp>
 #include <DllLauncher.hpp>
+#include <Common/DevLog.hpp>
 #include <Common/Helpers/StringHelper.hpp>
 #include <Common/Helpers/ComHelper.hpp>
 
@@ -20,11 +23,14 @@
 #include <array>
 #include <filesystem>
 #include <winreg.h>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
+#include <cstring>
 
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -1125,8 +1131,8 @@ static const ReferenceNavigationItem g_HeroesNavigation[] =
 
 static const ReferenceNavigationItem g_ChangerNavigation[] =
 {
+	{ "Skin Changer", ReferenceIcon::Items, nullptr },
 	{ "Better UI", ReferenceIcon::Overlay, nullptr },
-	{ "Changer", ReferenceIcon::Mouse, nullptr },
 	{ "Color Changer", ReferenceIcon::Info, nullptr },
 	{ "Cursor Trail", ReferenceIcon::Mouse, nullptr },
 	{ "Profile Changer", ReferenceIcon::Heroes, nullptr },
@@ -1492,6 +1498,7 @@ static void DrawDodgerCombinations( float margin , float width , float topOffset
 static const ReferenceNavigationCategory g_NavigationCategories[] =
 {
 	{ "General", ReferenceIcon::Globe, g_GeneralNavigation, IM_ARRAYSIZE( g_GeneralNavigation ) },
+	{ "Changer", ReferenceIcon::Sparkles, g_ChangerNavigation, IM_ARRAYSIZE( g_ChangerNavigation ) },
 };
 
 static bool DrawSwitchRow( const char* label , const char* id , bool& value , ReferenceIcon icon )
@@ -1683,6 +1690,734 @@ static void DrawCardTitle( const char* text )
 	ImGui::PopFont();
 }
 
+static std::string PrettyCosmeticText( std::string text )
+{
+	constexpr const char* kHeroPrefix = "npc_dota_hero_";
+	if ( text.rfind( kHeroPrefix , 0 ) == 0 )
+		text.erase( 0 , std::strlen( kHeroPrefix ) );
+
+	if ( text.empty() )
+		return "Unknown";
+
+	bool startOfWord = true;
+	for ( auto& c : text )
+	{
+		if ( c == '_' || c == '-' )
+		{
+			c = ' ';
+			startOfWord = true;
+			continue;
+		}
+
+		if ( startOfWord )
+			c = static_cast<char>( std::toupper( static_cast<unsigned char>( c ) ) );
+		startOfWord = false;
+	}
+
+	return text;
+}
+
+static std::string LowerText( std::string text )
+{
+	for ( auto& c : text )
+		c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+	return text;
+}
+
+static bool ContainsTextInsensitive( const std::string& haystack , const char* needle )
+{
+	if ( !needle || !needle[0] )
+		return true;
+
+	return LowerText( haystack ).find( LowerText( needle ) ) != std::string::npos;
+}
+
+static bool PushUniqueSorted( std::vector<std::string>& list , const std::string& value )
+{
+	if ( value.empty() || std::find( list.begin() , list.end() , value ) != list.end() )
+		return false;
+
+	list.push_back( value );
+	std::sort( list.begin() , list.end() );
+	return true;
+}
+
+static const CCosmeticChanger::CatalogItem* FindCatalogItemByDef( const std::string& hero , uint32_t defIndex )
+{
+	if ( defIndex == 0 )
+		return nullptr;
+
+	for ( const auto& item : CCosmeticChanger::GetCatalog() )
+	{
+		if ( item.defIndex == defIndex && ( hero.empty() || item.hero == hero ) )
+			return &item;
+	}
+
+	return nullptr;
+}
+
+static const CCosmeticChanger::CatalogItem* FindSelectedCatalogItem( const Settings::CosmeticChanger::Selection& selection )
+{
+	for ( const auto& item : CCosmeticChanger::GetCatalog() )
+	{
+		if ( item.hero == selection.hero && ( item.slot == selection.slot || item.category == selection.slot ) && item.defIndex == selection.defIndex )
+			return &item;
+	}
+	return nullptr;
+}
+
+static void DrawCosmeticChangerPage( float settingsCardWidth )
+{
+	auto* pClient = GetAndromedaClient();
+	auto* changer = pClient ? &pClient->GetCosmeticChanger() : nullptr;
+	const auto& catalog = CCosmeticChanger::GetCatalog();
+
+	static bool followCurrentHero = true;
+	static std::string selectedHero;
+	static std::string selectedSlot = "All";
+	static char cosmeticSearch[96] = {};
+
+	const std::string currentHero = changer ? changer->GetCurrentHero() : std::string();
+	if ( followCurrentHero && !currentHero.empty() )
+		selectedHero = currentHero;
+
+	std::vector<std::string> heroes;
+	heroes.reserve( 128 );
+	for ( const auto& item : catalog )
+		PushUniqueSorted( heroes , item.hero );
+
+	if ( selectedHero.empty() && !heroes.empty() )
+		selectedHero = heroes.front();
+	else if ( !selectedHero.empty() && std::find( heroes.begin() , heroes.end() , selectedHero ) == heroes.end() )
+		selectedHero = heroes.empty() ? std::string() : heroes.front();
+
+	std::vector<std::string> slots;
+	slots.push_back( "All" );
+	for ( const auto& item : catalog )
+	{
+		if ( item.hero == selectedHero )
+			PushUniqueSorted( slots , item.slot );
+	}
+	if ( std::find( slots.begin() , slots.end() , selectedSlot ) == slots.end() )
+		selectedSlot = "All";
+
+	ImGui::TextDisabled( SDK_SetModelAvailable()
+		? "Catalog picker and model swap are both wired - enable Apply Selected Skins to change your local view."
+		: "Catalog picker is wired; applying needs a verified SetModel signature (a defindex write alone cannot swap the model)." );
+	ImGui::Spacing();
+	DrawSwitchRow( "Enable Skin Changer" , "##cosmeticEnable" , Settings::CosmeticChanger::Enable , ReferenceIcon::Sparkles );
+	ImGui::BeginDisabled( !Settings::CosmeticChanger::Enable );
+	DrawSwitchRow( "Log Equipped Slots" , "##cosmeticLogEquipped" , Settings::CosmeticChanger::LogEquipped , ReferenceIcon::Items );
+	DrawSwitchRow( "Log Catalog For Hero" , "##cosmeticLogCatalog" , Settings::CosmeticChanger::LogCatalog , ReferenceIcon::Code );
+	DrawSwitchRow( "Log UI Selections" , "##cosmeticLogSelections" , Settings::CosmeticChanger::LogUiSelections , ReferenceIcon::Save );
+
+	// The real apply. Only selectable when a verified SetModel signature is
+	// compiled in - without it a swap is impossible (a bare defindex write does not
+	// change the rendered mesh), so the row is disabled rather than silently inert.
+	const bool canApply = SDK_SetModelAvailable();
+	ImGui::BeginDisabled( !canApply );
+	DrawSwitchRow( "Apply Selected Skins" , "##cosmeticApply" , Settings::CosmeticChanger::ApplyOverrides , ReferenceIcon::Sparkles );
+	ImGui::EndDisabled();
+	if ( !canApply )
+	{
+		if ( ImGui::IsItemHovered( ImGuiHoveredFlags_AllowWhenDisabled ) )
+			ImGui::SetTooltip( "Needs a verified CBaseModelEntity::SetModel signature\n(CFunctionList::SetModel). Without it the model cannot be\nloaded or swapped, so selections stay preview-only." );
+		Settings::CosmeticChanger::ApplyOverrides = false;
+	}
+	ImGui::EndDisabled();
+
+	const ImVec4 okCol( 0.55f , 0.95f , 0.65f , 1.f );
+	const ImVec4 warnCol( 0.95f , 0.72f , 0.38f , 1.f );
+	const ImVec4 badCol( 0.95f , 0.45f , 0.45f , 1.f );
+
+	ImGui::Spacing();
+	if ( changer )
+		ImGui::Text( "Runtime: %s" , changer->GetStatus().c_str() );
+	const bool gcCaptured = GetCachedGCClientSystem() != nullptr;
+	ImGui::TextColored( gcCaptured ? okCol : warnCol , "GC accessor: %s" , gcCaptured ? "captured" : "waiting for signature/fallback" );
+	ImGui::SameLine();
+	ImGui::TextDisabled( "| Catalog: %zu items" , catalog.size() );
+	if ( ImGui::IsItemHovered() )
+		ImGui::SetTooltip( "%s" , CCosmeticChanger::GetCatalogPath().c_str() );
+
+	const float gap = 12.f;
+	const float panelHeight = 236.f;
+	const float equippedWidth = ( settingsCardWidth - gap ) * 0.38f;
+	const float catalogWidth = settingsCardWidth - gap - equippedWidth;
+
+	ImGui::Spacing();
+	ImGui::BeginChild( "##cosmeticEquippedCard" , ImVec2( equippedWidth , panelHeight ) , true , 0 );
+	DrawCardTitle( "Current Wearables" );
+	if ( !changer )
+	{
+		ImGui::TextColored( badCol , "Client unavailable." );
+	}
+	else if ( currentHero.empty() )
+	{
+		ImGui::TextDisabled( "Enter a match and select a hero." );
+		ImGui::TextDisabled( "Wearables appear after the cosmetic pass resolves." );
+	}
+	else
+	{
+		ImGui::Text( "Hero: %s" , PrettyCosmeticText( currentHero ).c_str() );
+		ImGui::TextDisabled( "Ent index: %d" , changer->GetCurrentHeroIndex() );
+		ImGui::Separator();
+
+		const auto& wearables = changer->GetWearableSlots();
+		if ( wearables.empty() )
+		{
+			ImGui::TextDisabled( "No wearable entities found yet." );
+		}
+		else
+		{
+			for ( const auto& slot : wearables )
+			{
+				const auto* item = FindCatalogItemByDef( slot.hero.empty() ? currentHero : slot.hero , slot.defIndex );
+				std::string label = "#" + std::to_string( slot.slot ) + "  [" + std::to_string( slot.defIndex ) + "] ";
+				label += item ? item->name : "equipped item";
+				label += "##wearable" + std::to_string( slot.slot );
+				if ( ImGui::Selectable( label.c_str() , false ) && item )
+				{
+					selectedHero = item->hero;
+					selectedSlot = item->slot;
+					followCurrentHero = false;
+				}
+				if ( ImGui::IsItemHovered() )
+				{
+					ImGui::BeginTooltip();
+					ImGui::Text( "Slot: %s" , item ? item->slot.c_str() : "unknown" );
+					ImGui::Text( "Model: %s" , slot.model.empty() ? "?" : slot.model.c_str() );
+					ImGui::EndTooltip();
+				}
+			}
+		}
+	}
+	ImGui::EndChild();
+
+	ImGui::SameLine( 0.f , gap );
+	ImGui::BeginChild( "##cosmeticCatalogCard" , ImVec2( catalogWidth , panelHeight ) , true , 0 );
+	DrawCardTitle( "Catalog Picker" );
+	if ( catalog.empty() )
+	{
+		ImGui::TextColored( badCol , "cosmetic_catalog.tsv not loaded." );
+		ImGui::TextDisabled( "Expected next to the DLL:" );
+		ImGui::TextWrapped( "%s" , CCosmeticChanger::GetCatalogPath().c_str() );
+		ImGui::EndChild();
+		return;
+	}
+
+	ImGui::Checkbox( "Follow current hero" , &followCurrentHero );
+	ImGui::SameLine();
+	if ( ImGui::SmallButton( "Log selected hero##cosmeticLogHero" ) && !selectedHero.empty() )
+		CCosmeticChanger::LogCatalogForHeroName( selectedHero , true );
+	ImGui::SameLine();
+	if ( changer && ImGui::SmallButton( "Log current##cosmeticLogCurrent" ) )
+		changer->RequestCatalogDump();
+
+	ImGui::AlignTextToFramePadding();
+	ImGui::Text( "Hero" );
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth( 154.f );
+	if ( ImGui::BeginCombo( "##cosmeticHero" , PrettyCosmeticText( selectedHero ).c_str() ) )
+	{
+		for ( const auto& hero : heroes )
+		{
+			const bool selected = hero == selectedHero;
+			if ( ImGui::Selectable( PrettyCosmeticText( hero ).c_str() , selected ) )
+			{
+				selectedHero = hero;
+				selectedSlot = "All";
+				followCurrentHero = false;
+			}
+			if ( selected )
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine();
+	ImGui::Text( "Slot" );
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth( 118.f );
+	if ( ImGui::BeginCombo( "##cosmeticSlot" , selectedSlot.c_str() ) )
+	{
+		for ( const auto& slot : slots )
+		{
+			const bool selected = slot == selectedSlot;
+			if ( ImGui::Selectable( PrettyCosmeticText( slot ).c_str() , selected ) )
+				selectedSlot = slot;
+			if ( selected )
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+
+	ImGui::SetNextItemWidth( 230.f );
+	ImGui::InputTextWithHint( "##cosmeticSearch" , "Search name/model/defindex" , cosmeticSearch , IM_ARRAYSIZE( cosmeticSearch ) );
+	ImGui::SameLine();
+	if ( ImGui::SmallButton( "Clear##cosmeticSearch" ) )
+		cosmeticSearch[0] = '\0';
+	ImGui::SameLine();
+	if ( ImGui::SmallButton( "Clear hero picks##cosmeticClearHero" ) && !selectedHero.empty() )
+		Settings::CosmeticChanger::ClearSelectionsForHero( selectedHero );
+
+	int total = 0;
+	int shown = 0;
+	ImGui::BeginChild( "##cosmeticCatalogList" , ImVec2( 0.f , 86.f ) , true , 0 );
+	for ( const auto& item : catalog )
+	{
+		if ( item.hero != selectedHero )
+			continue;
+		if ( selectedSlot != "All" && item.slot != selectedSlot )
+			continue;
+		++total;
+
+		const std::string defText = std::to_string( item.defIndex );
+		if ( !ContainsTextInsensitive( item.name , cosmeticSearch ) &&
+			!ContainsTextInsensitive( item.model , cosmeticSearch ) &&
+			!ContainsTextInsensitive( item.slot , cosmeticSearch ) &&
+			!ContainsTextInsensitive( defText , cosmeticSearch ) )
+			continue;
+
+		const auto* selection = Settings::CosmeticChanger::FindSelection( item.hero , item.slot );
+		const bool selected = selection && selection->defIndex == item.defIndex;
+		std::string label = "[" + defText + "] " + item.name + "  <" + PrettyCosmeticText( item.slot ) + ">##cosmeticItem" + defText;
+		if ( ImGui::Selectable( label.c_str() , selected ) )
+		{
+			Settings::CosmeticChanger::SetSelection( item.hero , item.slot , item.defIndex );
+			DEV_LOG( "[cosmetic-ui] selected hero=%s slot=%s def=%u name=%s model=%s\n" ,
+				item.hero.c_str() , item.slot.c_str() , item.defIndex , item.name.c_str() , item.model.c_str() );
+		}
+		if ( ImGui::IsItemHovered() )
+		{
+			ImGui::BeginTooltip();
+			ImGui::Text( "Rarity: %s" , item.rarity.empty() ? "?" : item.rarity.c_str() );
+			ImGui::Text( "Model: %s" , item.model.empty() ? "?" : item.model.c_str() );
+			ImGui::EndTooltip();
+		}
+		++shown;
+	}
+	ImGui::EndChild();
+
+	ImGui::TextDisabled( "%d / %d shown for %s" , shown , total , PrettyCosmeticText( selectedHero ).c_str() );
+	ImGui::Separator();
+	ImGui::TextDisabled( "Queued selections:" );
+	int queued = 0;
+	for ( const auto& selection : Settings::CosmeticChanger::Selections )
+	{
+		if ( selection.hero != selectedHero )
+			continue;
+
+		const auto* item = FindSelectedCatalogItem( selection );
+		ImGui::Text( "%s -> [%u] %s" ,
+			PrettyCosmeticText( selection.slot ).c_str() ,
+			selection.defIndex ,
+			item ? item->name.c_str() : "unknown item" );
+		++queued;
+	}
+	if ( queued <= 0 )
+		ImGui::TextDisabled( "Pick an item above to queue it by slot." );
+	ImGui::EndChild();
+}
+
+static int SimpleCosmeticSlotPriority( const std::string& slot )
+{
+	static constexpr const char* order[] =
+	{
+		"all",
+		"weapon",
+		"offhand",
+		"head",
+		"armor",
+		"shoulder",
+		"arms",
+		"belt",
+		"back",
+		"wings",
+		"mount",
+		"tail",
+		"effect",
+		"other",
+		"unknown",
+	};
+
+	for ( int index = 0; index < IM_ARRAYSIZE( order ); ++index )
+	{
+		if ( slot == order[index] )
+			return index;
+	}
+	return 1000;
+}
+
+static void SortSimpleCosmeticSlots( std::vector<std::string>& slots )
+{
+	std::sort( slots.begin() , slots.end() , []( const std::string& left , const std::string& right )
+	{
+		const int leftPriority = SimpleCosmeticSlotPriority( left );
+		const int rightPriority = SimpleCosmeticSlotPriority( right );
+		if ( leftPriority != rightPriority )
+			return leftPriority < rightPriority;
+		return left < right;
+	} );
+}
+
+static std::string SimpleCosmeticImageFromModel( const std::string& model )
+{
+	constexpr const char* prefix = "models/items/";
+	const size_t start = model.find( prefix );
+	if ( start == std::string::npos )
+		return {};
+
+	std::string image = "econ/items/" + model.substr( start + std::strlen( prefix ) );
+	constexpr const char* extension = ".vmdl";
+	const size_t extensionPos = image.rfind( extension );
+	if ( extensionPos != std::string::npos )
+		image.erase( extensionPos );
+	return image;
+}
+
+static std::string NormalizeSimpleCosmeticImagePath( std::string image , const std::string& model )
+{
+	if ( image.empty() )
+		image = SimpleCosmeticImageFromModel( model );
+
+	std::replace( image.begin() , image.end() , '\\' , '/' );
+	constexpr const char* panoramaPrefix = "panorama/images/";
+	if ( image.rfind( panoramaPrefix , 0 ) == 0 )
+		image.erase( 0 , std::strlen( panoramaPrefix ) );
+	constexpr const char* modelsPrefix = "models/items/";
+	if ( image.rfind( modelsPrefix , 0 ) == 0 )
+		image = "econ/items/" + image.substr( std::strlen( modelsPrefix ) );
+	constexpr const char* pngExtension = ".png";
+	if ( image.size() > std::strlen( pngExtension ) && image.compare( image.size() - std::strlen( pngExtension ) , std::strlen( pngExtension ) , pngExtension ) == 0 )
+		image.erase( image.size() - std::strlen( pngExtension ) );
+	constexpr const char* vmdlExtension = ".vmdl";
+	if ( image.size() > std::strlen( vmdlExtension ) && image.compare( image.size() - std::strlen( vmdlExtension ) , std::strlen( vmdlExtension ) , vmdlExtension ) == 0 )
+		image.erase( image.size() - std::strlen( vmdlExtension ) );
+
+	while ( !image.empty() && image.front() == '/' )
+		image.erase( image.begin() );
+	return image;
+}
+
+static ID3D11ShaderResourceView* GetSimpleCosmeticIconSrv( const CCosmeticChanger::CatalogItem& item )
+{
+	std::string image = NormalizeSimpleCosmeticImagePath( item.image , item.model );
+	if ( image.empty() )
+		return GetDefaultIconSrv();
+
+	std::string folder;
+	std::string assetName;
+	const size_t lastSlash = image.find_last_of( '/' );
+	if ( lastSlash != std::string::npos )
+	{
+		folder = image.substr( 0 , lastSlash );
+		assetName = image.substr( lastSlash + 1 );
+	}
+	else
+	{
+		const std::string modelImage = SimpleCosmeticImageFromModel( item.model );
+		const size_t modelSlash = modelImage.find_last_of( '/' );
+		if ( modelSlash == std::string::npos )
+			return GetDefaultIconSrv();
+
+		folder = modelImage.substr( 0 , modelSlash );
+		assetName = image;
+	}
+
+	if ( folder.empty() || assetName.empty() )
+		return GetDefaultIconSrv();
+
+	ID3D11ShaderResourceView* srv = nullptr;
+	if ( auto* pClient = GetAndromedaClient() )
+	{
+		srv = pClient->GetDotaIconSrv( folder , assetName );
+		if ( !srv && assetName.find( "_png" ) == std::string::npos )
+			srv = pClient->GetDotaIconSrv( folder , assetName + "_png" );
+	}
+	return srv ? srv : GetDefaultIconSrv();
+}
+
+static std::string SimpleCosmeticTileText( const std::string& text , float maxWidth )
+{
+	if ( ImGui::CalcTextSize( text.c_str() ).x <= maxWidth )
+		return text;
+
+	std::string clipped = text;
+	while ( clipped.size() > 3 )
+	{
+		clipped.pop_back();
+		const std::string preview = clipped + "...";
+		if ( ImGui::CalcTextSize( preview.c_str() ).x <= maxWidth )
+			return preview;
+	}
+	return "...";
+}
+
+static bool DrawSimpleCosmeticTile( const CCosmeticChanger::CatalogItem& item , float tileWidth , bool selected )
+{
+	const float tileHeight = 104.f;
+	const float iconSize = 60.f;
+	ImGui::PushID( static_cast<int>( item.defIndex ) );
+
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton( "##cosmeticTile" , ImVec2( tileWidth , tileHeight ) );
+	const bool clicked = ImGui::IsItemClicked();
+	const bool hovered = ImGui::IsItemHovered();
+
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	const ImVec2 tileMax( pos.x + tileWidth , pos.y + tileHeight );
+	const ImU32 background = selected ? IM_COL32( 58 , 35 , 56 , 245 ) :
+		hovered ? IM_COL32( 34 , 30 , 56 , 245 ) : IM_COL32( 24 , 21 , 42 , 240 );
+	drawList->AddRectFilled( pos , tileMax , background , 8.f );
+
+	const ImVec2 imageMin( pos.x + ( tileWidth - iconSize ) * 0.5f , pos.y + 7.f );
+	const ImVec2 imageMax( imageMin.x + iconSize , imageMin.y + iconSize );
+	if ( ID3D11ShaderResourceView* srv = GetSimpleCosmeticIconSrv( item ); srv )
+	{
+		drawList->AddImageRounded( reinterpret_cast<ImTextureID>( srv ) , imageMin , imageMax ,
+			ImVec2( 0.f , 0.f ) , ImVec2( 1.f , 1.f ) , IM_COL32_WHITE , 7.f );
+	}
+	else
+	{
+		drawList->AddRectFilled( imageMin , imageMax , IM_COL32( 35 , 38 , 47 , 255 ) , 7.f );
+		const std::string initials = item.name.empty() ? "?" : item.name.substr( 0 , (std::min)( item.name.size() , size_t( 2 ) ) );
+		const ImVec2 textSize = ImGui::CalcTextSize( initials.c_str() );
+		drawList->AddText( ImVec2( imageMin.x + ( iconSize - textSize.x ) * 0.5f , imageMin.y + ( iconSize - textSize.y ) * 0.5f ) ,
+			IM_COL32( 205 , 207 , 214 , 255 ) , initials.c_str() );
+	}
+
+	const std::string name = SimpleCosmeticTileText( item.name , tileWidth - 10.f );
+	const ImVec2 nameSize = ImGui::CalcTextSize( name.c_str() );
+	drawList->AddText( ImVec2( pos.x + ( tileWidth - nameSize.x ) * 0.5f , pos.y + 72.f ) ,
+		IM_COL32( 224 , 225 , 231 , 255 ) , name.c_str() );
+
+	char defText[20] = {};
+	snprintf( defText , sizeof( defText ) , "#%u" , item.defIndex );
+	const ImVec2 defSize = ImGui::CalcTextSize( defText );
+	drawList->AddText( ImVec2( pos.x + ( tileWidth - defSize.x ) * 0.5f , pos.y + 89.f ) ,
+		IM_COL32( 155 , 158 , 169 , 255 ) , defText );
+
+	if ( selected )
+	{
+		drawList->AddRect( pos , tileMax , kAccentColor , 8.f , 0 , 2.f );
+		drawList->AddRectFilled( ImVec2( pos.x + 5.f , pos.y + 5.f ) , ImVec2( pos.x + 42.f , pos.y + 20.f ) ,
+			IM_COL32( 218 , 51 , 62 , 230 ) , 4.f );
+		drawList->AddText( ImVec2( pos.x + 9.f , pos.y + 5.f ) , IM_COL32_WHITE , "Pick" );
+	}
+	else
+	{
+		drawList->AddRect( pos , tileMax , hovered ? kGold : kCardBorder , 8.f , 0 , hovered ? 1.5f : 1.f );
+	}
+
+	if ( hovered )
+	{
+		ImGui::BeginTooltip();
+		ImGui::Text( "%s" , item.name.c_str() );
+		ImGui::Text( "Slot: %s" , PrettyCosmeticText( item.category ).c_str() );
+		ImGui::Text( "Rarity: %s" , item.rarity.empty() ? "?" : item.rarity.c_str() );
+		ImGui::Text( "Def index: %u" , item.defIndex );
+		if ( !item.model.empty() )
+			ImGui::TextWrapped( "Model: %s" , item.model.c_str() );
+		ImGui::EndTooltip();
+	}
+
+	ImGui::PopID();
+	return clicked;
+}
+
+static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
+{
+	auto* pClient = GetAndromedaClient();
+	auto* changer = pClient ? &pClient->GetCosmeticChanger() : nullptr;
+	const auto& catalog = CCosmeticChanger::GetCatalog();
+
+	static bool followCurrentHero = true;
+	static std::string selectedHero;
+	static std::string selectedSlot = "all";
+	static char cosmeticSearch[80] = {};
+
+	const std::string currentHero = changer ? changer->GetCurrentHero() : std::string();
+	if ( followCurrentHero && !currentHero.empty() )
+		selectedHero = currentHero;
+
+	std::vector<std::string> heroes;
+	heroes.reserve( 128 );
+	for ( const auto& item : catalog )
+		PushUniqueSorted( heroes , item.hero );
+
+	if ( selectedHero.empty() && !heroes.empty() )
+		selectedHero = heroes.front();
+	else if ( !selectedHero.empty() && std::find( heroes.begin() , heroes.end() , selectedHero ) == heroes.end() )
+		selectedHero = heroes.empty() ? std::string() : heroes.front();
+
+	std::vector<std::string> slots;
+	slots.push_back( "all" );
+	for ( const auto& item : catalog )
+	{
+		if ( item.hero == selectedHero )
+			PushUniqueSorted( slots , item.category.empty() ? item.slot : item.category );
+	}
+	SortSimpleCosmeticSlots( slots );
+	if ( std::find( slots.begin() , slots.end() , selectedSlot ) == slots.end() )
+		selectedSlot = "all";
+
+	const ImVec4 okCol( 0.55f , 0.95f , 0.65f , 1.f );
+	const ImVec4 warnCol( 0.95f , 0.72f , 0.38f , 1.f );
+	const ImVec4 badCol( 0.95f , 0.45f , 0.45f , 1.f );
+
+	DrawCardTitle( "Skin Changer" );
+	ImGui::TextDisabled( "Pick a slot, then click an image. Selections are queued by slot until the safe model apply path lands." );
+	ImGui::Spacing();
+	ImGui::Checkbox( "Enable##cosmeticEnableSimple" , &Settings::CosmeticChanger::Enable );
+	ImGui::SameLine();
+	ImGui::Text( "Status: %s" , changer ? changer->GetStatus().c_str() : "client unavailable" );
+	ImGui::SameLine();
+	const bool gcCaptured = GetCachedGCClientSystem() != nullptr;
+	ImGui::TextColored( gcCaptured ? okCol : warnCol , "GC: %s" , gcCaptured ? "captured" : "waiting" );
+	ImGui::SameLine();
+	ImGui::TextDisabled( "| Catalog: %zu" , catalog.size() );
+
+	if ( catalog.empty() )
+	{
+		ImGui::Spacing();
+		ImGui::TextColored( badCol , "cosmetic_catalog.tsv not loaded." );
+		ImGui::TextWrapped( "%s" , CCosmeticChanger::GetCatalogPath().c_str() );
+		return;
+	}
+
+	ImGui::Spacing();
+	ImGui::Checkbox( "Follow current hero##cosmeticFollowSimple" , &followCurrentHero );
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth( 180.f );
+	if ( ImGui::BeginCombo( "Hero##cosmeticHeroSimple" , PrettyCosmeticText( selectedHero ).c_str() ) )
+	{
+		for ( const auto& hero : heroes )
+		{
+			const bool selected = hero == selectedHero;
+			if ( ImGui::Selectable( PrettyCosmeticText( hero ).c_str() , selected ) )
+			{
+				selectedHero = hero;
+				selectedSlot = "all";
+				followCurrentHero = false;
+			}
+			if ( selected )
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth( 190.f );
+	ImGui::InputTextWithHint( "##cosmeticSearchSimple" , "Search cosmetic" , cosmeticSearch , IM_ARRAYSIZE( cosmeticSearch ) );
+	ImGui::SameLine();
+	if ( ImGui::SmallButton( "Clear picks##cosmeticClearSimple" ) && !selectedHero.empty() )
+		Settings::CosmeticChanger::ClearSelectionsForHero( selectedHero );
+
+	ImGui::Spacing();
+	const float gap = 12.f;
+	const float slotPaneWidth = std::clamp( settingsCardWidth * 0.24f , 140.f , 170.f );
+	const float bottomMargin = 8.f;
+	const float paneHeight = (std::max)( ImGui::GetContentRegionAvail().y - bottomMargin , 250.f );
+
+	ImGui::BeginChild( "##cosmeticSlotPaneSimple" , ImVec2( slotPaneWidth , paneHeight ) , true , 0 );
+	DrawCardTitle( "Slots" );
+	for ( const auto& slotName : slots )
+	{
+		int slotCount = 0;
+		for ( const auto& item : catalog )
+		{
+			const std::string category = item.category.empty() ? item.slot : item.category;
+			if ( item.hero == selectedHero && ( slotName == "all" || category == slotName ) )
+				++slotCount;
+		}
+
+		char label[64] = {};
+		snprintf( label , sizeof( label ) , "%s  %d" , PrettyCosmeticText( slotName ).c_str() , slotCount );
+		if ( ImGui::Selectable( label , selectedSlot == slotName ) )
+			selectedSlot = slotName;
+	}
+
+	ImGui::Separator();
+	ImGui::TextDisabled( "Queued" );
+	int queuedCount = 0;
+	for ( const auto& selection : Settings::CosmeticChanger::Selections )
+	{
+		if ( selection.hero != selectedHero )
+			continue;
+
+		const auto* item = FindSelectedCatalogItem( selection );
+		ImGui::TextWrapped( "%s: %s" ,
+			PrettyCosmeticText( selection.slot ).c_str() ,
+			item ? item->name.c_str() : "unknown" );
+		++queuedCount;
+	}
+	if ( queuedCount <= 0 )
+		ImGui::TextDisabled( "No picks yet." );
+	ImGui::EndChild();
+
+	ImGui::SameLine( 0.f , gap );
+	ImGui::BeginChild( "##cosmeticGridPaneSimple" , ImVec2( 0.f , paneHeight ) , true , 0 );
+	DrawCardTitle( PrettyCosmeticText( selectedSlot ).c_str() );
+
+	int totalCount = 0;
+	int shownCount = 0;
+	const float tileWidth = 92.f;
+	const float tileGap = 8.f;
+	const int columns = (std::max)( 1 , static_cast<int>( ImGui::GetContentRegionAvail().x / ( tileWidth + tileGap ) ) );
+	int column = 0;
+
+	for ( const auto& item : catalog )
+	{
+		if ( item.hero != selectedHero )
+			continue;
+
+		const std::string category = item.category.empty() ? item.slot : item.category;
+		if ( selectedSlot != "all" && category != selectedSlot )
+			continue;
+		++totalCount;
+
+		const std::string defText = std::to_string( item.defIndex );
+		if ( !ContainsTextInsensitive( item.name , cosmeticSearch ) &&
+			!ContainsTextInsensitive( item.model , cosmeticSearch ) &&
+			!ContainsTextInsensitive( item.rarity , cosmeticSearch ) &&
+			!ContainsTextInsensitive( category , cosmeticSearch ) &&
+			!ContainsTextInsensitive( defText , cosmeticSearch ) )
+			continue;
+
+		const auto* selection = Settings::CosmeticChanger::FindSelection( item.hero , category );
+		const bool selected = selection && selection->defIndex == item.defIndex;
+		if ( DrawSimpleCosmeticTile( item , tileWidth , selected ) )
+		{
+			Settings::CosmeticChanger::SetSelection( item.hero , category , item.defIndex );
+			DEV_LOG( "[cosmetic-ui] selected hero=%s slot=%s def=%u name=%s image=%s model=%s\n" ,
+				item.hero.c_str() ,
+				category.c_str() ,
+				item.defIndex ,
+				item.name.c_str() ,
+				item.image.c_str() ,
+				item.model.c_str() );
+		}
+
+		++shownCount;
+		++column;
+		if ( column < columns )
+			ImGui::SameLine( 0.f , tileGap );
+		else
+			column = 0;
+	}
+
+	if ( shownCount <= 0 )
+		ImGui::TextDisabled( "No cosmetics match this filter." );
+	ImGui::Spacing();
+	ImGui::TextDisabled( "%d / %d shown for %s" , shownCount , totalCount , PrettyCosmeticText( selectedHero ).c_str() );
+	if ( currentHero.empty() )
+		ImGui::TextDisabled( "Live hero/wearable state appears after entering a match." );
+	else
+		ImGui::TextDisabled( "Live hero: %s | equipped wearables: %zu" ,
+			PrettyCosmeticText( currentHero ).c_str() ,
+			changer ? changer->GetWearableSlots().size() : size_t( 0 ) );
+	ImGui::EndChild();
+}
+
 auto CAndromedaMenu::OnRenderMenu() -> void
 {
 	float menuAlpha = static_cast<float>( Settings::Menu::MenuAlpha ) / 255.f;
@@ -1858,6 +2593,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		const bool visibleByEnemyPage = selectedCategory == 0 && selectedItem == 4;
 		const bool creepBlockerPage = selectedCategory == 0 && selectedItem == 5;
 		const bool lastHitPage = selectedCategory == 0 && selectedItem == 6;
+		const bool cosmeticPage = selectedCategory == 1 && selectedItem == 0;
 		const float settingsCardWidth = (std::max)( 1.f , ImGui::GetWindowWidth() - mainContentMargin * 2.f );
 
 		if ( dodgerPage )
@@ -1917,11 +2653,11 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 338.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : 180.f ) ) ) );
+			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 338.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : ( cosmeticPage ? 502.f : 180.f ) ) ) ) );
 			// The auto-combo card holds more than fits (toggles, keybind, target
 			// and the spell strip), so it keeps its scrollbar and wheel support
 			// instead of clipping the overflow away.
-			const ImGuiWindowFlags settingsCardFlags = autoComboPage ? 0 : ImGuiWindowFlags_NoScrollbar;
+			const ImGuiWindowFlags settingsCardFlags = ( autoComboPage || cosmeticPage ) ? 0 : ImGuiWindowFlags_NoScrollbar;
 			ImGui::BeginChild( "##settingsCard" , ImVec2( settingsCardWidth , settingsCardHeight ) , true , settingsCardFlags );
 			char cardTitle[96];
 			snprintf( cardTitle , sizeof( cardTitle ) , "%s Settings" , page.label );
@@ -2175,6 +2911,10 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				// Breathing room under the last row so the scrolled-to-bottom
 				// state doesn't sit flush against the card edge.
 				ImGui::Dummy( ImVec2( 0.f , 14.f ) );
+			}
+			else if ( cosmeticPage )
+			{
+				DrawSimpleCosmeticChangerPage( settingsCardWidth );
 			}
 			else
 			{

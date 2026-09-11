@@ -119,6 +119,8 @@ public:
 	CDodger& GetDodger() { return m_Dodger; }
 	const CDodger& GetDodger() const { return m_Dodger; }
 	const CCreepBlocker& GetCreepBlocker() const { return m_CreepBlocker; }
+	CCosmeticChanger& GetCosmeticChanger() { return m_CosmeticChanger; }
+	const CCosmeticChanger& GetCosmeticChanger() const { return m_CosmeticChanger; }
 
 	// Ability/item icon for the menu, backed by the same on-demand cache the
 	// overlays use: a local file when one exists, otherwise fetched from the
@@ -129,6 +131,8 @@ public:
 	// is why only the ~180 shipped PNGs had icons and everything else fell
 	// back to a lettered plate.
 	auto GetCastableIconSrv( const std::string& name , bool isItem ) -> struct ID3D11ShaderResourceView*;
+	auto GetDotaIconSrv( const std::string& folder , const std::string& assetName ,
+		const std::string& remoteAssetName = {} ) -> struct ID3D11ShaderResourceView*;
 	const CAutoCombo& GetAutoCombo() const { return m_AutoCombo; }
 
 private:

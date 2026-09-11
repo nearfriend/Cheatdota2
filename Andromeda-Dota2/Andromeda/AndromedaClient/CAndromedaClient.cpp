@@ -4026,6 +4026,17 @@ auto CAndromedaClient::GetCastableIconSrv( const std::string& name , bool isItem
 	return icon ? icon->srv : nullptr;
 }
 
+auto CAndromedaClient::GetDotaIconSrv( const std::string& folder , const std::string& assetName ,
+	const std::string& remoteAssetName ) -> ID3D11ShaderResourceView*
+{
+	if ( folder.empty() || assetName.empty() )
+		return nullptr;
+
+	auto* icon = GetAssetIcon( folder.c_str() , assetName , remoteAssetName );
+	UpdateTrackedIconDownloads();
+	return icon ? icon->srv : nullptr;
+}
+
 auto CAndromedaClient::OnRender() -> void
 {
 	// Apply independently of the camera option so fog cannot return during interpolation.
