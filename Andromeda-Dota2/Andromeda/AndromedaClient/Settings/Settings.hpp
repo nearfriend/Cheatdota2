@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -210,6 +211,7 @@ namespace Settings
 	}
 	namespace CosmeticChanger
 	{
+		inline std::recursive_mutex Mutex;
 		struct Selection
 		{
 			std::string hero;
@@ -228,7 +230,7 @@ namespace Settings
 		// defindex write provably does NOT swap the rendered mesh. Off by default -
 		// the swap calls a game function on live entities, so leave it off until the
 		// signature is confirmed on a throwaway lobby.
-		inline bool ApplyOverrides = false;
+		inline bool ApplyOverrides = true;
 		inline std::vector<Selection> Selections;
 
 		inline auto FindSelection( const std::string& hero , const std::string& slot ) -> Selection*

@@ -88,6 +88,8 @@ namespace
 	};
 
 	static std::unordered_map<std::string , TrackedIcon> g_TrackedIcons;
+	static std::unordered_map<std::string , TrackedIcon> g_CosmeticIcons;
+	static std::unordered_map<std::string , ULONGLONG> g_CosmeticIconRetries;
 	// Keep the reported Viper case correct even before the metadata cache is
 	// available; a successful load replaces this fallback with the complete set.
 	static std::unordered_set<std::string> g_InnateAbilityNames{ "viper_predator" };
@@ -4026,15 +4028,31 @@ auto CAndromedaClient::GetCastableIconSrv( const std::string& name , bool isItem
 	return icon ? icon->srv : nullptr;
 }
 
-auto CAndromedaClient::GetDotaIconSrv( const std::string& folder , const std::string& assetName ,
-	const std::string& remoteAssetName ) -> ID3D11ShaderResourceView*
+auto CAndromedaClient::GetCosmeticIconSrv( const std::string& image ) -> ID3D11ShaderResourceView*
 {
-	if ( folder.empty() || assetName.empty() )
+	if ( image.rfind( "econ/" , 0 ) != 0 || image.find( ".." ) != std::string::npos ||
+		image.find_first_of( ":\\" ) != std::string::npos )
 		return nullptr;
 
-	auto* icon = GetAssetIcon( folder.c_str() , assetName , remoteAssetName );
-	UpdateTrackedIconDownloads();
-	return icon ? icon->srv : nullptr;
+	auto [iterator , inserted] = g_CosmeticIcons.try_emplace( image );
+	auto& icon = iterator->second;
+	if ( icon.srv )
+		return icon.srv;
+	const ULONGLONG now = GetTickCount64();
+	auto& nextRetry = g_CosmeticIconRetries[image];
+	if ( now < nextRetry )
+		return nullptr;
+	nextRetry = now + 5000;
+	const std::filesystem::path path = std::filesystem::path( GetDllDir() ) / "Assets" / "icons" / ( image + ".png" );
+	std::error_code error;
+	if ( std::filesystem::is_regular_file( path , error ) && LoadTrackedIconTexture( path.wstring() , icon ) )
+	{
+		DEV_LOG( "[cosmetic-image] loaded %s (%dx%d)\n" , image.c_str() , icon.width , icon.height );
+		return icon.srv;
+	}
+	if ( inserted )
+		DEV_LOG( "[cosmetic-image] missing or invalid PNG: %s\n" , path.string().c_str() );
+	return nullptr;
 }
 
 auto CAndromedaClient::OnRender() -> void
@@ -4076,7 +4094,6 @@ auto CAndromedaClient::OnRender() -> void
 	m_AutoCombo.OnRender();
 	m_Dodger.OnRender();
 	m_CreepBlocker.OnRender();
-	m_CosmeticChanger.OnRender();
 
 	DrawHeroVitalsOverlay();
 	DrawHeroSidePanels();

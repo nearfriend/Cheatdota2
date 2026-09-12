@@ -50,9 +50,8 @@ namespace
 
 	// NOTE: an in-match test confirmed that rewriting m_iItemDefinitionIndex on an
 	// already-spawned wearable does NOT swap the rendered model - Source 2 caches
-	// the model handle at spawn. A real local skin swap therefore needs an explicit
-	// model re-resolve, not a bare defindex write; the write path was removed once
-	// that was established. This pass is now read-only enumeration.
+	// the model handle at spawn. So ApplySelections writes the defindex only to keep
+	// the item view consistent, and relies on SetModel for the visible swap.
 
 	auto SplitTabLine( const std::string& line ) -> std::vector<std::string>
 	{
@@ -322,23 +321,104 @@ auto CCosmeticChanger::LogCatalogForHeroName( const std::string& hero , bool for
 	LogCatalogForHero( hero , force );
 }
 
-auto CCosmeticChanger::GetCurrentHero() const -> const std::string&
+auto CCosmeticChanger::GetCurrentHero() const -> std::string
 {
+	std::scoped_lock lock( m_SnapshotMutex );
 	return m_CurrentHero;
 }
 
 auto CCosmeticChanger::GetCurrentHeroIndex() const -> int
 {
+	std::scoped_lock lock( m_SnapshotMutex );
 	return m_CurrentHeroIndex;
 }
 
-auto CCosmeticChanger::GetWearableSlots() const -> const std::vector<WearableSlot>&
+auto CCosmeticChanger::IsModelWorn( const CatalogItem& item ) const -> bool
 {
-	return m_Wearables;
+	std::scoped_lock lock( m_SnapshotMutex );
+	for ( const auto& worn : m_Wearables )
+	{
+		// The defindex is what the item view says; the model path is what is
+		// actually rendered. Either one matching means this item is on the hero -
+		// after an apply the two agree, but a failed model write leaves only the
+		// defindex, and an unreadable item view leaves only the model.
+		if ( item.defIndex != 0 && worn.defIndex == item.defIndex )
+			return true;
+		if ( !item.model.empty() && worn.model == item.model )
+			return true;
+	}
+	return false;
+}
+
+auto CCosmeticChanger::GetSelectionsPath() -> std::string
+{
+	return GetDllDir() + "cosmetic_selections.tsv";
+}
+
+auto CCosmeticChanger::LoadSelections() -> void
+{
+	// The menu calls this every frame, so the read happens once and every later
+	// call is a single bool test. Saving is what keeps the file current after that.
+	static bool loaded = false;
+	if ( loaded )
+		return;
+	loaded = true;
+
+	const std::string path = GetSelectionsPath();
+	std::ifstream file( path );
+	if ( !file.is_open() )
+		return;
+
+	std::scoped_lock lock( Settings::CosmeticChanger::Mutex );
+	std::string line;
+	int restored = 0;
+	while ( std::getline( file , line ) )
+	{
+		if ( line.empty() || line[0] == '#' )
+			continue;
+
+		const auto fields = SplitTabLine( line );
+		if ( fields.size() < 3 )
+			continue;
+
+		// A non-numeric defindex yields 0, which SetSelection rejects - that is also
+		// what skips the header row without a special case for it.
+		const uint32_t defIndex = static_cast<uint32_t>( std::strtoul( fields[2].c_str() , nullptr , 10 ) );
+		if ( defIndex == 0 )
+			continue;
+
+		Settings::CosmeticChanger::SetSelection( fields[0] , fields[1] , defIndex );
+		++restored;
+	}
+
+	if ( restored > 0 )
+		DEV_LOG( "[cosmetic-ui] restored %d saved selection(s) from %s\n" , restored , path.c_str() );
+}
+
+auto CCosmeticChanger::SaveSelections() -> void
+{
+	const std::string path = GetSelectionsPath();
+	std::scoped_lock lock( Settings::CosmeticChanger::Mutex );
+	std::ofstream file( path , std::ios::trunc );
+	if ( !file.is_open() )
+	{
+		static bool warned = false;
+		if ( !warned )
+		{
+			DEV_LOG( "[cosmetic-ui] cannot write %s - selections will not survive a restart\n" , path.c_str() );
+			warned = true;
+		}
+		return;
+	}
+
+	file << "hero\tslot\tdefindex\n";
+	for ( const auto& selection : Settings::CosmeticChanger::Selections )
+		file << selection.hero << '\t' << selection.slot << '\t' << selection.defIndex << '\n';
 }
 
 auto CCosmeticChanger::GetStatus() const -> std::string
 {
+	std::scoped_lock lock( m_SnapshotMutex );
 	if ( !Settings::CosmeticChanger::Enable )
 		return "disabled";
 	if ( !m_ResolveTried )
@@ -642,14 +722,26 @@ auto CCosmeticChanger::ShouldLogWearableSet( const uint16_t* defIndexes , int co
 
 auto CCosmeticChanger::UpdateSnapshot( const uint16_t* defIndexes , C_BaseEntity* const* wearables , int count , int heroIndex ) -> void
 {
-	m_CurrentHeroIndex = heroIndex;
-	m_CurrentHero.clear();
-	m_Wearables.clear();
+	// A different hero means the recorded slot indexes no longer refer to anything,
+	// so the originals go with them.
+	if ( heroIndex != m_OriginalsHeroIndex )
+	{
+		m_Originals.clear();
+		m_OriginalsHeroIndex = heroIndex;
+	}
 
 	if ( !defIndexes || !wearables || count <= 0 )
+	{
+		std::scoped_lock lock( m_SnapshotMutex );
+		m_CurrentHeroIndex = heroIndex;
+		m_CurrentHero.clear();
+		m_Wearables.clear();
 		return;
+	}
 
-	m_Wearables.reserve( static_cast<size_t>( count ) );
+	std::string hero;
+	std::vector<WearableSlot> slots;
+	slots.reserve( static_cast<size_t>( count ) );
 	for ( int i = 0; i < count; ++i )
 	{
 		WearableSlot slot{};
@@ -679,17 +771,26 @@ auto CCosmeticChanger::UpdateSnapshot( const uint16_t* defIndexes , C_BaseEntity
 				slot.model = item->model;
 		}
 
-		if ( m_CurrentHero.empty() && !slot.hero.empty() )
-			m_CurrentHero = slot.hero;
+		// The first slot that names a hero names the whole loadout: every wearable on
+		// one hero belongs to that hero.
+		if ( hero.empty() && !slot.hero.empty() )
+			hero = slot.hero;
 
-		m_Wearables.push_back( slot );
+		slots.push_back( slot );
 	}
+
+	std::scoped_lock lock( m_SnapshotMutex );
+	m_CurrentHeroIndex = heroIndex;
+	m_CurrentHero = std::move( hero );
+	m_Wearables = std::move( slots );
 }
 
 auto CCosmeticChanger::LogConfiguredSelections( const std::string& hero ) -> void
 {
 	if ( !Settings::CosmeticChanger::LogUiSelections || hero.empty() )
 		return;
+
+	std::scoped_lock settingsLock( Settings::CosmeticChanger::Mutex );
 
 	uint64_t signature = 14695981039346656037ull;
 	auto mix = [&signature]( uint64_t value )
@@ -744,9 +845,54 @@ auto CCosmeticChanger::LogConfiguredSelections( const std::string& hero ) -> voi
 	}
 }
 
+auto CCosmeticChanger::RememberOriginal( int slot , uint32_t defIndex , const std::string& model ) -> void
+{
+	if ( FindOriginal( slot ) )
+		return;
+
+	OriginalSlot original{};
+	original.slot = slot;
+	original.defIndex = defIndex;
+	original.model = model;
+	m_Originals.push_back( std::move( original ) );
+}
+
+auto CCosmeticChanger::FindOriginal( int slot ) const -> const OriginalSlot*
+{
+	for ( const auto& original : m_Originals )
+	{
+		if ( original.slot == slot )
+			return &original;
+	}
+	return nullptr;
+}
+
+auto CCosmeticChanger::WriteWearable( C_BaseEntity* wearable , void* defAddr , uint32_t defIndex , const std::string& model ) -> bool
+{
+	if ( !wearable || model.empty() )
+		return false;
+
+	// Keep the econ defindex consistent with the model we install, so anything that
+	// re-reads the item view agrees with what is on screen. This write is not what
+	// changes the mesh - SetModel below is.
+	if ( defAddr && defIndex != 0 )
+	{
+		const uint16_t value = static_cast<uint16_t>( defIndex );
+		DWORD oldProtect = 0;
+		if ( FeatureSupport::IsReadableRuntimeMemory( defAddr , sizeof( uint16_t ) ) &&
+			VirtualProtect( defAddr , sizeof( uint16_t ) , PAGE_EXECUTE_READWRITE , &oldProtect ) )
+		{
+			std::memcpy( defAddr , &value , sizeof( uint16_t ) );
+			VirtualProtect( defAddr , sizeof( uint16_t ) , oldProtect , &oldProtect );
+		}
+	}
+
+	return SDK_SetEntityModel( wearable , model.c_str() );
+}
+
 auto CCosmeticChanger::ApplySelections( C_BaseEntity* const* wearables , void* const* defAddrs , int count ) -> void
 {
-	if ( !Settings::CosmeticChanger::ApplyOverrides || m_CurrentHero.empty() )
+	if ( !Settings::CosmeticChanger::ApplyOverrides )
 		return;
 	if ( !wearables || !defAddrs || count <= 0 )
 		return;
@@ -765,6 +911,21 @@ auto CCosmeticChanger::ApplySelections( C_BaseEntity* const* wearables , void* c
 		return;
 	}
 
+	// The menu mutates the selection list from the render thread while this runs on
+	// the game tick, so the whole decision is made under the settings lock. The live
+	// wearable state below is this thread's own, and needs no lock.
+	std::scoped_lock settingsLock( Settings::CosmeticChanger::Mutex );
+
+	std::string hero;
+	std::vector<WearableSlot> live;
+	{
+		std::scoped_lock lock( m_SnapshotMutex );
+		hero = m_CurrentHero;
+		live = m_Wearables;
+	}
+	if ( hero.empty() )
+		return;
+
 	// Only act when the (hero, wearable-set, selection-set) combination changes, so
 	// a steady state is not re-applied every pass - SetModel is a real engine call
 	// and re-running it each tick would thrash model loading.
@@ -774,13 +935,13 @@ auto CCosmeticChanger::ApplySelections( C_BaseEntity* const* wearables , void* c
 		signature ^= value;
 		signature *= 1099511628211ull;
 	};
-	for ( unsigned char c : m_CurrentHero )
+	for ( unsigned char c : hero )
 		mix( c );
 	for ( int i = 0; i < count; ++i )
-		mix( i < static_cast<int>( m_Wearables.size() ) ? m_Wearables[i].defIndex : 0u );
+		mix( i < static_cast<int>( live.size() ) ? live[i].defIndex : 0u );
 	for ( const auto& selection : Settings::CosmeticChanger::Selections )
 	{
-		if ( selection.hero != m_CurrentHero )
+		if ( selection.hero != hero )
 			continue;
 		for ( unsigned char c : selection.slot )
 			mix( c );
@@ -793,47 +954,54 @@ auto CCosmeticChanger::ApplySelections( C_BaseEntity* const* wearables , void* c
 	m_HasAppliedSignature = true;
 
 	int applied = 0;
-	for ( int i = 0; i < count && i < static_cast<int>( m_Wearables.size() ); ++i )
+	int reverted = 0;
+	for ( int i = 0; i < count && i < static_cast<int>( live.size() ); ++i )
 	{
-		const WearableSlot& live = m_Wearables[i];
-		if ( live.category.empty() || !wearables[i] )
+		const WearableSlot& slot = live[i];
+		if ( slot.category.empty() || !wearables[i] )
 			continue;
 
 		// Match the live wearable to a picked cosmetic by body-part slot.
-		const auto* selection = Settings::CosmeticChanger::FindSelection( m_CurrentHero , live.category );
-		if ( !selection || selection->defIndex == 0 || selection->defIndex == live.defIndex )
+		const auto* selection = Settings::CosmeticChanger::FindSelection( hero , slot.category );
+		if ( !selection || selection->defIndex == 0 )
+		{
+			// No pick for this slot. If we overrode it earlier in this match, put the
+			// hero's real item back - otherwise clearing a pick in the menu would
+			// leave the override on screen until the next respawn.
+			const auto* original = FindOriginal( i );
+			if ( !original || original->model.empty() || original->model == slot.model )
+				continue;
+
+			const bool restored = WriteWearable( wearables[i] , defAddrs[i] , original->defIndex , original->model );
+			DEV_LOG( "  [cosmetic-apply] slot %d (%s): restored %u (%s) setModel=%d\n" ,
+				i , slot.category.c_str() , original->defIndex , original->model.c_str() , restored );
+			if ( restored )
+				++reverted;
 			continue;
+		}
 
 		const auto* target = FindCatalogItemByDefIndex( selection->defIndex );
 		if ( !target || target->model.empty() )
 			continue;
 
-		// Keep the econ defindex consistent with the model we install, so anything
-		// that re-reads the item view agrees with what is on screen. This write is
-		// not what changes the mesh - SetModel below is.
-		if ( defAddrs[i] )
-		{
-			const uint16_t value = static_cast<uint16_t>( selection->defIndex );
-			DWORD oldProtect = 0;
-			if ( FeatureSupport::IsReadableRuntimeMemory( defAddrs[i] , sizeof( uint16_t ) ) &&
-				VirtualProtect( defAddrs[i] , sizeof( uint16_t ) , PAGE_EXECUTE_READWRITE , &oldProtect ) )
-			{
-				std::memcpy( defAddrs[i] , &value , sizeof( uint16_t ) );
-				VirtualProtect( defAddrs[i] , sizeof( uint16_t ) , oldProtect , &oldProtect );
-			}
-		}
+		// Snapshot the untouched slot before the first write to it, so the revert
+		// above has something real to go back to.
+		RememberOriginal( i , slot.defIndex , slot.model );
+		if ( selection->defIndex == slot.defIndex && target->model == slot.model )
+			continue;
 
-		const bool ok = SDK_SetEntityModel( wearables[i] , target->model.c_str() );
+		const bool ok = WriteWearable( wearables[i] , defAddrs[i] , selection->defIndex , target->model );
 		DEV_LOG( "  [cosmetic-apply] slot %d (%s): %u -> %u (%s) setModel=%d model=%s\n" ,
-			i , live.category.c_str() ,
-			live.defIndex , selection->defIndex , target->name.c_str() ,
+			i , slot.category.c_str() ,
+			slot.defIndex , selection->defIndex , target->name.c_str() ,
 			ok , target->model.c_str() );
 		if ( ok )
 			++applied;
 	}
 
-	if ( applied > 0 )
-		DEV_LOG( "[cosmetic-apply] applied %d override(s) for hero=%s\n" , applied , m_CurrentHero.c_str() );
+	if ( applied > 0 || reverted > 0 )
+		DEV_LOG( "[cosmetic-apply] hero=%s applied %d override(s), restored %d slot(s)\n" ,
+			hero.c_str() , applied , reverted );
 }
 
 auto CCosmeticChanger::ScanOwnedByHero( CGameEntitySystem* entitySystem , int heroIndex ) -> void
@@ -943,13 +1111,14 @@ auto CCosmeticChanger::ScanOwnedByHero( CGameEntitySystem* entitySystem , int he
 
 }
 
-auto CCosmeticChanger::OnRender() -> void
+auto CCosmeticChanger::OnGameTick() -> void
 {
 	if ( !Settings::CosmeticChanger::Enable )
 		return;
 
 	const uint32_t now = static_cast<uint32_t>( GetTickCount64() );
-	// Throttle the whole pass; this is a read-only diagnostic for now.
+	// Throttle the whole pass: it walks the entity list and can call SetModel, and
+	// the tick fires far more often than either needs.
 	if ( now - m_LastLogTick < 1000 )
 		return;
 	m_LastLogTick = now;
@@ -1000,6 +1169,7 @@ auto CCosmeticChanger::OnRender() -> void
 	const uint32_t defOffset = DefIndexOffset();
 	uint16_t wearableDef[32] = {};
 	C_BaseEntity* wearableEntity[32] = {};
+	void* wearableDefAddr[32] = {};
 	int wearableCount = 0;
 
 	for ( int i = 0; i < vec->size; ++i )
@@ -1012,6 +1182,7 @@ auto CCosmeticChanger::OnRender() -> void
 
 		wearableDef[wearableCount] = ReadAt<uint16_t>( wearable , defOffset );
 		wearableEntity[wearableCount] = wearable;
+		wearableDefAddr[wearableCount] = reinterpret_cast<uint8_t*>( wearable ) + defOffset;
 		++wearableCount;
 	}
 
@@ -1023,6 +1194,7 @@ auto CCosmeticChanger::OnRender() -> void
 		m_ForceCatalogLog = false;
 	}
 	LogConfiguredSelections( m_CurrentHero );
+	ApplySelections( wearableEntity , wearableDefAddr , wearableCount );
 
 	if ( !ShouldLogWearableSet( wearableDef , wearableCount , heroIndex ) || !Settings::CosmeticChanger::LogEquipped )
 		return;

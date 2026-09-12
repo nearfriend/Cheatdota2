@@ -125,14 +125,13 @@ namespace
 
 	// "Is there anything left here at all?" - decides whether to keep working,
 	// and marks a creep ESCAPED (sticky, for the rest of the hold) so it leaves
-	// the wave entirely. This must be much wider than the body-contact band:
-	// the user-visible failure was the blocker hitting once, then declaring the
-	// whole wave gone as soon as the front rank slipped roughly 150 units past
-	// the hero. With a slower hero that is exactly when the feature should keep
-	// walking with the wave and re-plug the line, not stop. Reclaim below still
-	// prevents chasing a single far-ahead creep; this wider cutoff only keeps
-	// the wave alive for continuous pressure.
-	constexpr float kEscapeTolerance = 500.f;
+	// the wave entirely. Deliberately generous and kept at 150: a creep is only
+	// truly written off - removed from the wave's presence, so the feature can
+	// declare the whole wave gone - once it is this far past. Tightening this
+	// gate is what made the feature give up on whole waves prematurely and let a
+	// single heading swing retire several creeps at once (sticky), so the "stop
+	// chasing a gone creep" job was split out to kReclaimTolerance below.
+	constexpr float kEscapeTolerance = 150.f;
 
 	// "Should the hero still try to get back in FRONT of this creep?" - a
 	// separate, LOWER, NON-sticky cutoff. A creep past this drops out of the
@@ -149,13 +148,37 @@ namespace
 	// holds for the rest. See feedback_creepblock_rule1.
 	constexpr float kReclaimTolerance = 100.f;
 
-	// Default down-lane carrot for the move order. This keeps the hero walking
-	// with the wave even when he is already in front of it; the lateral term is
-	// capped separately so a slow hero does not spend half his speed sideways.
+	// Hard ceiling on how far down-lane a single order may send the hero past
+	// his own position - roughly contact range, enough to re-seat the plug
+	// against a creep drawing level with him and no more. Walking further than
+	// this in the wave's own direction is following, not blocking: the creeps
+	// are faster, so ground given up that way is never recovered.
+	//
+	// Also caps the diagonal leg (forward == side at 45deg), so it sets how far
+	// the block point sits from the hero. A capture showed it pinned at 100
+	// every order (dist=141), aiming him at a far point he never reaches so the
+	// block point was hard to re-take. Lowered 100 -> 70 (dist ~99): shorter,
+	// tighter diagonals that let him re-establish the block sooner. Does not
+	// cut coverage (the sweep turns at the wave EDGE, not at the leg length) or
+	// forward speed (he still travels the 45deg at full speed); the minForward
+	// floor still extends the leg when he has fallen close, so the standoff is
+	// re-established when it actually needs to be.
 	constexpr float kMaxForwardCommit = 70.f;
 
-	// The order is a forward walk with lateral correction, never a pure sidestep
-	// and never a backward reset.
+	// ADAPTIVE REACH. kMaxForwardCommit keeps the diagonal short for the tight
+	// feel, but a capture showed the remaining escapes were flank creeps on a
+	// wave ~180 wide (wave_lat=[-86,95]): the hero's 70-leg sweep never reached
+	// the far edge, so one flank walked past uncovered and, being faster, got
+	// away. When the wave is wider than the short cap can cover, the leg is
+	// allowed to grow toward the far edge instead - up to this hard ceiling, so
+	// a freak-wide estimate cannot send him on a marathon down-lane. The single
+	// leg still drives forward AND side together, so 45deg is preserved; only
+	// its length adapts, never its angle. Narrow waves keep the short cap
+	// untouched because their edge is already inside it.
+	constexpr float kMaxSweepLeg = 140.f;
+
+	// The order is always a DIAGONAL across the wave's front, never a straight
+	// walk down the lane and never a pure sidestep.
 	//
 	// Straight ahead does not block anything for long: the hero and the creep
 	// are then travelling the same line, he is the slower of the two, and the
@@ -164,9 +187,11 @@ namespace
 	// across its front keeps his hull between the creep and the way it is trying
 	// to go, which is what blocking looks like by hand.
 	//
-	// The side leg is deliberately smaller than the forward leg. Logs showed the
-	// old equal-leg sweep continuously ordered but still lost the wave because a
-	// slower hero bled too much speed across the lane.
+	// The angle is held at 45 degrees (gaining ground while crossing) or 135
+	// (giving ground while crossing) by giving the forward and sideways legs the
+	// SAME LENGTH - a right triangle with equal sides has no other option. There
+	// is no angle constant to tune here on purpose: the two legs being equal IS
+	// the 45, and anything that changes one without the other bends it.
 	//
 	// The floor on how far in front of the leading creep the block point must
 	// sit, along the wave's heading. Contact range, because that is where the
@@ -261,11 +286,6 @@ namespace
 	auto Dot2D( const Vector3& left , const Vector3& right ) -> float
 	{
 		return left.m_x * right.m_x + left.m_y * right.m_y;
-	}
-
-	auto ClampFloat( float value , float minValue , float maxValue ) -> float
-	{
-		return ( std::max )( minValue , ( std::min )( value , maxValue ) );
 	}
 
 	// Every allied lane creep near the hero. Walks the identity chunks rather
@@ -466,17 +486,18 @@ namespace
 	// and he covers about 64 of it, which is the fact the old lateral average
 	// could not represent: averaging two creeps walking either side of him
 	// returns the empty ground between them, a line that covers neither.
-	// countBumped is kept for the debug call site, but bumped creeps still score
-	// for the real line choice. The desired block is continuous pressure on the
-	// leading hull so the rest of the wave stacks behind it; treating contact as
-	// "done" makes the hero step off the plug after the first hit.
+	// countBumped false scores only the creeps still worth blocking, which is
+	// what the line choice runs on: a creep the hero has already crashed into is
+	// stalled whether he stands on it or not, so covering it again earns nothing.
+	// True scores every hull he physically reaches, which is what the log wants.
 	auto CoverageScore( const std::vector<RankCreep>& rank , float line , bool countBumped ) -> float
 	{
-		(void)countBumped;
-
 		float score = 0.f;
 		for ( const auto& creep : rank )
 		{
+			if ( creep.bumped && !countBumped )
+				continue;
+
 			const float offset = std::fabs( creep.lateral - line );
 			if ( offset >= kCoverageFalloff )
 				continue;
@@ -496,10 +517,12 @@ namespace
 	// creeps they are equally good, and swapping between them every order is
 	// the wobble this whole design exists to avoid.
 	//
-	// Creeps already crashed into are still candidates. Contact is not the end
-	// of the block; it is the moment the wave starts compressing behind the
-	// plugged creep, so the held line should remain valuable while the hero keeps
-	// walking with the wave and making small lateral corrections.
+	// Creeps already crashed into are skipped as candidates and score nothing,
+	// so the moment the hero connects with one, the line he is standing on goes
+	// worthless and the next creep along wins on its own merits. That is the
+	// hand-off: hold a line until contact, then take the next one. No special
+	// case is needed to break the hysteresis - the held line simply stops
+	// scoring, and the bonus has nothing left to protect.
 	//
 	// The line being held is identified by WHICH CREEP it belongs to, not by a
 	// coordinate. Coordinates in this frame are not comparable across orders:
@@ -518,6 +541,8 @@ namespace
 		for ( size_t index = 0; index < rank.size(); ++index )
 		{
 			const auto& creep = rank[index];
+			if ( creep.bumped )
+				continue;
 
 			float score = CoverageScore( rank , creep.lateral , false );
 			if ( heldEntity && creep.entity == heldEntity )
@@ -532,6 +557,20 @@ namespace
 
 		if ( best >= 0 )
 			return best;
+
+		// Every creep in reach has been crashed into already. Rather than stand
+		// on a line he is finished with, cover whatever is physically there -
+		// the cooldowns expire in under a second and the cycle starts again.
+		bestScore = 0.f;
+		for ( size_t index = 0; index < rank.size(); ++index )
+		{
+			const float score = CoverageScore( rank , rank[index].lateral , true );
+			if ( best < 0 || score > bestScore )
+			{
+				best = static_cast<int>( index );
+				bestScore = score;
+			}
+		}
 
 		return best;
 	}
@@ -604,9 +643,9 @@ namespace
 		C_BaseEntity* lineEntity = nullptr; // creep whose line was chosen
 		bool valid = false;
 		// Nothing is blockable any more, but the wave has not cleared out
-		// either. Keep tracking its line and moving with it; if the hero simply
-		// stands ground here, the first contact turns into the visible stop the
-		// user reported.
+		// either. The hero stands his ground on the line he already holds -
+		// creeps still coming up behind can bunch against him there - instead of
+		// setting off after the ones that got by.
 		bool holding = false;
 	};
 
@@ -745,8 +784,8 @@ namespace
 		}
 
 		// Nothing left to get in front of, but creeps are still about: hold the
-		// line. The caller keeps the block point moving with the wave so the
-		// hero does not stall after the first contact.
+		// line. The caller pins the block point to the hero's own position, so
+		// he shuffles across the lane without giving up ground down it.
 		if ( !hasLead )
 		{
 			front.valid = presentCount > 0;
@@ -1062,9 +1101,10 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	}
 
 	// Anything the hero is physically crashed into right now is a creep he has
-	// already touching. Record contact for crash-edge timing and debugging, but
-	// keep those creeps in the line choice: continuous pressure on the front hull
-	// is what makes the rest of the wave bunch behind it.
+	// already done his job on - the collision stalls it whether he keeps leaning
+	// on it or not. Record the contact, then mark everything still inside its
+	// cooldown, so the line choice below hands him on to a creep that is still
+	// walking rather than parking him against one that has already stopped.
 	int freshContacts = 0;
 	float nearestCreep = kWaveSearchRadius;
 	for ( auto& creep : wave )
@@ -1290,10 +1330,17 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	const float standoff = ( std::max )( Settings::CreepBlocker::BlockAhead , kMinAheadOfLeader );
 	const float minForward = front.hasFrontMost ? front.frontMostLead + standoff : 0.f;
 
-	// Forward pressure first, lateral correction second.
+	// THE DIAGONAL. Both legs are the same length, which is the entire reason
+	// the angle comes out at 45 or 135 degrees: a right triangle with equal
+	// sides has no other option.
 	//
+	// This replaces a forward term and a sideways term that were computed
+	// independently - the standoff decided one, the sweep decided the other -
+	// so the angle between them was whatever those two happened to work out to,
+	// anything from a straight walk down the lane to a pure sidestep. Nothing
+	// held it at a diagonal at all.
 	// Has a creep got past him? This decides everything below, because rule 1
-	// outranks lateral coverage when the two want different things.
+	// outranks the diagonal and the two want different things here.
 	const bool behind = front.hasFrontMost && front.frontMostLead > 0.f;
 
 	// Never sweep away from a wave he has not reached yet. When the covering
@@ -1346,31 +1393,68 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// lone straggler that is barely ahead.
 		if ( front.rankSize > 1 )
 		{
-			const float correction = front.hasExtent
-				? ClampFloat( front.lateral , -Settings::CreepBlocker::SideStep , Settings::CreepBlocker::SideStep )
-				: static_cast<float>( m_ZigSide ) * Settings::CreepBlocker::SideStep;
-			lineShift = ClampFloat( correction , -forwardStep * 0.35f , forwardStep * 0.35f );
+			const float edgeTarget = m_ZigSide > 0 ? front.lateralMax : front.lateralMin;
+			const float sweepReach = front.hasExtent
+				? std::fabs( edgeTarget ) + kHeroCollisionRadius
+				: Settings::CreepBlocker::SideStep;
+			lineShift = static_cast<float>( m_ZigSide ) * ( std::min )( sweepReach , forwardStep );
 		}
 		else
 		{
-			lineShift = ClampFloat( front.lateral , -Settings::CreepBlocker::SideStep * 0.25f ,
-				Settings::CreepBlocker::SideStep * 0.25f );
+			lineShift = static_cast<float>( m_ZigSide ) * ( Settings::CreepBlocker::SideStep * 0.25f );
 		}
 	}
 	else
 	{
-		// IN FRONT. Rule 1 already holds, so keep moving with the wave and make
-		// only enough lateral correction to stay on the blocking line.
+		// IN FRONT. Rule 1 already holds, so the diagonal is free to do its job.
 		//
-		// A slower hero cannot afford a 45-degree sweep: it turns 300 move speed
-		// into about 212 down-lane speed while creeps keep walking at lane creep
-		// speed. The log showed exactly that pattern: the blocker kept ordering,
-		// but the hero fell from far ahead into RECOVER without ever registering
-		// contact. Use the wave direction as the primary movement, and let the
-		// side term be a correction rather than half the order.
-		forwardStep = ( std::max )( kMaxForwardCommit , minForward );
-		lineShift = ClampFloat( front.lateral , -Settings::CreepBlocker::SideStep ,
-			Settings::CreepBlocker::SideStep );
+		// The leg is long enough to carry him to the far EDGE of the wave, not a
+		// fixed sidestep from wherever he stands. That is the difference between
+		// sweeping the whole wave and sweeping a patch of it: a capture showed
+		// coverage stuck at 1.6 of 3-4 creeps with nearest_creep never under 75,
+		// which is a hero crossing back and forth beside the wave rather than
+		// through it, while the creeps he never reached walked past.
+		//
+		// One hull of margin past the edge creep, so he actually clears it
+		// instead of stopping on its centre line.
+		const float edgeTarget = m_ZigSide > 0 ? front.lateralMax : front.lateralMin;
+		const float sweepReach = front.hasExtent
+			? std::fabs( edgeTarget ) + kHeroCollisionRadius
+			: Settings::CreepBlocker::SideStep;
+
+		// SideStep is the floor, not the value: it keeps a sweep alive when the
+		// wave is narrow or its extent is unavailable.
+		float leg = ( std::max )( Settings::CreepBlocker::SideStep , sweepReach );
+
+		// 135 degrees - cutting BACK across the wave's front - only when the
+		// hero is far enough ahead that giving up that ground still leaves the
+		// point in front of the front-most creep. Otherwise 45 degrees, gaining
+		// ground while crossing. The rule decides which of the two angles is
+		// available; it is never a free choice.
+		const bool forwardDiagonal = -leg < minForward;
+		if ( forwardDiagonal && minForward > leg )
+		{
+			// A short leg would land behind the creep. Grow the diagonal
+			// instead of bending it - the angle is the thing being preserved.
+			leg = minForward;
+		}
+
+		// The cap may shorten the diagonal, but never below what rule 1 needs.
+		// Capping under minForward is what forced the end-of-order correction to
+		// fire, and that correction is forward-only, so it bends the very angle
+		// this branch exists to hold.
+		//
+		// The ceiling is normally kMaxForwardCommit (short, tight). But when the
+		// wave is wider than that - the flank the escapes come from - let the
+		// ceiling rise toward the far edge (sweepReach), bounded by kMaxSweepLeg,
+		// so the leg can actually carry his hull across to the flank creep. On a
+		// narrow wave sweepReach is already inside kMaxForwardCommit, so this
+		// leaves the short cap untouched.
+		const float coverageReach = ( std::min )( sweepReach , kMaxSweepLeg );
+		leg = ( std::min )( leg , ( std::max )( { kMaxForwardCommit , minForward , coverageReach } ) );
+
+		forwardStep = forwardDiagonal ? leg : -leg;
+		lineShift = static_cast<float>( m_ZigSide ) * leg;
 	}
 
 	// m_CutSide is kept only so the log can still show which way he is cutting;
@@ -1470,9 +1554,21 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		{
 			aheadCorrection = kMinAheadOfLeader - aheadOfLeader;
 
+			// Pushed along the DIAGONAL, not straight down-lane. A forward-only
+			// shove satisfies the rule while flattening the very angle the order
+			// was built around - a capture caught it taking 45 degrees down to
+			// 29. Adding an equal sideways component on the side already being
+			// cut to keeps the correction parallel to the order it is
+			// correcting, so the angle survives.
+			//
+			// The lateral term is skipped while recovering, where the order is
+			// deliberately not a 45 and adding one would slow the catch-up.
+			const float lateralPart = behind ? 0.f
+				: aheadCorrection * ( lineShift >= 0.f ? 1.f : -1.f );
+
 			blockPoint = Vector3(
-				blockPoint.m_x + direction.m_x * aheadCorrection ,
-				blockPoint.m_y + direction.m_y * aheadCorrection ,
+				blockPoint.m_x + direction.m_x * aheadCorrection + lateralAxis.m_x * lateralPart ,
+				blockPoint.m_y + direction.m_y * aheadCorrection + lateralAxis.m_y * lateralPart ,
 				blockPoint.m_z );
 			aheadOfLeader = kMinAheadOfLeader;
 		}
@@ -1529,50 +1625,35 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 	m_Marker.blockPoint = blockPoint;
 	m_Marker.valid = true;
 
-	// REAL ORDER PATH (Phase 2b). When enabled AND the order function is resolved
-	// (a verified signature is present), issue the move straight through the game
-	// - no simulated cursor, no click-grab - so the block point can sit right in
-	// the creep's path for a true body-block/domino. Inert by default:
-	// RealOrdersAvailable() is false until a verified signature is filled in, and
-	// the toggle is off. On failure it falls through to the right-click pipeline.
-	const bool useRealOrder =
-		Settings::CreepBlocker::UseRealOrders && FeatureSupport::RealOrdersAvailable();
-	bool realOrderIssued = false;
-	if ( useRealOrder )
-		realOrderIssued = FeatureSupport::SendMoveOrder( blockPoint );
-
-	if ( !realOrderIssued )
+	const HWND window = FeatureSupport::WindowReadyForInput();
+	if ( !window )
 	{
-		const HWND window = FeatureSupport::WindowReadyForInput();
-		if ( !window )
-		{
-			m_Status = "Game window not focused";
-			if ( shouldLog )
-				DEV_LOG( "[creep-block] FAIL: game window not focused\n" );
-			return false;
-		}
-
-		ImVec2 screen{};
-		if ( !FeatureSupport::ProjectWorldToClient( window , blockPoint , true , screen ) )
-		{
-			m_Status = "Block point is off screen";
-			if ( shouldLog )
-				DEV_LOG( "[creep-block] FAIL: block point off screen point(%.0f,%.0f,%.0f)\n" ,
-					blockPoint.m_x , blockPoint.m_y , blockPoint.m_z );
-			return false;
-		}
-
-		if ( !FeatureSupport::MoveCursorToClientPoint( window , screen , m_PreviousCursor ) )
-		{
-			m_Status = "Could not aim at the block point";
-			if ( shouldLog )
-				DEV_LOG( "[creep-block] FAIL: could not move cursor to screen(%.0f,%.0f)\n" , screen.x , screen.y );
-			return false;
-		}
-
-		m_Phase = OrderPhase::Click;
-		m_NextPhaseTick = now + kClickDelayMs;
+		m_Status = "Game window not focused";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: game window not focused\n" );
+		return false;
 	}
+
+	ImVec2 screen{};
+	if ( !FeatureSupport::ProjectWorldToClient( window , blockPoint , true , screen ) )
+	{
+		m_Status = "Block point is off screen";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: block point off screen point(%.0f,%.0f,%.0f)\n" ,
+				blockPoint.m_x , blockPoint.m_y , blockPoint.m_z );
+		return false;
+	}
+
+	if ( !FeatureSupport::MoveCursorToClientPoint( window , screen , m_PreviousCursor ) )
+	{
+		m_Status = "Could not aim at the block point";
+		if ( shouldLog )
+			DEV_LOG( "[creep-block] FAIL: could not move cursor to screen(%.0f,%.0f)\n" , screen.x , screen.y );
+		return false;
+	}
+
+	m_Phase = OrderPhase::Click;
+	m_NextPhaseTick = now + kClickDelayMs;
 
 	// Track blocking state with duration safety limit
 	if ( !m_isCreepBlocking )
@@ -1581,17 +1662,16 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		m_isCreepBlocking = true;
 	}
 
-	const char* orderTag = realOrderIssued ? " {real-order}" : "";
-	m_Status = ( front.holding
-		? std::string( "Tracking wave [" ) + GetTeamName( heroTeam ) + "] - keeping pressure"
-		: std::string( "Blocking [" ) + GetTeamName( heroTeam ) + "]" ) + orderTag;
+	m_Status = front.holding
+		? std::string( "Holding the line [" ) + GetTeamName( heroTeam ) + "] - front rank got by"
+		: std::string( "Blocking [" ) + GetTeamName( heroTeam ) + "]";
 
 
 	if ( shouldLog )
 	{
-		DEV_LOG( "[creep-block] %s team=%s wave=%zu rank=%d dir=(%.2f,%.2f) order=%s\n" ,
+		DEV_LOG( "[creep-block] %s team=%s wave=%zu rank=%d dir=(%.2f,%.2f)\n" ,
 			front.holding ? "HOLD" : "BLOCK" , GetTeamName( heroTeam ) , wave.size() , front.rankSize ,
-			direction.m_x , direction.m_y , realOrderIssued ? "real" : "rightclick" );
+			direction.m_x , direction.m_y );
 		// lead is how far the hero is in front of the leading blockable creep;
 		// nearest is the closest creep of any kind, which is what has to fall
 		// inside contact range before a bump can register.
@@ -1651,7 +1731,7 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 		// reversed it.
 		// wave_lat is the wave's left and right edges as seen from the hero, and
 		// the sweep has to run between them. Read it against line_shift on the
-		// MOVE line: a shift that never reaches either edge is a hero crossing
+		// DIAG line: a shift that never reaches either edge is a hero crossing
 		// beside the wave, and the creeps outside his sweep are the ones that
 		// escape while he blocks the first. coverage says how many of the rank
 		// his hull actually reaches from where he is now; well under rank means
@@ -1662,13 +1742,14 @@ auto CCreepBlocker::TryIssueBlockOrder( uint32_t now ) -> bool
 			front.hasExtent ? front.lateralMin : 0.f , front.hasExtent ? front.lateralMax : 0.f ,
 			front.bumpedCount , freshContacts , front.coverage , front.rankSize );
 
-		// THE MOVE. fwd is the down-lane carrot, side is only the correction.
-		// A shallow angle means the hero is spending most of his speed walking
-		// with the wave instead of sweeping beside it.
+		// THE DIAGONAL. fwd and side are the two legs; they are equal by
+		// construction, so angle should read 45 or 135 and nothing else. A
+		// reading that is not one of those two means something downstream bent
+		// the order after the legs were set.
 		const float legAngle = ( std::fabs( blockPointAlongDir ) > 0.001f || std::fabs( lineShift ) > 0.001f )
 			? std::atan2( std::fabs( lineShift ) , blockPointAlongDir ) * 57.2957795f
 			: 0.f;
-		DEV_LOG( "  MOVE fwd=%.0f side=%.0f angle=%.0f block@(%.0f,%.0f) dist=%.0f down_lane=%.0f (target %.0f)\n" ,
+		DEV_LOG( "  DIAG fwd=%.0f side=%.0f angle=%.0f block@(%.0f,%.0f) dist=%.0f down_lane=%.0f (limit %.0f)\n" ,
 			blockPointAlongDir , lineShift , legAngle ,
 			blockPoint.m_x , blockPoint.m_y , heroToBlockDist , blockPointAlongDir , kMaxForwardCommit );
 
@@ -1886,12 +1967,13 @@ auto CCreepBlocker::DrawBlockMarker() const -> void
 		}
 	}
 
-	// The movement angle, as a number, next to the point it describes. Forward
-	// biased movement should stay shallow; red means the side correction is
-	// taking too much of the order.
+	// The diagonal, as a number, next to the point it describes. It should read
+	// 45 or 135 and nothing else - the two legs are built equal, so any other
+	// value means something bent the order after they were set. Green while it
+	// holds, red the moment it does not.
 	char angleText[48];
 	const int angle = static_cast<int>( m_RuleDebug.angleDegrees + 0.5f );
-	const bool angleOk = angle <= 35;
+	const bool angleOk = std::abs( angle - 45 ) <= 3 || std::abs( angle - 135 ) <= 3;
 	snprintf( angleText , sizeof( angleText ) , "%d deg%s past=%d" ,
 		angle , m_RuleDebug.crashed ? " CRASH" : "" , m_RuleDebug.pastCount );
 	drawList->AddText( ImVec2( blockScreen.x + 18.f , blockScreen.y - 8.f ) ,

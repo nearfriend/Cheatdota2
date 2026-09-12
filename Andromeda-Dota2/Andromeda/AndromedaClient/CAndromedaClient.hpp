@@ -131,8 +131,7 @@ public:
 	// is why only the ~180 shipped PNGs had icons and everything else fell
 	// back to a lettered plate.
 	auto GetCastableIconSrv( const std::string& name , bool isItem ) -> struct ID3D11ShaderResourceView*;
-	auto GetDotaIconSrv( const std::string& folder , const std::string& assetName ,
-		const std::string& remoteAssetName = {} ) -> struct ID3D11ShaderResourceView*;
+	auto GetCosmeticIconSrv( const std::string& image ) -> struct ID3D11ShaderResourceView*;
 	const CAutoCombo& GetAutoCombo() const { return m_AutoCombo; }
 
 private:

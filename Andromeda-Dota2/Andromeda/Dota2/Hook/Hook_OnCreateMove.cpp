@@ -13,6 +13,8 @@ auto Hook_OnCreateMove( CDOTAInput* pCDOTAInput , uint32_t split_screen_index , 
 		return;
 
 	OnCreateMove_o( pCDOTAInput , split_screen_index , a3 );
+	if ( split_screen_index == 0 )
+		GetAndromedaClient()->GetCosmeticChanger().OnGameTick();
 
 	if ( !pCDOTAInput )
 		return;
