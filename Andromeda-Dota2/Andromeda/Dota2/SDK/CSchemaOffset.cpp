@@ -391,6 +391,37 @@ auto CShcemaOffset::LogFieldsMatching( const std::string& ClassName , const std:
 	return logged;
 }
 
+auto CShcemaOffset::LogFieldsAnywhere( const std::string& Needle ) const -> size_t
+{
+	auto lower = []( const std::string& in ) -> std::string
+	{
+		std::string out = in;
+		std::transform( out.begin() , out.end() , out.begin() ,
+			[]( unsigned char c ) { return static_cast<char>( std::tolower( c ) ); } );
+		return out;
+	};
+
+	const std::string needleLower = lower( Needle );
+	size_t logged = 0;
+
+	for ( const auto& classEntry : m_SchemaData )
+	{
+		for ( const auto& field : classEntry.second )
+		{
+			if ( lower( field.first ).find( needleLower ) == std::string::npos )
+				continue;
+
+			DEV_LOG( "[schema]   %s::%s = 0x%04X\n" ,
+				classEntry.first.c_str() , field.first.c_str() , field.second.m_Offset );
+			++logged;
+		}
+	}
+
+	DEV_LOG( "[schema] %zu field(s) matched \"%s\" across %zu class(es)\n" ,
+		logged , Needle.c_str() , m_SchemaData.size() );
+	return logged;
+}
+
 auto CShcemaOffset::TryGetOffset( const std::string& ClassName , const std::string& PropertyName , uint32_t& outOffset ) const -> bool
 {
 	const auto classIt = m_SchemaData.find( ClassName );

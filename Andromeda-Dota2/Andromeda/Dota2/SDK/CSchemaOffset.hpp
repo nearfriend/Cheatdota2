@@ -45,6 +45,14 @@ public:
 	 */
 	auto LogFieldsMatching( const std::string& ClassName , const std::string& Needle ) const -> size_t;
 
+	/**
+	 * DEV_LOG every field in EVERY class whose name contains Needle. For finding a
+	 * field when the owning class is unknown - the case LogFieldsMatching cannot
+	 * cover, since it needs the class up front.
+	 * @return Number of fields logged.
+	 */
+	auto LogFieldsAnywhere( const std::string& Needle ) const -> size_t;
+
 private:
 	std::unordered_map<std::string , std::unordered_map<std::string , SchemaOffset_t>> m_SchemaData;
 };

@@ -36,11 +36,15 @@ auto CFunctionList::OnInit() -> bool
 	if ( GetDOTAGCClientSystem.HasPattern() )
 		GetDOTAGCClientSystem.Search( true );
 
-	// Optional model setter for the local skin changer. Same rule: only searched
-	// once a real signature is present, so the empty default stays null and the
-	// cosmetic apply path remains preview-only instead of calling a bad address.
-	if ( SetModel.HasPattern() )
-		SetModel.Search( true );
+	// Local skin changer. Both signatures are verified against this build, so they
+	// are searched normally; SkipError keeps a failed search (a patched or updated
+	// client) silent, leaving GetFunction() null and the swap path inert rather
+	// than jumping somewhere wrong.
+	if ( CSkeletonInstance_SetModel.HasPattern() )
+		CSkeletonInstance_SetModel.Search( true );
+	if ( PrecacheResource.HasPattern() )
+		PrecacheResource.Search( true );
+	ResourcePath_Init.Search( true );
 
 	return searched;
 }

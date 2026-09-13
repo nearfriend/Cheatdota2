@@ -3324,6 +3324,68 @@ namespace
 		DEV_LOG( "[fog] '%s' bool ConVar not located via name pointer\n" , name );
 		return nullptr;
 	}
+
+	// Same search as above but for a non-bool ConVar, returning the value slot as
+	// int32 and logging whatever type tag it carries rather than demanding one.
+	// Used for skip_model_combine: Dota merges a hero and all its wearables into a
+	// single combined mesh and renders THAT, which is why writing an individual
+	// wearable's model handle never shows up on screen. If this convar makes the
+	// engine skip combining, each wearable renders from its own model again and the
+	// swap becomes visible - so it is worth a look before anything more invasive.
+	auto FindIntConVarByNamePointer( const ModuleRange& mod , const char* name ) -> int32_t*
+	{
+		const char* str = FindStringInModule( mod , name );
+		if ( !str )
+		{
+			DEV_LOG( "[combine] string '%s' not found in module\n" , name );
+			return nullptr;
+		}
+
+		const uintptr_t strAddr = reinterpret_cast<uintptr_t>( str );
+		auto* dos = reinterpret_cast<PIMAGE_DOS_HEADER>( mod.base );
+		auto* nt = reinterpret_cast<PIMAGE_NT_HEADERS64>( mod.base + dos->e_lfanew );
+		auto* section = IMAGE_FIRST_SECTION( nt );
+
+		static const int kNameFieldOffs[] = { 0 , 8 , 16 , 24 };
+
+		for ( unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i , ++section )
+		{
+			if ( ( section->Characteristics & IMAGE_SCN_MEM_WRITE ) == 0 )
+				continue;
+
+			const uintptr_t start = mod.base + section->VirtualAddress;
+			const uintptr_t end = start + section->Misc.VirtualSize;
+			uintptr_t addr = ( start + 7 ) & ~uintptr_t( 7 );
+
+			for ( ; addr + 0x48 <= end; addr += 8 )
+			{
+				if ( *reinterpret_cast<uintptr_t*>( addr ) != strAddr )
+					continue;
+
+				for ( int nameOff : kNameFieldOffs )
+				{
+					if ( addr < static_cast<uintptr_t>( nameOff ) )
+						continue;
+
+					const uintptr_t base = addr - static_cast<uintptr_t>( nameOff );
+					auto* typePtr = reinterpret_cast<int16_t*>( base + 0x28 );
+					auto* valuePtr = reinterpret_cast<int32_t*>( base + 0x40 );
+
+					if ( !IsWritableRange( typePtr , sizeof( int16_t ) ) ||
+						!IsWritableRange( valuePtr , sizeof( int32_t ) ) )
+						continue;
+
+					DEV_LOG( "[combine] '%s' ConVar -> %p (type=%d value=%d base=%p nameOff=%d)\n" ,
+						name , valuePtr , static_cast<int>( *typePtr ) , *valuePtr ,
+						reinterpret_cast<void*>( base ) , nameOff );
+					return valuePtr;
+				}
+			}
+		}
+
+		DEV_LOG( "[combine] '%s' ConVar not located via name pointer\n" , name );
+		return nullptr;
+	}
 }
 
 auto CAndromedaClient::SearchCameraConvar( CBasePattern& pattern , const char** fallbackPatterns ) -> bool
@@ -4026,6 +4088,42 @@ auto CAndromedaClient::GetCastableIconSrv( const std::string& name , bool isItem
 	// user would wait forever for an icon that never downloads.
 	UpdateTrackedIconDownloads();
 	return icon ? icon->srv : nullptr;
+}
+
+auto CAndromedaClient::ApplySkipModelCombine( bool enable ) -> bool
+{
+	// Resolved once and remembered, including the original value, so turning the
+	// toggle back off restores what the game shipped with rather than guessing 0.
+	static int32_t* value = nullptr;
+	static int32_t original = 0;
+	static bool tried = false;
+	static bool applied = false;
+
+	if ( !tried )
+	{
+		tried = true;
+		const auto mod = GetModuleRange( CLIENT_DLL );
+		if ( mod.base )
+		{
+			value = FindIntConVarByNamePointer( mod , "skip_model_combine" );
+			if ( value )
+				original = *value;
+		}
+	}
+
+	if ( !value )
+		return false;
+
+	const int32_t wanted = enable ? 1 : original;
+	if ( *value != wanted )
+	{
+		*value = wanted;
+		DEV_LOG( "[combine] skip_model_combine %s (value=%d, original=%d)\n" ,
+			enable ? "ENABLED" : "restored" , *value , original );
+	}
+
+	applied = enable;
+	return applied;
 }
 
 auto CAndromedaClient::GetCosmeticIconSrv( const std::string& image ) -> ID3D11ShaderResourceView*

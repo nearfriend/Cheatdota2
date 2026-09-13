@@ -213,6 +213,9 @@
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_OnAddEntity.cpp">
       <Filter>Andromeda\Dota2\Hook</Filter>
     </ClCompile>
+    <ClCompile Include="Andromeda\Dota2\Hook\Hook_SetModel.cpp">
+      <Filter>Andromeda\Dota2\Hook</Filter>
+    </ClCompile>
     <ClCompile Include="Andromeda\Dota2\Hook\Hook_OnRemoveEntity.cpp">
       <Filter>Andromeda\Dota2\Hook</Filter>
     </ClCompile>
@@ -666,6 +669,9 @@
       <Filter>Andromeda\Dota2\SDK\Types</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_OnAddEntity.hpp">
+      <Filter>Andromeda\Dota2\Hook</Filter>
+    </ClInclude>
+    <ClInclude Include="Andromeda\Dota2\Hook\Hook_SetModel.hpp">
       <Filter>Andromeda\Dota2\Hook</Filter>
     </ClInclude>
     <ClInclude Include="Andromeda\Dota2\Hook\Hook_OnRemoveEntity.hpp">

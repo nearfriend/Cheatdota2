@@ -187,22 +187,39 @@ namespace Settings
 		// Held, not toggled: blocking is something you do for the ten seconds
 		// of the walk to lane, and a hold reads the same as doing it by hand.
 		inline int Key = 0;
-		// How far in front of the leading creep the hero is sent. Too short
-		// and the order resolves behind the creep so it walks past; too long
-		// and the hero runs ahead of the wave instead of standing in it.
-		inline float BlockAhead = 110.f;
-		// How far sideways a single order may pull the hero while it tracks the
-		// leading creep's line. Blocking means standing in the creep's path and
-		// following it across when it tries to walk around; this caps how much
-		// of that correction happens per order, so a creep wide of the hero
-		// does not send it sprinting across the lane in one go.
+		// FOLLOW-ORDER CLEARANCE, and the most important number here.
+		//
+		// A right click within this of a creep model is read by the game as an
+		// order ON that creep - a follow, which trails the wave instead of
+		// blocking it - so the block point is kept at least this far from every
+		// creep. That distance is therefore also the CLOSEST the hero can ever
+		// be placed, which makes it the setting that decides whether he can
+		// body-block at all. It must stay below the distance at which hulls
+		// touch (32) or contact is arithmetically impossible: a capture at 45
+		// held him at a nearest creep of 42 for sixty-seven orders without one
+		// bump, because no nearer point could be clicked.
+		//
+		// Raise it if the hero starts trailing the wave, which is what a follow
+		// order looks like. Lower it if he never makes contact.
+		inline float Clearance = 32.f;
+		// How far across the lane one order may move him while he is clear of
+		// the wave. Blocking is mirroring a creep that is trying to path round
+		// him, which is a matter of thirty or forty units; a capture with this
+		// at 140 showed a wide swing just opening the gap the rest of the wave
+		// walked through. Orders re-issue every few milliseconds, so a creep
+		// further across is still reached a moment later - this only stops any
+		// single order from being a lunge.
 		inline float SideStep = 45.f;
+		// The same ceiling while he is in contact with the wave, or within a
+		// quarter second of it. Raise it if he fails to reach the creep stepping
+		// round him; lower it if he swings out of the wave after every bump.
+		inline float ContactStride = 45.f;
 		// REAL ORDERS (Phase 2b). Off by default and INERT unless a verified
 		// PrepareUnitOrders signature is compiled in (see CFunctionList) - with no
 		// signature FeatureSupport::RealOrdersAvailable() is false and the blocker
 		// stays on the simulated right-click path. When both are true the hero is
-		// moved with a genuine game order, which ignores the ~70u right-click grab
-		// and can be planted in the creep's path for a true body-block/domino.
+		// moved with a genuine game order, which ignores the right-click grab
+		// above and can be planted in the creep's path for a true body-block.
 		// Leave OFF until the signature+ABI are confirmed on a throwaway lobby - a
 		// wrong order call can crash the game.
 		inline bool UseRealOrders = false;
@@ -224,13 +241,26 @@ namespace Settings
 		inline bool LogCatalog = true;
 		inline bool LogUiSelections = true;
 		// Actually apply the picked cosmetics to the local hero, instead of only
-		// logging them as a preview. INERT unless a verified SetModel signature is
-		// compiled in (see CFunctionList::SetModel): with no signature
-		// SDK_SetModelAvailable() is false and the apply path no-ops, because a bare
-		// defindex write provably does NOT swap the rendered mesh. Off by default -
-		// the swap calls a game function on live entities, so leave it off until the
-		// signature is confirmed on a throwaway lobby.
-		inline bool ApplyOverrides = true;
+		// logging them as a preview. The CSkeletonInstance::SetModel signature is
+		// now verified against this build, so this is no longer inert - it calls a
+		// real engine function on live entities. OFF by default and surfaced as its
+		// own menu switch: the call itself has not been exercised in a match yet, so
+		// the first run belongs in a throwaway lobby, not a ranked game.
+		inline bool ApplyOverrides = false;
+		// Forces Dota's skip_model_combine convar on. The engine normally merges a
+		// hero and every wearable into one combined mesh and renders that, which is
+		// why writing an individual wearable's model changes nothing on screen.
+		// With combining skipped, each wearable should render from its own model and
+		// the swap should become visible. Off by default - it changes how every hero
+		// in the match is drawn, so it is a deliberate experiment, not a default.
+		inline bool SkipModelCombine = false;
+		// Installs a whole alternative combined hero mesh instead of trying to change
+		// one wearable. Dota renders the combined mesh and ignores individual
+		// wearable model handles, so this is the only level where an install shows up
+		// on screen. Coarse - you get a complete recorded loadout, not a per-slot
+		// pick - but it is the one path that operates where the renderer actually
+		// reads. Off by default; it replaces the hero's entire appearance.
+		inline bool SwapCombinedMesh = false;
 		inline std::vector<Selection> Selections;
 
 		inline auto FindSelection( const std::string& hero , const std::string& slot ) -> Selection*

@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class CGameEntitySystem;
@@ -70,6 +72,16 @@ public:
 	// True when the hero currently renders this catalog item, i.e. one of his live
 	// wearables carries its defindex or its model path. Drives the menu Worn badge.
 	auto IsModelWorn( const CatalogItem& item ) const -> bool;
+	// True when at least one of the two swap routes is usable on this build: the
+	// m_ModelName write, or the CSkeletonInstance::SetModel binding install. The
+	// menu gates its Apply switch on this.
+	auto CanApply() const -> bool;
+	// Entry point for Hook_SetModel. Records `binding` and returns the binding the
+	// game should actually install - `binding` itself, or our substitute for an
+	// overridden local-hero wearable. Runs on the hook thread and must stay
+	// trivial: one lock, two hash operations, no reads of game memory.
+	auto OnSkeletonSetModel( void* skeleton , void* binding ) -> void*;
+	auto GetCombinedModelOverride( void* hero , void* itemView ) -> const char*;
 	auto GetStatus() const -> std::string;
 	auto RequestCatalogDump() -> void;
 
@@ -101,6 +113,16 @@ private:
 		uint32_t sceneNode = 0;         // C_BaseEntity::m_pGameSceneNode
 		uint32_t modelState = 0;        // CSkeletonInstance::m_modelState
 		uint32_t modelHandle = 0;       // CModelState::m_hModel
+		// CModelState::m_ModelName / m_modelChanged. If the name field is writable
+		// this is a far better swap route than SetModel: the game re-resolves the
+		// path into a binding itself, which is exactly the name->binding step we
+		// otherwise have no function for. Logged before anything is written, since
+		// the field could be a char*, an interned symbol or an inline buffer, and
+		// each needs a different write.
+		uint32_t modelName = 0;
+		uint32_t modelChanged = 0;
+		bool hasModelName = false;
+		bool hasModelChanged = false;
 		// Extra per-item econ metadata inside C_EconItemView (the "sub info" of a
 		// wearable), all relative to the econ item view base. Best-effort.
 		uint32_t itemQuality = 0;       // C_EconItemView::m_iEntityQuality
@@ -145,10 +167,22 @@ private:
 	auto DumpItemViewSchema() -> void;
 	// Log the extra econ metadata (quality/level/id/attributes) of one wearable.
 	auto LogWearableItemInfo( C_BaseEntity* wearable , int slot ) const -> void;
+	// Read-only probe of CModelState::m_ModelName for one wearable: dumps the raw
+	// qword and, when it looks like one, the string it points at. Tells us how the
+	// field is stored before any write is attempted against it.
+	auto LogModelNameField( C_BaseEntity* wearable , int slot ) const -> void;
 	// Best-effort model path of a wearable entity, for a readable name in the
 	// log. Returns "" when the scene-node/model chain is unresolved or the read
 	// fails; never dereferences unguarded, so a bad offset cannot crash.
 	auto WearableModelPath( C_BaseEntity* wearable ) const -> const char*;
+	// The entity's m_pGameSceneNode, which for a model entity IS the
+	// CSkeletonInstance that CSkeletonInstance::SetModel expects as its `this`.
+	auto WearableSkeleton( C_BaseEntity* wearable ) const -> void*;
+	// The entity's live m_modelState.m_hModel - the resource binding for whatever
+	// it currently renders. Harvesting these is how we obtain a binding for a
+	// target model without a name->binding resolver: any entity already rendering
+	// that model is holding exactly the value SetModel needs.
+	auto WearableModelBinding( C_BaseEntity* wearable ) const -> void*;
 	// Combined nested offset from an econ entity to its item-definition index.
 	auto DefIndexOffset() const -> uint32_t;
 	// True when the equipped wearable defindex set changed since the last log.
@@ -167,8 +201,46 @@ private:
 	// Remembers a slot's untouched defindex/model the first time it is overridden.
 	auto RememberOriginal( int slot , uint32_t defIndex , const std::string& model ) -> void;
 	auto FindOriginal( int slot ) const -> const OriginalSlot*;
+	// Path of the model a resource binding refers to, or "" when any hop of the
+	// binding -> CModel -> header-string chain fails validation.
+	auto ModelPathFromBinding( const void* binding ) const -> const char*;
+	// Queue a binding for path resolution on the tick thread. Safe from any thread.
+	auto RecordBinding( void* binding ) -> void;
+	// Tick thread: resolve paths for bindings the hook has queued (bounded per
+	// pass) and file them under m_Bindings.
+	auto DrainRecordedBindings() -> void;
+	// The recorded binding for a model path, or null when the game has not loaded
+	// that model this session (so it is not resident and cannot be installed).
+	auto FindBinding( const std::string& model ) const -> void*;
+	auto RecordedBindingCount() const -> size_t;
+	// Takes a reference on a binding we are about to install, so the resource
+	// system cannot free it under the skeleton. False if it does not validate.
+	auto RetainBinding( void* binding ) -> bool;
+	// Installs a binding on a skeleton through the hook trampoline (or the
+	// resolved address if the hook is absent). Confirms the binding still names
+	// `model` first - a recorded binding can go stale - then retains it.
+	auto InstallBinding( void* skeleton , void* binding , const std::string& model ) -> bool;
+	// Rebuilds the skeleton -> substitute map the hook consults, from the current
+	// live wearables and selections. Called under the settings lock.
+	auto PublishSkeletonOverrides( C_BaseEntity* const* wearables , const std::vector<WearableSlot>& live , int count , const std::string& hero ) -> void;
 	// Fallback enumeration: log every entity owned by the hero and its defindex.
 	auto ScanOwnedByHero( CGameEntitySystem* entitySystem , int heroIndex ) -> void;
+	auto LogRenderState( C_BaseEntity* wearable , const char* target , bool installed ) -> void;
+	auto RebuildCombinedModel( C_BaseEntity* const* wearables , int count , bool apply ) -> void;
+	// Installs a whole combined hero mesh, rather than a single wearable's model.
+	// The renderer draws the combined mesh and ignores individual wearable handles,
+	// so this is the only level at which an install is actually visible. Dota names
+	// them "<hero>_c_<n>.vmdl" and builds one per distinct loadout, so any that the
+	// SetModel hook has recorded - from the loading screen, the armory, another
+	// player - is a complete alternative appearance we can drop onto the hero.
+	auto TryCombinedModelSwap( C_BaseEntity* hero ) -> bool;
+
+	// The local hero's own CEconItemView addresses. The combiner asks each of these
+	// for a model path, and matching on them is what lets a substitution apply to a
+	// rebuild the GAME started - which is the only kind that actually happens,
+	// since every rebuild we request ourselves is refused. Restricting to this set
+	// keeps inventory panels, previews and other players' heroes untouched.
+	std::unordered_set<void*> m_LocalItemViews;
 
 	Offsets m_Offsets{};
 	bool m_ResolveTried = false;
@@ -181,8 +253,53 @@ private:
 	bool m_HasSelectionSnapshot = false;
 	bool m_ForceCatalogLog = false;
 	bool m_WarnedNoSetModel = false;
+	// Everything below m_HookMutex is shared with Hook_SetModel, which runs on
+	// whatever thread the game loads models on. The hook only ever takes the lock,
+	// touches these, and releases it - never a read of game memory under the lock.
+	mutable std::mutex m_HookMutex;
+	// Bindings the hook has seen, deduplicated, awaiting path resolution.
+	std::unordered_set<const void*> m_KnownBindings;
+	std::vector<void*> m_PendingBindings;
+	// model path -> resource binding, for every model the game has loaded this
+	// session. Accumulates from the hook; never rebuilt by scanning the world.
+	std::unordered_map<std::string , void*> m_Bindings;
+	// local-hero wearable skeleton -> binding to substitute if the game reinstalls
+	// a model on it (e.g. respawn). Rebuilt each apply pass.
+	std::unordered_map<const void* , void*> m_SkeletonOverrides;
+	void* m_CombinedHero = nullptr;
+	std::unordered_map<uint32_t , const char*> m_CombinedOverrides;
+	uint32_t m_CombinedLookupHits = 0;
+	// Never reset. m_CombinedLookupHits is zeroed before each request we make, so
+	// it can only ever show substitutions from our own builds - and those all get
+	// refused. Engine-initiated rebuilds land at unpredictable times, so the
+	// running total is the only number that shows whether they are picking our
+	// models up.
+	uint64_t m_CombinedSubstitutionsTotal = 0;
+	// Every GetItemModel call, whoever it is for. Distinguishes "our hook is not
+	// running at all" from "it runs but never matches our items" - two failures
+	// that look identical from the substitution count alone.
+	uint64_t m_ItemModelCallsTotal = 0;
+	// The hero mesh at the moment overrides were last published, so a later change
+	// can be attributed to a rebuild rather than to some unrelated respawn.
+	std::string m_MeshAtPublish;
+	uint64_t m_LastPipelineLog = 0;
+
+	// One pass/fail line per stage of the swap, so the log names the stage that
+	// breaks instead of leaving it to be inferred. Stages are ordered: a stage can
+	// only be reached if every stage above it passed.
+	auto LogSkinPipeline( C_BaseEntity* hero , size_t itemViewCount , size_t overrideCount ) -> void;
+	bool m_HasCombinedOverrides = false; // Tick thread only.
+	uint64_t m_LastCombinedSignature = 0;
+	uint64_t m_LastCombinedAttempt = 0;
+	bool m_CombinedBuildAccepted = false;
+	void* m_PreviousCombinedBinding = nullptr;
+	bool m_ObserveCombinedBuild = false;
+	// Bindings we have taken a reference on. Tick thread only.
+	std::unordered_set<const void*> m_RetainedBindings;
 	uint64_t m_LastAppliedSignature = 0;
 	bool m_HasAppliedSignature = false;
+	bool m_LoadRequestedThisPass = false;
+	std::unordered_map<std::string , uint64_t> m_ModelLoadAttempts;
 	uint64_t m_LastWearableSignature = 0;
 	uint64_t m_LastSelectionSignature = 0;
 	uint32_t m_LastLogTick = 0;

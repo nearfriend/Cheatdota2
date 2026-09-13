@@ -132,6 +132,12 @@ public:
 	// back to a lettered plate.
 	auto GetCastableIconSrv( const std::string& name , bool isItem ) -> struct ID3D11ShaderResourceView*;
 	auto GetCosmeticIconSrv( const std::string& image ) -> struct ID3D11ShaderResourceView*;
+	// Toggles Dota's skip_model_combine convar. The engine merges a hero and its
+	// wearables into one combined mesh and renders that, so per-wearable model
+	// writes never appear; skipping the combine is the cheapest way to find out
+	// whether rendering falls back to the individual models. Returns whether the
+	// convar was found and is currently forced on.
+	auto ApplySkipModelCombine( bool enable ) -> bool;
 	const CAutoCombo& GetAutoCombo() const { return m_AutoCombo; }
 
 private:

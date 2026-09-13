@@ -51,20 +51,31 @@ public:
 	// blank/failed search never blocks cheat init.
 	CBasePattern GetDOTAGCClientSystem = { "GetDOTAGCClientSystem" , "" , CLIENT_DLL , 0 , SEARCH_TYPE_NONE };
 
-	// CBaseModelEntity::SetModel - the client function that resolves a .vmdl path,
-	// LOADS the model resource if it is not already resident, and installs it on the
-	// entity. This is the missing link for the local skin changer: an in-match test
-	// proved that rewriting m_iItemDefinitionIndex on a spawned wearable does NOT
-	// swap the rendered mesh (Source 2 caches the model handle at spawn), and the
-	// target cosmetic's model is normally not resident at all, so nothing short of a
-	// real load-and-set can change the skin. With this resolved, CCosmeticChanger can
-	// point any wearable at any catalog model path locally.
-	// INTENTIONALLY EMPTY until a verified signature for the running build is filled
-	// in - same discipline as the two placeholders above. Expected ABI:
-	//   void __fastcall fn( void* entity /*CBaseModelEntity*/ , const char* vmdlPath );
-	// Verify the sig is a UNIQUE match on a function prologue before enabling; a
-	// wrong address here is called with a live entity and will crash the game.
-	CBasePattern SetModel = { "SetModel" , "" , CLIENT_DLL , 0 , SEARCH_TYPE_NONE };
+	// CSkeletonInstance::SetModel - installs an ALREADY-RESIDENT model on a
+	// skeleton instance. Located by its own __FUNCTION__ string (skeletoninstance
+	// .cpp:5530) and confirmed by caller 0x18A90F0, which type-checks the handle
+	// against 'vmdl' before calling. VERIFIED ABI - note this is NOT a path setter:
+	//   void __fastcall fn( void* skeletonInstance , void* vmdlResourceBinding );
+	// `skeletonInstance` is the entity's m_pGameSceneNode, and the binding is the
+	// same CStrongHandle value m_modelState.m_hModel already holds, so both are
+	// things CCosmeticChanger reads today. Passing a path here would crash.
+	// Its own assert - "SetModel to nonresident asset %s" - is why a swap to an
+	// unloaded cosmetic needs PrecacheResource below first.
+	CBasePattern CSkeletonInstance_SetModel = { "CSkeletonInstance::SetModel" , "40 55 53 56 57 41 56 48 8D AC 24 00 FC FF FF" , CLIENT_DLL , 0 , SEARCH_TYPE_NONE };
+	// ResourcePath constructor from UTF-8, client RVA 0x3A1DC80 on the verified
+	// build. bool(ResourcePath*, const char*); fills the normalized path and hashes.
+	CBasePattern ResourcePath_Init = { "ResourcePath::Init" , "48 89 5C 24 10 57 48 83 EC 30 8B 41 04 48 8D 79 08 48 8B D9 A9 FF FF FF 3F" , CLIENT_DLL , 0 , SEARCH_TYPE_NONE };
+
+	// PrecacheResource - makes a resource resident by name. Identified by its own
+	// error string ("Attempting to precache resource, but resource name is NULL or
+	// empty") and its 'vmdl' extension test. VERIFIED ABI:
+	//   void __fastcall fn( const char* resourceName , void* context );
+	// `context` must be a LIVE precache context. It looks null-tolerant - it falls
+	// back to [[0x6531B20]+8] - but that global only holds a context during the
+	// engine's precache phase, so on a game tick the fallback is null too and the
+	// function faults dereferencing it (c0000005 at +0x19B0162). See the guard in
+	// SDK_PrecacheResource; we have no context source yet, so it never fires.
+	CBasePattern PrecacheResource = { "PrecacheResource" , "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 48 8B D9 48 85 C9 ? ? 80 39 00" , CLIENT_DLL , 0 , SEARCH_TYPE_NONE };
 };
 
 auto GetFunctionList() -> CFunctionList*;

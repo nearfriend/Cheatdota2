@@ -26,28 +26,64 @@ inline CDOTAGCClientSystem* SDK_GetDOTAGCClientSystem()
 	return reinterpret_cast<Fn>( fn )( );
 }
 
-// True when a verified SetModel signature is compiled in and resolved, i.e. when
-// the cosmetic changer can actually swap a wearable's model instead of only
-// previewing the selection. Callers must check this before offering to apply.
+// True when the verified CSkeletonInstance::SetModel signature resolved on this
+// build, i.e. when a wearable's model can actually be replaced rather than only
+// previewed. Callers must check this before offering to apply.
 inline bool SDK_SetModelAvailable()
 {
-	auto& pattern = GetFunctionList()->SetModel;
+	auto& pattern = GetFunctionList()->CSkeletonInstance_SetModel;
 	return pattern.HasPattern() && pattern.GetFunction() != nullptr;
 }
 
-// Guarded CBaseModelEntity::SetModel. Loads the .vmdl at `vmdlPath` if needed and
-// installs it on `entity`. Returns false (doing nothing) when the signature is
-// absent/unresolved or the arguments are empty, so calling this on an
-// unconfigured build is always a safe no-op rather than a jump to a bad address.
-inline bool SDK_SetEntityModel( void* entity , const char* vmdlPath )
+// Guarded CSkeletonInstance::SetModel.
+//
+// IMPORTANT: this takes a resource BINDING, not a path - the game resolves a
+// path to a binding elsewhere, and this function only installs one that is
+// already resident (its own assert fires on a nonresident asset). `skeleton` is
+// the entity's m_pGameSceneNode and `vmdlBinding` is the same CStrongHandle
+// value m_modelState.m_hModel holds, so a binding can be harvested from any
+// entity that already renders the wanted model. Returns false without calling
+// when the signature is unresolved or either argument is null.
+inline bool SDK_SkeletonSetModel( void* skeleton , void* vmdlBinding )
 {
-	if ( !entity || !vmdlPath || !vmdlPath[0] )
+	if ( !skeleton || !vmdlBinding )
 		return false;
 	if ( !SDK_SetModelAvailable() )
 		return false;
 
-	using Fn = void ( __fastcall* )( void* , const char* );
-	reinterpret_cast<Fn>( GetFunctionList()->SetModel.GetFunction() )( entity , vmdlPath );
+	using Fn = void ( __fastcall* )( void* , void* );
+	reinterpret_cast<Fn>( GetFunctionList()->CSkeletonInstance_SetModel.GetFunction() )( skeleton , vmdlBinding );
+	return true;
+}
+
+inline bool SDK_PrecacheAvailable()
+{
+	auto& pattern = GetFunctionList()->PrecacheResource;
+	return pattern.HasPattern() && pattern.GetFunction() != nullptr;
+}
+
+// Guarded PrecacheResource.
+//
+// `context` MUST be a live precache context - a null one CRASHES the game. The
+// function looks like it tolerates null (it falls back to [[0x6531B20]+8]), but
+// that global only holds a context during the engine's own precache phase; on a
+// game tick it is null, so the fallback yields null too and the next instruction
+// dereferences it. Confirmed the hard way: c0000005 at client.dll+0x19B0162,
+// which is `mov r9,[rdi]` with rdi = 0.
+//
+// We have no way to obtain a valid context yet, so every caller currently passes
+// null and this refuses. Keep the guard until a real context source exists.
+inline bool SDK_PrecacheResource( const char* resourceName , void* context )
+{
+	if ( !resourceName || !resourceName[0] )
+		return false;
+	if ( !context )
+		return false;
+	if ( !SDK_PrecacheAvailable() )
+		return false;
+
+	using Fn = void ( __fastcall* )( const char* , void* );
+	reinterpret_cast<Fn>( GetFunctionList()->PrecacheResource.GetFunction() )( resourceName , context );
 	return true;
 }
 

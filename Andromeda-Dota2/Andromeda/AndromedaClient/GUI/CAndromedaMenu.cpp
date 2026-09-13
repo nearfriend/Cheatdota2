@@ -1928,6 +1928,46 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 	ImGui::InputTextWithHint( "##cosmeticSearch" , "Search cosmetics" , search , IM_ARRAYSIZE( search ) );
 	ImGui::Checkbox( "Customize hero" , &Settings::CosmeticChanger::Enable );
 	ImGui::SameLine();
+
+	// The swap calls a real engine function on live wearables, so it is opt-in and
+	// disabled outright on a build where the signature did not resolve.
+	const bool canApply = changer && changer->CanApply();
+	ImGui::BeginDisabled( !canApply );
+	ImGui::Checkbox( "Apply swap" , &Settings::CosmeticChanger::ApplyOverrides );
+	ImGui::EndDisabled();
+	if ( ImGui::IsItemHovered( ImGuiHoveredFlags_AllowWhenDisabled ) )
+	{
+		ImGui::SetTooltip( canApply
+			? "Loads and installs the picked model on your hero locally.\nNew models load one at a time; the first swap may pause\nbriefly while the game loads the cosmetic."
+			: "A required model setter or combiner hook did not resolve\non this client build, so swaps are unavailable." );
+	}
+	if ( !canApply )
+		Settings::CosmeticChanger::ApplyOverrides = false;
+	ImGui::SameLine();
+	ImGui::Checkbox( "Swap whole mesh" , &Settings::CosmeticChanger::SwapCombinedMesh );
+	if ( ImGui::IsItemHovered() )
+	{
+		ImGui::SetTooltip(
+			"Dota draws your hero as ONE combined mesh and ignores the individual\n"
+			"wearable models, which is why per-slot swaps never show up.\n\n"
+			"This installs a different complete mesh that the game has already\n"
+			"built - from the loading screen, the armory, or another player.\n"
+			"Coarse: you get a whole recorded loadout, not a per-slot pick.\n"
+			"The log lists which ones are available." );
+	}
+	ImGui::SameLine();
+	ImGui::Checkbox( "Skip mesh combine" , &Settings::CosmeticChanger::SkipModelCombine );
+	if ( ImGui::IsItemHovered() )
+	{
+		ImGui::SetTooltip(
+			"Dota merges your hero and all its wearables into ONE combined mesh\n"
+			"and draws that, which is why swapping a single wearable's model\n"
+			"has no visible effect.\n\n"
+			"This forces the engine's skip_model_combine convar on, so wearables\n"
+			"render from their own models instead. Affects how every hero in the\n"
+			"match is drawn. Experimental - try it in a lobby." );
+	}
+	ImGui::SameLine();
 	if ( ImGui::SmallButton( "Reset hero" ) )
 	{
 		Settings::CosmeticChanger::ClearSelectionsForHero( selectedHero );
@@ -2246,7 +2286,7 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 		}
 		else
 		{
-			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 338.f : ( cameraPage ? 322.f : ( autoComboPage ? 502.f : ( cosmeticPage ? 502.f : 180.f ) ) ) ) );
+			const float settingsCardHeight = killStealerPage ? 502.f : ( lastHitPage ? 260.f : ( creepBlockerPage ? 580.f :( cameraPage ? 322.f : ( autoComboPage ? 502.f : ( cosmeticPage ? 502.f : 180.f ) ) ) ) );
 			// The auto-combo card holds more than fits (toggles, keybind, target
 			// and the spell strip), so it keeps its scrollbar and wheel support
 			// instead of clipping the overflow away.
@@ -2289,6 +2329,15 @@ auto CAndromedaMenu::OnRenderMenu() -> void
 				DrawSwitchRow( "Enable" , "##creepBlockerEnable" , Settings::CreepBlocker::Enable , ReferenceIcon::Heroes );
 				ImGui::BeginDisabled( !Settings::CreepBlocker::Enable );
 				DrawSwitchRow( "Draw Block Marker" , "##creepBlockerMarker" , Settings::CreepBlocker::DrawBlockMarker , ReferenceIcon::Visible );
+				// Three numbers, and they are the only ones that still steer the
+				// block. Clearance is how near the click may be placed to a creep,
+				// which is also how near the hero can get: too high and he shadows
+				// the wave without ever touching it. The two step caps limit how far
+				// across the lane a single order may move him, clear of the wave and
+				// in contact with it.
+				DrawSliderRow( "Clearance" , "##creepClearance" , Settings::CreepBlocker::Clearance , 32.f , 90.f , "%.0f" , ReferenceIcon::Radius );
+				DrawSliderRow( "Side Step" , "##creepSideStep" , Settings::CreepBlocker::SideStep , 20.f , 120.f , "%.0f" , ReferenceIcon::Distance );
+				DrawSliderRow( "Side Step In Contact" , "##creepContactStride" , Settings::CreepBlocker::ContactStride , 20.f , 120.f , "%.0f" , ReferenceIcon::Distance );
 
 				ImGui::Spacing();
 				// Align the label to the button frame so the row's text and buttons
@@ -3251,4 +3300,3 @@ auto GetAndromedaMenu() -> CAndromedaMenu*
 {
 	return &g_CAndromedaMenu;
 }
-

@@ -13,6 +13,7 @@
 
 #include <Dota2/Hook/Hook_OnAddEntity.hpp>
 #include <Dota2/Hook/Hook_OnRemoveEntity.hpp>
+#include <Dota2/Hook/Hook_SetModel.hpp>
 #include <Dota2/Hook/Hook_OnCreateMove.hpp>
 
 #include <AndromedaClient/CAndromedaGUI.hpp>
@@ -314,6 +315,12 @@ auto CHook_Loader::InstallSecondHook() -> bool
 		{ { XorStr( "Hook::OnAddEntity" ) , XorStr( "48 89 74 24 ? 57 48 83 EC ? 41 B9 ? ? ? ? 41 8B C0 41 23 C1 48 8B F2 41 83 F8 ? 48 8B F9 44 0F 45 C8 41 81 F9 ? ? ? ? 73 ? FF 81" ) , CLIENT_DLL } , &Hook_OnAddEntity , reinterpret_cast<LPVOID*>( &OnAddEntity_o ) , true , false } ,
 		{ { XorStr( "Hook::OnRemoveEntity" ) , XorStr( "48 89 74 24 ? 57 48 83 EC ? 41 B9 ? ? ? ? 41 8B C0 41 23 C1 48 8B F2 41 83 F8 ? 48 8B F9 44 0F 45 C8 41 81 F9 ? ? ? ? 73 ? FF 89" ) , CLIENT_DLL } , &Hook_OnRemoveEntity , reinterpret_cast<LPVOID*>( &OnRemoveEntity_o ) , true , false } ,
 		{ { XorStr( "Hook::OnCreateMove" ) , XorStr( "85 D2 0F 85 ? ? ? ? 48 8B C4 44 88 40" ) , CLIENT_DLL } , &Hook_OnCreateMove , reinterpret_cast<LPVOID*>( &OnCreateMove_o ) , true , false } ,
+		// CSkeletonInstance::SetModel - the skin changer's passive binding recorder
+		// and substitution point. Same verified pattern CFunctionList searches; a
+		// miss here just leaves the changer on its active-apply path.
+		{ { XorStr( "Hook::CSkeletonInstance::SetModel" ) , XorStr( "40 55 53 56 57 41 56 48 8D AC 24 00 FC FF FF" ) , CLIENT_DLL } , &Hook_SetModel , reinterpret_cast<LPVOID*>( &SetModel_o ) , true , false } ,
+		{ { XorStr( "Hook::BuildCombinedModel" ) , XorStr( "48 89 54 24 10 48 89 4C 24 08 55 56 41 56 48 8D AC 24 60 FE FF FF 48 81 EC A0 02 00 00" ) , CLIENT_DLL } , &Hook_BuildCombinedModel , reinterpret_cast<LPVOID*>( &BuildCombinedModel_o ) , true , false } ,
+		{ { XorStr( "Hook::GetItemModel" ) , XorStr( "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 20 57 48 83 EC 20 8B EA 48 8B F1 E8" ) , CLIENT_DLL } , &Hook_GetItemModel , reinterpret_cast<LPVOID*>( &GetItemModel_o ) , true , false } ,
 	};
 
 	const bool gameplayHooks = InstallHooks();
