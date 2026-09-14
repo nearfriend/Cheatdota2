@@ -126,9 +126,17 @@ const rowSeen = new Set();
 
 for (const [defindex, entry] of items) {
   if (!/^\d+$/.test(defindex)) continue;
+  // Items WITHOUT a model_player are kept. They cannot be swap targets - there is
+  // no mesh to install - but they are needed to IDENTIFY what a hero is currently
+  // wearing, and that identification is what keys the whole override lookup.
+  //
+  // Dropping them silently broke entire heroes: a default item like defindex 662
+  // ("Legion Commander's Legs Armor") carries no model_player, so the legs slot
+  // resolved to "name=? category=?" in game and no pick could ever attach to it.
+  // Heroes whose defaults do carry a model worked; the rest looked broken for no
+  // visible reason.
   const model = resolve(entry, 'model_player');
-  if (!model) continue;
-  withModel++;
+  if (model) withModel++;
 
   const heroes = resolveHeroes(entry);
   if (heroes.length) withHero++;

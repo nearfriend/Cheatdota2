@@ -72,6 +72,14 @@ public:
 	// True when the hero currently renders this catalog item, i.e. one of his live
 	// wearables carries its defindex or its model path. Drives the menu Worn badge.
 	auto IsModelWorn( const CatalogItem& item ) const -> bool;
+	// True when this item's model is loaded in the current session, i.e. a pick
+	// would actually take effect right now. A swap installs an existing resource
+	// binding and cannot load a model on demand, so an item whose model is absent
+	// is selectable but inert - which is indistinguishable from a broken feature
+	// unless the UI says so.
+	auto IsModelAvailable( const CatalogItem& item ) const -> bool;
+	// How many models are currently loaded and installable, for a headline count.
+	auto AvailableModelCount() const -> size_t;
 	// True when at least one of the two swap routes is usable on this build: the
 	// m_ModelName write, or the CSkeletonInstance::SetModel binding install. The
 	// menu gates its Apply switch on this.
@@ -234,6 +242,10 @@ private:
 	// SetModel hook has recorded - from the loading screen, the armory, another
 	// player - is a complete alternative appearance we can drop onto the hero.
 	auto TryCombinedModelSwap( C_BaseEntity* hero ) -> bool;
+	// Sets the engine's "needs rebuild" bit on the hero so the combined mesh is
+	// rebuilt on the next pass - the only path that makes a body-slot swap visible,
+	// since our own builder call never reaches the per-item lookup.
+	auto RequestEngineRebuild( C_BaseEntity* hero ) -> void;
 
 	// The local hero's own CEconItemView addresses. The combiner asks each of these
 	// for a model path, and matching on them is what lets a substitution apply to a
@@ -279,6 +291,10 @@ private:
 	// running at all" from "it runs but never matches our items" - two failures
 	// that look identical from the substitution count alone.
 	uint64_t m_ItemModelCallsTotal = 0;
+	// Substitutions that matched on defindex alone, i.e. the combiner was asking
+	// through an item view we had never seen. Separated out because it is the count
+	// that shows whether relaxing the pointer match is what made the swap work.
+	uint64_t m_SubstitutionsByDefIndex = 0;
 	// The hero mesh at the moment overrides were last published, so a later change
 	// can be attributed to a rebuild rather than to some unrelated respawn.
 	std::string m_MeshAtPublish;

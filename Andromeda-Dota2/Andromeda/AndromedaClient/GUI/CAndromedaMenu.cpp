@@ -1742,6 +1742,19 @@ static bool PushUniqueSorted( std::vector<std::string>& list , const std::string
 	return true;
 }
 
+// The catalog entry a selection refers to, for naming it in the UI.
+static const CCosmeticChanger::CatalogItem* FindCatalogItemForSelection(
+	const std::string& hero , const std::string& slot , uint32_t defIndex )
+{
+	for ( const auto& item : CCosmeticChanger::GetCatalog() )
+	{
+		if ( item.defIndex == defIndex && item.hero == hero &&
+			( item.slot == slot || item.category == slot ) )
+			return &item;
+	}
+	return nullptr;
+}
+
 static int SimpleCosmeticSlotPriority( const std::string& slot )
 {
 	static constexpr const char* order[] =
@@ -1799,7 +1812,7 @@ static std::string SimpleCosmeticTileText( const std::string& text , float maxWi
 	return "...";
 }
 
-static bool DrawSimpleCosmeticTile( const CCosmeticChanger::CatalogItem& item , float tileWidth , bool selected , bool worn )
+static bool DrawSimpleCosmeticTile( const CCosmeticChanger::CatalogItem& item , float tileWidth , bool selected , bool worn , bool ready )
 {
 	const float tileHeight = 104.f;
 	const float iconWidth = tileWidth - 12.f;
@@ -1850,6 +1863,14 @@ static bool DrawSimpleCosmeticTile( const CCosmeticChanger::CatalogItem& item , 
 	drawList->AddText( ImVec2( pos.x + ( tileWidth - defSize.x ) * 0.5f , pos.y + 89.f ) ,
 		IM_COL32( 155 , 158 , 169 , 255 ) , defText );
 
+	// Readiness dot, top-right. A swap installs a model the game has already
+	// loaded and cannot load one on demand, so an item whose model is absent is
+	// selectable but does nothing - the failure people read as "the feature is
+	// broken". Green means picking it changes your hero now.
+	const ImVec2 dot( tileMax.x - 11.f , pos.y + 11.f );
+	drawList->AddCircleFilled( dot , 4.f ,
+		ready ? IM_COL32( 92 , 196 , 124 , 255 ) : IM_COL32( 104 , 108 , 122 , 255 ) );
+
 	if ( selected )
 	{
 		drawList->AddRect( pos , tileMax , kAccentColor , 8.f , 0 , 2.f );
@@ -1869,8 +1890,16 @@ static bool DrawSimpleCosmeticTile( const CCosmeticChanger::CatalogItem& item , 
 		ImGui::Text( "Slot: %s" , PrettyCosmeticText( item.category ).c_str() );
 		ImGui::Text( "Rarity: %s" , item.rarity.empty() ? "?" : item.rarity.c_str() );
 		ImGui::Text( "Def index: %u" , item.defIndex );
+		ImGui::Separator();
+		if ( worn )
+			ImGui::TextColored( ImVec4( 0.36f , 0.77f , 0.49f , 1.f ) , "Currently on your hero" );
+		else if ( ready )
+			ImGui::TextColored( ImVec4( 0.36f , 0.77f , 0.49f , 1.f ) , "Ready - picking this changes your hero now" );
+		else
+			ImGui::TextColored( ImVec4( 0.78f , 0.65f , 0.28f , 1.f ) ,
+				"Not loaded in this match yet - picking it will\nhave no visible effect until the model appears" );
 		if ( !item.model.empty() )
-			ImGui::TextWrapped( "Model: %s" , item.model.c_str() );
+			ImGui::TextDisabled( "%s" , item.model.c_str() );
 		ImGui::EndTooltip();
 	}
 
@@ -1889,6 +1918,9 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 	static std::string selectedHero;
 	static std::string selectedSlot = "weapon";
 	static char search[80] = {};
+	// Off by default: hiding most of the catalog on first open would look like the
+	// catalog failed to load. The count beside it explains why the list shrinks.
+	static bool readyOnly = false;
 	static const std::vector<std::string> heroes = [&]
 	{
 		std::vector<std::string> result;
@@ -1925,61 +1957,111 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 	ImGui::Checkbox( "Current hero" , &followCurrentHero );
 
 	ImGui::SetNextItemWidth( -1.f );
-	ImGui::InputTextWithHint( "##cosmeticSearch" , "Search cosmetics" , search , IM_ARRAYSIZE( search ) );
-	ImGui::Checkbox( "Customize hero" , &Settings::CosmeticChanger::Enable );
-	ImGui::SameLine();
+	ImGui::InputTextWithHint( "##cosmeticSearch" , "Search cosmetics by name, rarity or ID" , search , IM_ARRAYSIZE( search ) );
 
-	// The swap calls a real engine function on live wearables, so it is opt-in and
-	// disabled outright on a build where the signature did not resolve.
+	// The two switches that matter, on their own row. The experiments live under
+	// Advanced below - crowding five controls onto one SameLine run overflowed the
+	// card and put disproven options next to the ones people actually use.
+	ImGui::Checkbox( "Enable" , &Settings::CosmeticChanger::Enable );
+	if ( ImGui::IsItemHovered() )
+		ImGui::SetTooltip( "Master switch. Off means the changer does no work at all." );
+
+	ImGui::SameLine();
 	const bool canApply = changer && changer->CanApply();
 	ImGui::BeginDisabled( !canApply );
-	ImGui::Checkbox( "Apply swap" , &Settings::CosmeticChanger::ApplyOverrides );
+	ImGui::Checkbox( "Apply to my hero" , &Settings::CosmeticChanger::ApplyOverrides );
 	ImGui::EndDisabled();
 	if ( ImGui::IsItemHovered( ImGuiHoveredFlags_AllowWhenDisabled ) )
 	{
 		ImGui::SetTooltip( canApply
-			? "Loads and installs the picked model on your hero locally.\nNew models load one at a time; the first swap may pause\nbriefly while the game loads the cosmetic."
-			: "A required model setter or combiner hook did not resolve\non this client build, so swaps are unavailable." );
+			? "Installs your picks on your own hero. Local only - nobody else sees it.\n\n"
+			  "A pick applies once the game has that model loaded. Weapons and\n"
+			  "offhands change immediately; other slots may need the model to appear\n"
+			  "in your session first."
+			: "The model setter did not resolve on this client build,\nso swaps are unavailable." );
 	}
 	if ( !canApply )
 		Settings::CosmeticChanger::ApplyOverrides = false;
+
+	// Count of picks for this hero, so the Reset button says what it will clear.
+	int heroPicks = 0;
+	for ( const auto& selection : Settings::CosmeticChanger::Selections )
+		if ( selection.hero == selectedHero )
+			++heroPicks;
+
 	ImGui::SameLine();
-	ImGui::Checkbox( "Swap whole mesh" , &Settings::CosmeticChanger::SwapCombinedMesh );
-	if ( ImGui::IsItemHovered() )
-	{
-		ImGui::SetTooltip(
-			"Dota draws your hero as ONE combined mesh and ignores the individual\n"
-			"wearable models, which is why per-slot swaps never show up.\n\n"
-			"This installs a different complete mesh that the game has already\n"
-			"built - from the loading screen, the armory, or another player.\n"
-			"Coarse: you get a whole recorded loadout, not a per-slot pick.\n"
-			"The log lists which ones are available." );
-	}
-	ImGui::SameLine();
-	ImGui::Checkbox( "Skip mesh combine" , &Settings::CosmeticChanger::SkipModelCombine );
-	if ( ImGui::IsItemHovered() )
-	{
-		ImGui::SetTooltip(
-			"Dota merges your hero and all its wearables into ONE combined mesh\n"
-			"and draws that, which is why swapping a single wearable's model\n"
-			"has no visible effect.\n\n"
-			"This forces the engine's skip_model_combine convar on, so wearables\n"
-			"render from their own models instead. Affects how every hero in the\n"
-			"match is drawn. Experimental - try it in a lobby." );
-	}
-	ImGui::SameLine();
-	if ( ImGui::SmallButton( "Reset hero" ) )
+	ImGui::BeginDisabled( heroPicks == 0 );
+	const std::string resetLabel = heroPicks > 0
+		? "Clear " + std::to_string( heroPicks ) + " pick" + ( heroPicks == 1 ? "" : "s" )
+		: std::string( "Clear picks" );
+	if ( ImGui::SmallButton( resetLabel.c_str() ) )
 	{
 		Settings::CosmeticChanger::ClearSelectionsForHero( selectedHero );
 		CCosmeticChanger::SaveSelections();
 	}
-	ImGui::TextWrapped( "%s" , changer ? changer->GetStatus().c_str() : "Waiting for game client." );
+	ImGui::EndDisabled();
+
+	ImGui::SameLine();
+	ImGui::Checkbox( "Ready only" , &readyOnly );
+	if ( ImGui::IsItemHovered() )
+	{
+		ImGui::SetTooltip(
+			"Show only cosmetics whose model is loaded in this session.\n\n"
+			"Those are the ones a pick changes right now. Everything else is\n"
+			"selectable but has no visible effect until the game loads it." );
+	}
+
+	ImGui::TextDisabled( "%s" , changer ? changer->GetStatus().c_str() : "Waiting for game client." );
+	ImGui::TextDisabled( "%zu model(s) loaded and swappable in this session" ,
+		changer ? changer->AvailableModelCount() : size_t( 0 ) );
+
+	if ( ImGui::TreeNodeEx( "Advanced" , ImGuiTreeNodeFlags_SpanAvailWidth ) )
+	{
+		ImGui::Checkbox( "Force mesh rebuild" , &Settings::CosmeticChanger::ForceMeshRebuild );
+		if ( ImGui::IsItemHovered() )
+		{
+			ImGui::SetTooltip(
+				"Body slots (head, shoulder, back, arms, legs, belt) are baked into one\n"
+				"combined hero mesh, so they only change when the game rebuilds it.\n\n"
+				"This asks the engine to rebuild after each pick, so body swaps land on\n"
+				"every hero instead of only the ones that happen to rebuild on their\n"
+				"own. Weapons never needed this. Leave on unless a build misbehaves." );
+		}
+
+		// Kept because they are cheap to try on a future build, but both were tested
+		// and neither did anything on this one - so they are labelled as such rather
+		// than sitting next to the working controls implying they help.
+		ImGui::Checkbox( "Swap whole mesh" , &Settings::CosmeticChanger::SwapCombinedMesh );
+		if ( ImGui::IsItemHovered() )
+		{
+			ImGui::SetTooltip(
+				"Installs a complete pre-built hero mesh instead of a per-slot pick.\n\n"
+				"Tested on this build and found nothing to install: the meshes the\n"
+				"game builds are not installed through the hook we record from, so\n"
+				"there are no candidates. Left here in case that changes." );
+		}
+		ImGui::SameLine();
+		ImGui::Checkbox( "Skip mesh combine" , &Settings::CosmeticChanger::SkipModelCombine );
+		if ( ImGui::IsItemHovered() )
+		{
+			ImGui::SetTooltip(
+				"Asks the engine to stop merging your hero and its wearables into one\n"
+				"mesh, so each wearable renders from its own model.\n\n"
+				"Tested on this build: the convar object could not be located, so this\n"
+				"currently does nothing. Harmless to leave off." );
+		}
+		ImGui::TreePop();
+	}
 
 	std::vector<const CCosmeticChanger::CatalogItem*> heroItems;
 	std::vector<std::string> slots;
 	for ( const auto& item : catalog )
 	{
-		if ( item.hero == selectedHero )
+		// Model-less rows are in the catalog so the changer can IDENTIFY what a hero
+		// is wearing (default items carry no model_player, and without them whole
+		// slots were unmatchable). They are not choices: there is no mesh to
+		// install, so offering them would be offering something that cannot work.
+		if ( item.hero == selectedHero && !item.model.empty() )
 		{
 			heroItems.push_back( &item );
 			PushUniqueSorted( slots , item.slot );
@@ -1993,11 +2075,37 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 	ImGui::BeginChild( "##cosmeticSlots" , ImVec2( (std::min)( 130.f , settingsCardWidth * 0.28f ) , paneHeight ) , true );
 	for ( const auto& slot : slots )
 	{
-		const int count = static_cast<int>( std::count_if( heroItems.begin() , heroItems.end() ,
-			[&]( const auto* item ) { return item->slot == slot; } ) );
-		const std::string label = PrettyCosmeticText( slot ) + " (" + std::to_string( count ) + ")";
+		int count = 0;
+		int ready = 0;
+		for ( const auto* item : heroItems )
+		{
+			if ( item->slot != slot )
+				continue;
+			++count;
+			if ( changer && changer->IsModelAvailable( *item ) )
+				++ready;
+		}
+		const auto* picked = Settings::CosmeticChanger::FindSelection( selectedHero , slot );
+
+		// A dot marks the slots you have actually changed. Without it the rail gives
+		// no way to see your loadout at a glance - you have to click every slot to
+		// find out which ones you touched. The count reads "ready/total", so a slot
+		// with nothing loaded is obvious before you click into it.
+		const std::string label = std::string( picked ? "* " : "  " ) +
+			PrettyCosmeticText( slot ) + " (" + std::to_string( ready ) + "/" + std::to_string( count ) + ")";
+
+		if ( picked )
+			ImGui::PushStyleColor( ImGuiCol_Text , kGold );
 		if ( ImGui::Selectable( label.c_str() , slot == selectedSlot , 0 , ImVec2( 0.f , 24.f ) ) )
 			selectedSlot = slot;
+		if ( picked )
+			ImGui::PopStyleColor();
+
+		if ( picked && ImGui::IsItemHovered() )
+		{
+			const auto* item = FindCatalogItemForSelection( selectedHero , slot , picked->defIndex );
+			ImGui::SetTooltip( "Changed to: %s" , item ? item->name.c_str() : "(unknown item)" );
+		}
 	}
 	ImGui::EndChild();
 	ImGui::SameLine( 0.f , 8.f );
@@ -2006,12 +2114,22 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 	ImGui::PushID( selectedSlot.c_str() );
 	ImGui::BeginChild( "##cosmeticGrid" , ImVec2( 0.f , paneHeight ) , true );
 	std::vector<const CCosmeticChanger::CatalogItem*> filtered;
+	int readyInSlot = 0;
 	for ( const auto* item : heroItems )
 	{
-		if ( item->slot == selectedSlot &&
-			( ContainsTextInsensitive( item->name , search ) || ContainsTextInsensitive( item->rarity , search ) ||
-			  ContainsTextInsensitive( std::to_string( item->defIndex ) , search ) ) )
-			filtered.push_back( item );
+		if ( item->slot != selectedSlot )
+			continue;
+		if ( !ContainsTextInsensitive( item->name , search ) &&
+			!ContainsTextInsensitive( item->rarity , search ) &&
+			!ContainsTextInsensitive( std::to_string( item->defIndex ) , search ) )
+			continue;
+
+		const bool ready = changer && changer->IsModelAvailable( *item );
+		if ( ready )
+			++readyInSlot;
+		if ( readyOnly && !ready )
+			continue;
+		filtered.push_back( item );
 	}
 	std::sort( filtered.begin() , filtered.end() , []( const auto* left , const auto* right ) { return left->name < right->name; } );
 	const int columns = (std::max)( 1 , static_cast<int>( ( ImGui::GetContentRegionAvail().x + 8.f ) / 112.f ) );
@@ -2034,7 +2152,8 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 				const auto* selection = Settings::CosmeticChanger::FindSelection( item.hero , item.slot );
 				const bool selected = selection && selection->defIndex == item.defIndex;
 				const bool worn = changer && changer->IsModelWorn( item );
-				if ( DrawSimpleCosmeticTile( item , tileWidth , selected , worn ) )
+				const bool ready = changer && changer->IsModelAvailable( item );
+				if ( DrawSimpleCosmeticTile( item , tileWidth , selected , worn , ready ) )
 				{
 					Settings::CosmeticChanger::SetSelection( item.hero , item.slot , item.defIndex );
 					CCosmeticChanger::SaveSelections();
@@ -2045,7 +2164,15 @@ static void DrawSimpleCosmeticChangerPage( float settingsCardWidth )
 		}
 	}
 	if ( filtered.empty() )
-		ImGui::TextWrapped( "No cosmetics match your search." );
+	{
+		if ( readyOnly && readyInSlot == 0 )
+			ImGui::TextWrapped(
+				"Nothing in this slot is loaded yet, so nothing here would change your "
+				"hero right now. Untick \"Ready only\" to pick anyway - it applies as "
+				"soon as the game loads that model." );
+		else
+			ImGui::TextWrapped( "No cosmetics match your search." );
+	}
 	ImGui::EndChild();
 	ImGui::PopID();
 	ImGui::PopID();

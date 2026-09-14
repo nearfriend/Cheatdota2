@@ -440,6 +440,21 @@ auto CCosmeticChanger::IsModelWorn( const CatalogItem& item ) const -> bool
 	return false;
 }
 
+auto CCosmeticChanger::IsModelAvailable( const CatalogItem& item ) const -> bool
+{
+	if ( item.model.empty() )
+		return false;
+
+	std::scoped_lock lock( m_HookMutex );
+	return m_Bindings.find( item.model ) != m_Bindings.end();
+}
+
+auto CCosmeticChanger::AvailableModelCount() const -> size_t
+{
+	std::scoped_lock lock( m_HookMutex );
+	return m_Bindings.size();
+}
+
 auto CCosmeticChanger::CanApply() const -> bool
 {
 	// Either way of reaching CSkeletonInstance::SetModel counts: the resolved
@@ -1330,19 +1345,25 @@ auto CCosmeticChanger::GetCombinedModelOverride( void* hero , void* itemView ) -
 	if ( m_CombinedOverrides.empty() || !itemView )
 		return nullptr;
 
-	// Two ways to qualify. Either this is a build we started for our hero, or the
-	// item view is one of our hero's own - which covers the rebuilds the engine
-	// does by itself. Requiring the former was the bug: the combiner rebuilds
-	// constantly on its own (the hero mesh index climbed c_0 -> c_3 -> c_18 in one
-	// session) and during every one of those `hero` is null here, so we declined to
-	// substitute and the loadout stayed stock.
-	if ( hero != m_CombinedHero && !m_LocalItemViews.count( itemView ) )
-		return nullptr;
 	uint32_t defIndex = 0;
 	if ( !FeatureSupport::TryReadField( itemView , m_Offsets.itemDefinitionIndex , defIndex ) )
 		return nullptr;
+
+	// The defindex must be one we were asked to override. This is the real gate:
+	// m_CombinedOverrides only ever holds defindexes the LOCAL hero is currently
+	// wearing and that the user picked a replacement for, so an item we were never
+	// asked about can never be touched no matter who is asking.
 	const auto found = m_CombinedOverrides.find( defIndex );
 	if ( found == m_CombinedOverrides.end() ) return nullptr;
+
+	// Identity is the defindex, not the pointer. Matching on the item-view address
+	// missed 194 of 194 asks: the combiner passes its own CEconItemView, not the
+	// one computed from the wearable entity, so the two never agreed. The pointer
+	// set is kept as a positive signal rather than a requirement.
+	const bool knownView = ( hero != nullptr && hero == m_CombinedHero ) ||
+		m_LocalItemViews.count( itemView ) != 0;
+	if ( !knownView )
+		++m_SubstitutionsByDefIndex;
 	++m_CombinedLookupHits;
 	++m_CombinedSubstitutionsTotal;
 	// Points into the immutable catalog, not temporary hook or settings storage.
@@ -1353,6 +1374,7 @@ auto CCosmeticChanger::LogSkinPipeline( C_BaseEntity* hero , size_t itemViewCoun
 {
 	uint64_t calls = 0;
 	uint64_t subs = 0;
+	uint64_t byDefIndex = 0;
 	size_t publishedOverrides = 0;
 	size_t publishedViews = 0;
 	std::string meshAtPublish;
@@ -1360,14 +1382,19 @@ auto CCosmeticChanger::LogSkinPipeline( C_BaseEntity* hero , size_t itemViewCoun
 		std::scoped_lock lock( m_HookMutex );
 		calls = m_ItemModelCallsTotal;
 		subs = m_CombinedSubstitutionsTotal;
+		byDefIndex = m_SubstitutionsByDefIndex;
 		publishedOverrides = m_CombinedOverrides.size();
 		publishedViews = m_LocalItemViews.size();
 		meshAtPublish = m_MeshAtPublish;
 	}
 
 	size_t selections = 0;
+	bool enabled = false;
+	bool applying = false;
 	{
 		std::scoped_lock settingsLock( Settings::CosmeticChanger::Mutex );
+		enabled = Settings::CosmeticChanger::Enable;
+		applying = Settings::CosmeticChanger::ApplyOverrides;
 		for ( const auto& selection : Settings::CosmeticChanger::Selections )
 			if ( selection.hero == m_CurrentHero )
 				++selections;
@@ -1381,6 +1408,12 @@ auto CCosmeticChanger::LogSkinPipeline( C_BaseEntity* hero , size_t itemViewCoun
 	struct Stage { const char* name; bool ok; std::string detail; };
 	const Stage stages[] =
 	{
+		// FIRST, because with applying off no overrides are collected at all - which
+		// used to surface as "slotMatch FAIL 0 of 1 matched" and read as a broken
+		// pick rather than a switch being off.
+		{ "switchedOn" , enabled && applying ,
+			std::string( "Enable=" ) + ( enabled ? "on" : "OFF" ) +
+			" ApplyToMyHero=" + ( applying ? "on" : "OFF" ) } ,
 		{ "selection" , selections > 0 ,
 			std::to_string( selections ) + " pick(s) for " + ( m_CurrentHero.empty() ? "?" : m_CurrentHero ) } ,
 		{ "hero" , hero != nullptr ,
@@ -1394,7 +1427,8 @@ auto CCosmeticChanger::LogSkinPipeline( C_BaseEntity* hero , size_t itemViewCoun
 		{ "combinerAsks" , calls > 0 ,
 			std::to_string( calls ) + " GetItemModel call(s) seen" } ,
 		{ "substituted" , subs > 0 ,
-			std::to_string( subs ) + " substitution(s) returned" } ,
+			std::to_string( subs ) + " substitution(s) returned, " +
+			std::to_string( byDefIndex ) + " via defindex match" } ,
 		{ "meshRebuilt" , meshChanged ,
 			meshAtPublish.empty() ? std::string( "no baseline yet" ) : ( meshAtPublish + " -> " + mesh ) } ,
 	};
@@ -1416,6 +1450,44 @@ auto CCosmeticChanger::LogSkinPipeline( C_BaseEntity* hero , size_t itemViewCoun
 
 	if ( !blocked )
 		DEV_LOG( "[skin-pipeline] all stages passed - the swap is on screen\n" );
+}
+
+auto CCosmeticChanger::RequestEngineRebuild( C_BaseEntity* hero ) -> void
+{
+	if ( !hero )
+		return;
+
+	// hero+0x1D80 holds the combined-model bitfield byte (right after the model
+	// indices at 0x1D08/0x1D0C). Bit 0x08 is the "needs rebuild" request the
+	// builder consumes - client.dll+0x1ACD35B does `and byte[hero+0x1D80],0xF7`,
+	// clearing exactly this bit after doing rebuild setup. Bit 0x10 is the
+	// re-entry guard ("currently building"). Setting 0x08 is what the game does
+	// internally when a loadout changes: it asks the engine to rebuild the combined
+	// mesh on its next pass, and that rebuild is the one our GetItemModel hook can
+	// substitute into. We only ever SET the request bit and never touch 0x10, so
+	// we cannot fake "currently building" and stall the pipeline.
+	constexpr uint32_t kCombinedFlagsByte = 0x1D80;
+	constexpr uint8_t kForceBuildBit = 0x08;
+
+	auto* flags = reinterpret_cast<uint8_t*>( hero ) + kCombinedFlagsByte;
+	if ( !FeatureSupport::IsReadableRuntimeMemory( flags , 1 ) )
+	{
+		DEV_LOG( "[cosmetic-rebuild] flags byte at +0x%X unreadable\n" , kCombinedFlagsByte );
+		return;
+	}
+
+	const uint8_t before = *flags;
+	if ( before & kForceBuildBit )
+		return; // a rebuild is already pending; do not thrash the flag
+
+	DWORD oldProtect = 0;
+	if ( VirtualProtect( flags , 1 , PAGE_EXECUTE_READWRITE , &oldProtect ) )
+	{
+		*flags = static_cast<uint8_t>( before | kForceBuildBit );
+		VirtualProtect( flags , 1 , oldProtect , &oldProtect );
+		DEV_LOG( "[cosmetic-rebuild] requested engine rebuild: flags 0x%02X -> 0x%02X\n" ,
+			before , *flags );
+	}
 }
 
 auto CCosmeticChanger::TryCombinedModelSwap( C_BaseEntity* hero ) -> bool
@@ -1528,8 +1600,20 @@ auto CCosmeticChanger::RebuildCombinedModel( C_BaseEntity* const* wearables , in
 		// which are the ones that actually complete.
 		m_LocalItemViews.clear();
 		m_LocalItemViews.insert( itemViews.begin() , itemViews.end() );
-		m_MeshAtPublish = WearableModelPath( hero );
+		// Baseline the mesh ONLY when the override set actually changed. This block
+		// also re-runs every 10s as a retry, and re-baselining on each retry meant a
+		// rebuild that had already landed was captured as the "before" - so stage 9
+		// reported no change for a swap that was plainly on screen (Void, c_28).
+		if ( signature != m_LastCombinedSignature )
+			m_MeshAtPublish = WearableModelPath( hero );
 	}
+
+	// NO request-bit write here. Setting bit 0x08 at hero+0x1D80 was tested and did
+	// nothing: the log showed `flags 0x00 -> 0x08` firing while the hero's mesh
+	// stayed pinned at the same index, and the bit was still set on later passes
+	// because the builder never got far enough to consume it. The bit that matters
+	// is 0x10, and it is held only across the builder call itself - see the bypass
+	// at the Hook_BuildCombinedModel site below.
 	// The verified builder reads count at +0 and CEconItemView** at +8.
 	// It consumes the list synchronously and owns its generated model request.
 	struct ItemViewList { int32_t count; int32_t pad; void* const* data; };
@@ -1589,7 +1673,49 @@ auto CCosmeticChanger::RebuildCombinedModel( C_BaseEntity* const* wearables , in
 	// call at all, which matters because the builder has refused every request.
 	TryCombinedModelSwap( hero );
 
+	// Bypass the builder's stale-list revalidation for the duration of our call.
+	//
+	// client.dll+0x1ACD329: `test byte[hero+0x1D80],0x10 / jne 0x1ACD363`. With the
+	// bit SET the builder skips recomputing the expected item list and jumps
+	// straight to the container check at 0x1ACD363 - and the [cosmetic-gate] log
+	// proves that check passes for us (list non-null, count 19-24, data non-null).
+	// With the bit CLEAR it recomputes, finds our cached list differs, and returns
+	// false at 0x1ACD355 - which is where all 107 of our calls died.
+	//
+	// Held for the call ONLY and restored immediately: the bit doubles as the
+	// engine's "currently building" re-entry guard, so leaving it set would lie to
+	// every other reader.
+	constexpr uint32_t kCombinedFlagsOffset = 0x1D80;
+	constexpr uint8_t kSkipRevalidateBit = 0x10;
+	auto* combinedFlags = reinterpret_cast<uint8_t*>( hero ) + kCombinedFlagsOffset;
+	uint8_t flagsBefore = 0;
+	const bool bypass = Settings::CosmeticChanger::ForceMeshRebuild &&
+		FeatureSupport::IsReadableRuntimeMemory( combinedFlags , 1 );
+	if ( bypass )
+	{
+		flagsBefore = *combinedFlags;
+		DWORD flagProtect = 0;
+		if ( VirtualProtect( combinedFlags , 1 , PAGE_EXECUTE_READWRITE , &flagProtect ) )
+		{
+			*combinedFlags = static_cast<uint8_t>( flagsBefore | kSkipRevalidateBit );
+			VirtualProtect( combinedFlags , 1 , flagProtect , &flagProtect );
+		}
+	}
+
 	const bool accepted = Hook_BuildCombinedModel( hero , &items );
+
+	if ( bypass )
+	{
+		DWORD flagProtect = 0;
+		if ( VirtualProtect( combinedFlags , 1 , PAGE_EXECUTE_READWRITE , &flagProtect ) )
+		{
+			// Restore exactly what was there, except let the builder's own clear of
+			// the request bit stand if it consumed one.
+			*combinedFlags = static_cast<uint8_t>(
+				( *combinedFlags & ~kSkipRevalidateBit ) | ( flagsBefore & kSkipRevalidateBit ) );
+			VirtualProtect( combinedFlags , 1 , flagProtect , &flagProtect );
+		}
+	}
 
 	if ( gate && gateBefore == 0 )
 		*gate = gateBefore;
@@ -1617,6 +1743,38 @@ auto CCosmeticChanger::RebuildCombinedModel( C_BaseEntity* const* wearables , in
 		std::scoped_lock lock( m_HookMutex );
 		totalSubs = m_CombinedSubstitutionsTotal;
 	}
+	// Which of the builder's gates is actually stopping us. Disassembled at
+	// client.dll+0x1ACD363: the last check before the per-item loop (which is what
+	// calls GetItemModel) is 0x61FE40( hero->[0x15E8] ), and that returns true only
+	// when the container is non-null, its count at +0x20 is > 0, and its data
+	// pointer at +0x0 is non-null. Read the same three values here so the log says
+	// which one fails instead of leaving it to be guessed at. Read-only.
+	{
+		constexpr uint32_t kListOffset = 0x15E8;
+		constexpr uint32_t kFlagsOffset = 0x1D80;
+		void* list = nullptr;
+		int32_t listCount = -1;
+		void* listData = nullptr;
+		uint8_t flagsByte = 0;
+
+		FeatureSupport::TryRead( reinterpret_cast<uint8_t*>( hero ) + kListOffset , list );
+		FeatureSupport::TryRead( reinterpret_cast<uint8_t*>( hero ) + kFlagsOffset , flagsByte );
+		if ( list )
+		{
+			FeatureSupport::TryRead( reinterpret_cast<uint8_t*>( list ) + 0x20 , listCount );
+			FeatureSupport::TryRead( list , listData );
+		}
+
+		const bool gatePasses = list && listCount > 0 && listData;
+		DEV_LOG( "  [cosmetic-gate] list=%p count=%d data=%p flags=0x%02X -> itemLoop=%s\n" ,
+			list , listCount , listData , flagsByte ,
+			gatePasses ? "REACHABLE" : "blocked" );
+	}
+
+	if ( bypass )
+		DEV_LOG( "  [cosmetic-bypass] flags 0x%02X -> 0x%02X during build, restored to 0x%02X\n" ,
+			flagsBefore , static_cast<uint8_t>( flagsBefore | kSkipRevalidateBit ) , *combinedFlags );
+
 	DEV_LOG( "  [cosmetic-combine] gate=%s value=%d substitutionsTotal=%llu (engine rebuilds included)\n" ,
 		gate ? ( gateBefore == 0 ? "forced-open" : "already-open" ) : "unreadable" ,
 		static_cast<int>( gateBefore ) ,

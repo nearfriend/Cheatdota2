@@ -261,6 +261,15 @@ namespace Settings
 		// pick - but it is the one path that operates where the renderer actually
 		// reads. Off by default; it replaces the hero's entire appearance.
 		inline bool SwapCombinedMesh = false;
+		// Ask the engine to rebuild the hero's combined mesh when a pick changes.
+		// Body slots (head/shoulder/back/arms/legs/belt) are merged into one mesh
+		// the renderer draws, so they only change when that mesh is rebuilt. Some
+		// heroes rebuild constantly on their own and swap without help; a hero left
+		// idle may never rebuild, leaving body swaps stuck until this nudges it.
+		// On by default because that is the difference between "works for every
+		// hero" and "works only for the ones that happened to rebuild"; it writes a
+		// live hero flag, so it has its own switch to turn off if a build regresses.
+		inline bool ForceMeshRebuild = true;
 		inline std::vector<Selection> Selections;
 
 		inline auto FindSelection( const std::string& hero , const std::string& slot ) -> Selection*
